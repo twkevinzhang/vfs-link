@@ -1,5 +1,10 @@
 import axios, { AxiosInstance } from 'axios';
 
+export interface HmacAuth {
+  accessKey?: string;
+  secretKey?: string;
+}
+
 export class S3Service {
   private axios: AxiosInstance;
 

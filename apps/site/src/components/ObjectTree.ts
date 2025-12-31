@@ -1,6 +1,6 @@
-import { ObjectEntity } from "@site/models";
+import { FlatObject } from '@site/models';
 
-export type Entity = ObjectEntity & {
+export type Entity = FlatObject & {
   key: string;
   leaf: boolean;
   loading: boolean;

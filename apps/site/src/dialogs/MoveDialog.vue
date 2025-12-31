@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useListViewStore } from '@site/stores/list-view';
-import { useMetadataStore } from '@site/stores/metadata';
-import { useSessionStore } from '@site/stores/session';
+import { useMetadataStore } from '@site/stores';
+import { useSessionStore } from '@site/stores';
 import {
   ObjectEntity,
   ColumnKeys,
@@ -217,7 +217,7 @@ function handleCancel() {
           :columns="columns"
           :column-widths="columnWidths"
           :selected-key="destinationPath"
-          v-model:expanded-keys="expandedKeys"
+          :expanded-keys="expandedKeys"
           @node-click="handleNodeClick"
         />
       </div>

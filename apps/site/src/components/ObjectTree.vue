@@ -1,31 +1,45 @@
 <script setup lang="ts">
-import { ColumnKeys } from '@site/models';
+import { ColumnKeys, ObjectEntity } from '@site/models';
 import { Entity } from '@site/components/ObjectTree';
+import { breakpointsTailwind } from '@vueuse/core';
+import { useSelectModeStore } from '@site/stores/select-mode';
+
+const breakpoints = useBreakpoints(breakpointsTailwind);
+const isMobile = breakpoints.smaller('md');
+const selectModeStore = useSelectModeStore();
 
 const props = withDefaults(
   defineProps<{
     tree?: Entity[];
     limit?: number;
     indent?: boolean;
+    depth?: number;
     columns?: { label: string; key: ColumnKeys }[];
     columnWidths?: Record<string, number>;
-    selectedKey?: string;
     expandedKeys?: string[];
+    showCheckbox?: boolean;
+    selectedKeys?: string[];
+    indeterminateKeys?: string[];
   }>(),
   {
     tree: () => [],
     limit: 10,
     indent: false,
+    depth: 0,
     columns: () => [],
     columnWidths: () => ({}),
+    showCheckbox: false,
+    selectedKeys: () => [],
+    indeterminateKeys: () => [],
   }
 );
 
 const emits = defineEmits<{
-  (e: 'nodeExpand', node: Entity): void;
+  (e: 'nodeToggle', node: Entity, newValue: boolean): void;
   (e: 'nodeClick', node: Entity): void;
   (e: 'showMoreClick'): void;
   (e: 'update:expandedKeys', keys: string[]): void;
+  (e: 'toggleSelection', node: Entity): void;
 }>();
 
 const internalExpandedKeys = ref<Array<string>>([]);
@@ -42,8 +56,20 @@ function isExpanded(node: Entity) {
   return actualExpandedKeys.value.includes(node.key);
 }
 
-function isSelected(node: Entity) {
-  return props.selectedKey === node.key;
+function isChecked(node: Entity): boolean {
+  return props.selectedKeys.includes(node.key);
+}
+
+function isIndeterminate(node: Entity): boolean {
+  return props.indeterminateKeys.includes(node.key);
+}
+
+function handleToggleSelection(node: Entity) {
+  // 點擊 checkbox 時自動進入選擇模式
+  if (!selectModeStore.selectMode) {
+    selectModeStore.enterSelectMode();
+  }
+  emits('toggleSelection', node);
 }
 
 function angleIcon(node: Entity) {
@@ -72,83 +98,109 @@ function nodeToggle(node: Entity) {
     actualExpandedKeys.value = actualExpandedKeys.value.filter(
       (key) => key !== node.key
     );
+    emits('nodeToggle', node, false);
   } else {
     actualExpandedKeys.value = [...actualExpandedKeys.value, node.key];
-    emits('nodeExpand', node);
+    emits('nodeToggle', node, true);
   }
 }
 
-function getCellValue(node: Entity, key: ColumnKeys) {
+function getCellValue(item: Entity, key: ColumnKeys) {
+  const entity = ObjectEntity.new({
+    path: item.path,
+    pathOnDrive: item.pathOnDrive,
+    mimeType: item.mimeType,
+    sizeBytes: item.sizeBytes,
+    uploadedAtISO: item.uploadedAtISO,
+    latestUpdatedAtISO: item.latestUpdatedAtISO,
+    md5Hash: item.md5Hash,
+    crc32c: item.crc32c,
+    xxHash64: item.xxHash64,
+    deletedAtISO: item.deletedAtISO,
+  });
   switch (key) {
     case ColumnKeys.name:
-      return node.label;
+      return entity.name;
     case ColumnKeys.mimeType:
-      return node.mimeType || '-';
+      return entity.mimeType || '-';
     case ColumnKeys.sizeBytes:
-      return node.sizeFormatted || '-';
+      return entity.sizeFormatted || '-';
     case ColumnKeys.createdAt:
-      return node.createdAt?.toLocaleString() || '-';
+      return entity.createdAt?.toLocaleString() || '-';
     case ColumnKeys.latestUpdatedAt:
-      return node.modifiedAtFormatted || '-';
+      return entity.modifiedAtFormatted || '-';
     default:
-      return (node as any)[key] || '-';
+      return (entity as any)[key] || '-';
   }
 }
 </script>
 
 <template>
-  <ul :class="indent ? 'pl-6' : ''">
+  <ul>
     <li v-for="node in take(props.tree, props.limit)" :key="node.key">
-      <!-- Row with dynamic columns -->
       <div
-        class="flex items-center border-b border-gray-100 hover:bg-gray-50 transition-colors"
-        :class="{
-          '!bg-primary-50': isSelected(node),
-          'bg-white': !isSelected(node),
-        }"
+        class="group flex items-center border-b border-gray-100 bg-white hover:bg-gray-50 transition-colors"
       >
         <template v-for="col in props.columns" :key="col.key">
-          <!-- Special handling for Name column with toggle/icons -->
-          <div
-            v-if="col.key === ColumnKeys.name"
-            class="flex items-center flex-shrink-0 min-w-0"
-            :style="{ width: props.columnWidths[col.key] + 'px' }"
-          >
-            <template v-if="node.leaf">
-              <Hover
-                class="w-6 flex-shrink-0"
-                :icon="angleIcon(node)"
-                :fluid="false"
-                rounded="none"
-                @click="(e) => nodeToggle(node)"
+          <template v-if="col.key === ColumnKeys.name">
+            <div
+              class="flex items-center flex-shrink-0 min-w-0 w-full p-1 overflow-hidden gap-2"
+              :style="{ width: props.columnWidths[col.key] + 'px' }"
+            >
+              <!-- Checkbox (手機版始終顯示，桌面版 hover 或選擇模式下顯示) -->
+              <div
+                class="size-8 flex items-center justify-center flex-shrink-0"
+              >
+                <ColoredCheckbox
+                  :model-value="isChecked(node)"
+                  :indeterminate="isIndeterminate(node)"
+                  :class="[
+                    'flex-shrink-0 transition-opacity',
+                    isMobile || props.showCheckbox
+                      ? 'opacity-100'
+                      : 'opacity-0 group-hover:opacity-100',
+                  ]"
+                  @update:model-value="handleToggleSelection(node)"
+                />
+              </div>
+
+              <!-- Indentation spacer -->
+              <div
+                v-if="props.depth > 0"
+                class="flex-shrink-0"
+                :style="{ width: `${props.depth * 32}px` }"
               />
-              <div class="w-full p-2 overflow-hidden">
-                <Hover
-                  class="min-w-0"
-                  :icon="mimeIcon(node)"
-                  :label="node.label"
-                  severity="link"
-                  :fluid="false"
-                  paddingSize="none"
-                  @click="(e) => emits('nodeClick', node)"
-                />
-              </div>
-            </template>
-            <template v-else>
-              <span class="w-2 flex-shrink-0" />
-              <div class="w-full p-2 overflow-hidden">
-                <Hover
-                  class="min-w-0"
-                  :icon="mimeIcon(node)"
-                  :label="node.label"
-                  severity="link"
-                  :fluid="false"
-                  paddingSize="none"
-                  @click="(e) => emits('nodeClick', node)"
-                />
-              </div>
-            </template>
-          </div>
+
+              <!-- Angle button -->
+              <template v-if="node.leaf">
+                <div class="flex-shrink-0">
+                  <Hover
+                    class="w-6"
+                    :icon="angleIcon(node)"
+                    :fluid="false"
+                    rounded="none"
+                    @click="(e) => nodeToggle(node)"
+                  />
+                </div>
+              </template>
+              <template v-else>
+                <div class="w-6 h-8 flex-shrink-0" />
+              </template>
+
+              <!-- Prefix icon -->
+              <PrimeIcon :fullname="mimeIcon(node)" />
+
+              <!-- Text -->
+              <Hover
+                class="min-w-0"
+                :label="node.label"
+                severity="link"
+                :fluid="false"
+                padding-size="none"
+                @click="(e) => emits('nodeClick', node)"
+              />
+            </div>
+          </template>
 
           <!-- Generic columns -->
           <div
@@ -166,20 +218,24 @@ function getCellValue(node: Entity, key: ColumnKeys) {
       <template v-if="node.leaf && isExpanded(node) && node.children">
         <ObjectTree
           :indent="true"
+          :depth="props.depth + 1"
           :tree="node.children"
           :limit="props.limit"
           :columns="props.columns"
           :column-widths="props.columnWidths"
-          :selected-key="props.selectedKey"
-          v-model:expanded-keys="actualExpandedKeys"
+          :show-checkbox="props.showCheckbox"
+          :selected-keys="props.selectedKeys"
+          :expanded-keys="actualExpandedKeys"
+          :indeterminate-keys="props.indeterminateKeys"
           @node-click="(node) => emits('nodeClick', node)"
-          @node-expand="(node) => emits('nodeExpand', node)"
+          @node-toggle="(node) => nodeToggle(node)"
+          @toggle-selection="(key) => emits('toggleSelection', key)"
         />
       </template>
     </li>
     <li
       v-if="props.tree.length > props.limit"
-      class="pl-2 text-gray-500 italic border-b border-gray-100"
+      class="pl-2 text-gray-500 italic border-b border-gray-100 bg-white"
     >
       <Hover
         :label="`... and ${props.tree.length - props.limit} more`"

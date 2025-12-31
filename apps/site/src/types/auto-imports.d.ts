@@ -23,6 +23,8 @@ declare global {
   const bind: typeof import('lodash-es')['bind']
   const bindAll: typeof import('lodash-es')['bindAll']
   const bindKey: typeof import('lodash-es')['bindKey']
+  const calculateCRC32C: typeof import('@site/utilities')['calculateCRC32C']
+  const calculateHashes: typeof import('@site/utilities')['calculateHashes']
   const camelCase: typeof import('lodash-es')['camelCase']
   const capitalize: typeof import('lodash-es')['capitalize']
   const castArray: typeof import('lodash-es')['castArray']
@@ -69,8 +71,7 @@ declare global {
   const debouncedRef: typeof import('@vueuse/core')['debouncedRef']
   const debouncedWatch: typeof import('@vueuse/core')['debouncedWatch']
   const deburr: typeof import('lodash-es')['deburr']
-  const decodeProxyBuffer: typeof import('@site/utilities')['decodeProxyBuffer']
-  const default: typeof import('lodash-es')['default']
+  const decodeBuffer: typeof import('@site/utilities')['decodeBuffer']
   const defaultTo: typeof import('lodash-es')['defaultTo']
   const defaults: typeof import('lodash-es')['defaults']
   const defaultsDeep: typeof import('lodash-es')['defaultsDeep']
@@ -83,6 +84,7 @@ declare global {
   const differenceBy: typeof import('lodash-es')['differenceBy']
   const differenceWith: typeof import('lodash-es')['differenceWith']
   const divide: typeof import('lodash-es')['divide']
+  const downloadFile: typeof import('@site/utilities')['downloadFile']
   const drop: typeof import('lodash-es')['drop']
   const dropRight: typeof import('lodash-es')['dropRight']
   const dropRightWhile: typeof import('lodash-es')['dropRightWhile']
@@ -135,6 +137,7 @@ declare global {
   const getCurrentInstance: typeof import('vue')['getCurrentInstance']
   const getCurrentScope: typeof import('vue')['getCurrentScope']
   const getCurrentWatcher: typeof import('vue')['getCurrentWatcher']
+  const getFilename: typeof import('@site/utilities')['getFilename']
   const groupBy: typeof import('lodash-es')['groupBy']
   const gt: typeof import('lodash-es')['gt']
   const gte: typeof import('lodash-es')['gte']
@@ -181,6 +184,7 @@ declare global {
   const isNaN: typeof import('lodash-es')['isNaN']
   const isNative: typeof import('lodash-es')['isNative']
   const isNil: typeof import('lodash-es')['isNil']
+  const isNotEmpty: typeof import('@site/utilities')['isNotEmpty']
   const isNull: typeof import('lodash-es')['isNull']
   const isNumber: typeof import('lodash-es')['isNumber']
   const isObject: typeof import('lodash-es')['isObject']
@@ -245,11 +249,9 @@ declare global {
   const next: typeof import('lodash-es')['next']
   const nextTick: typeof import('vue')['nextTick']
   const noop: typeof import('lodash-es')['noop']
-  const normalizePath: typeof import('@site/utilities')['normalizePath']
   const now: typeof import('lodash-es')['now']
   const nth: typeof import('lodash-es')['nth']
   const nthArg: typeof import('lodash-es')['nthArg']
-  const objectName: typeof import('@site/utilities')['objectName']
   const omit: typeof import('lodash-es')['omit']
   const omitBy: typeof import('lodash-es')['omitBy']
   const onActivated: typeof import('vue')['onActivated']
@@ -321,10 +323,7 @@ declare global {
   const refWithControl: typeof import('@vueuse/core')['refWithControl']
   const reject: typeof import('lodash-es')['reject']
   const remove: typeof import('lodash-es')['remove']
-  const removeLeadingPart: typeof import('@site/utilities')['removeLeadingPart']
-  const removeLeadingPath: typeof import('@site/utilities')['removeLeadingPath']
   const removeLeadingSlash: typeof import('@site/utilities')['removeLeadingSlash']
-  const removeMount: typeof import('@site/utilities')['removeMount']
   const removeTrailingPart: typeof import('@site/utilities')['removeTrailingPart']
   const removeTrailingSlash: typeof import('@site/utilities')['removeTrailingSlash']
   const repeat: typeof import('lodash-es')['repeat']
@@ -673,6 +672,8 @@ declare module 'vue' {
     readonly bind: UnwrapRef<typeof import('lodash-es')['bind']>
     readonly bindAll: UnwrapRef<typeof import('lodash-es')['bindAll']>
     readonly bindKey: UnwrapRef<typeof import('lodash-es')['bindKey']>
+    readonly calculateCRC32C: UnwrapRef<typeof import('@site/utilities')['calculateCRC32C']>
+    readonly calculateHashes: UnwrapRef<typeof import('@site/utilities')['calculateHashes']>
     readonly camelCase: UnwrapRef<typeof import('lodash-es')['camelCase']>
     readonly capitalize: UnwrapRef<typeof import('lodash-es')['capitalize']>
     readonly castArray: UnwrapRef<typeof import('lodash-es')['castArray']>
@@ -719,7 +720,7 @@ declare module 'vue' {
     readonly debouncedRef: UnwrapRef<typeof import('@vueuse/core')['debouncedRef']>
     readonly debouncedWatch: UnwrapRef<typeof import('@vueuse/core')['debouncedWatch']>
     readonly deburr: UnwrapRef<typeof import('lodash-es')['deburr']>
-    readonly decodeProxyBuffer: UnwrapRef<typeof import('@site/utilities')['decodeProxyBuffer']>
+    readonly decodeBuffer: UnwrapRef<typeof import('@site/utilities')['decodeBuffer']>
     readonly defaultTo: UnwrapRef<typeof import('lodash-es')['defaultTo']>
     readonly defaults: UnwrapRef<typeof import('lodash-es')['defaults']>
     readonly defaultsDeep: UnwrapRef<typeof import('lodash-es')['defaultsDeep']>
@@ -732,6 +733,7 @@ declare module 'vue' {
     readonly differenceBy: UnwrapRef<typeof import('lodash-es')['differenceBy']>
     readonly differenceWith: UnwrapRef<typeof import('lodash-es')['differenceWith']>
     readonly divide: UnwrapRef<typeof import('lodash-es')['divide']>
+    readonly downloadFile: UnwrapRef<typeof import('@site/utilities')['downloadFile']>
     readonly drop: UnwrapRef<typeof import('lodash-es')['drop']>
     readonly dropRight: UnwrapRef<typeof import('lodash-es')['dropRight']>
     readonly dropRightWhile: UnwrapRef<typeof import('lodash-es')['dropRightWhile']>
@@ -784,6 +786,7 @@ declare module 'vue' {
     readonly getCurrentInstance: UnwrapRef<typeof import('vue')['getCurrentInstance']>
     readonly getCurrentScope: UnwrapRef<typeof import('vue')['getCurrentScope']>
     readonly getCurrentWatcher: UnwrapRef<typeof import('vue')['getCurrentWatcher']>
+    readonly getFilename: UnwrapRef<typeof import('@site/utilities')['getFilename']>
     readonly groupBy: UnwrapRef<typeof import('lodash-es')['groupBy']>
     readonly gt: UnwrapRef<typeof import('lodash-es')['gt']>
     readonly gte: UnwrapRef<typeof import('lodash-es')['gte']>
@@ -830,6 +833,7 @@ declare module 'vue' {
     readonly isNaN: UnwrapRef<typeof import('lodash-es')['isNaN']>
     readonly isNative: UnwrapRef<typeof import('lodash-es')['isNative']>
     readonly isNil: UnwrapRef<typeof import('lodash-es')['isNil']>
+    readonly isNotEmpty: UnwrapRef<typeof import('@site/utilities')['isNotEmpty']>
     readonly isNull: UnwrapRef<typeof import('lodash-es')['isNull']>
     readonly isNumber: UnwrapRef<typeof import('lodash-es')['isNumber']>
     readonly isObject: UnwrapRef<typeof import('lodash-es')['isObject']>
@@ -969,6 +973,7 @@ declare module 'vue' {
     readonly reject: UnwrapRef<typeof import('lodash-es')['reject']>
     readonly remove: UnwrapRef<typeof import('lodash-es')['remove']>
     readonly removeLeadingSlash: UnwrapRef<typeof import('@site/utilities')['removeLeadingSlash']>
+    readonly removeTrailingPart: UnwrapRef<typeof import('@site/utilities')['removeTrailingPart']>
     readonly removeTrailingSlash: UnwrapRef<typeof import('@site/utilities')['removeTrailingSlash']>
     readonly repeat: UnwrapRef<typeof import('lodash-es')['repeat']>
     readonly replace: UnwrapRef<typeof import('lodash-es')['replace']>

@@ -9,7 +9,8 @@ const port = process.env.PORT ? Number(process.env.PORT) : 3000;
 const app = express();
 
 app.use(cors());
-app.use(bodyParser.json());
+app.use(bodyParser.json({ limit: '100mb' }));
+app.use(bodyParser.raw({ type: 'application/octet-stream', limit: '100mb' }));
 
 app.get('/health', (req, res) => {
   res.send({ status: 'ok' });

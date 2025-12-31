@@ -18,3 +18,4 @@
 ## before deploy
 1. create GCP project and storage bucket, set IAM permission
 2. login gCloud cli
+3. 確認 storage bucket is opened CORS

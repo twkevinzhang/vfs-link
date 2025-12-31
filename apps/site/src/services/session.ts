@@ -5,18 +5,17 @@ import {
   ObjectEntity,
   ObjectMimeType,
   SessionEntity,
-  SessionForm,
 } from '@site/models';
-import { GcsProxyClient } from '@site/services/gcs';
-import { proxyBucket, proxyMetadataFile } from '@site/utilities/storage';
-import { decodeProxyBuffer } from '@site/utilities';
+import {
+  Auth,
+  GcsProxyClient,
+  proxyBucket,
+  proxyMetadataFile,
+} from '@site/services';
+import { decodeBuffer } from '@site/utilities';
 
 export interface SessionService {
-  listBuckets(args: {
-    accessKey: string;
-    secretKey: string;
-    projectId?: string;
-  }): Promise<BucketEntity[]>;
+  listBuckets(driver: Driver, auth: Auth): Promise<BucketEntity[]>;
   ensureMetadata(session: SessionEntity): Promise<void>;
   saveEntities(
     session: SessionEntity,
@@ -28,23 +27,22 @@ export interface SessionService {
 export class SessionServiceImpl implements SessionService {
   private syncingPromises = new Map<string, Promise<void>>();
 
-  async listBuckets(args: {
-    accessKey: string;
-    secretKey: string;
-    projectId?: string;
-  }): Promise<BucketEntity[]> {
-    const client = new GcsProxyClient({
-      accessKey: args.accessKey,
-      secretKey: args.secretKey,
-      projectId: args.projectId,
-    });
+  async listBuckets(driver: Driver, auth: Auth): Promise<BucketEntity[]> {
+    if (driver === Driver.gcs) {
+      const client = new GcsProxyClient(auth);
 
-    // getBuckets returns [Bucket[], Metadata]
-    const [buckets] = await client.getBuckets();
+      // getBuckets returns [Bucket[], Metadata]
+      const [buckets] = await client.getBuckets();
 
-    return buckets.map((b: any) => ({
-      name: b.name,
-    }));
+      return buckets.map((b: any) => ({
+        name: b.name,
+      }));
+    } else if (driver === Driver.s3) {
+      // TODO: Implement S3 bucket listing
+      throw new Error('S3 driver not yet implemented');
+    } else {
+      throw new Error(`Unsupported driver: ${driver}`);
+    }
   }
 
   async ensureMetadata(session: SessionEntity): Promise<void> {
@@ -101,7 +99,7 @@ export class SessionServiceImpl implements SessionService {
 
   async fetchEntities(session: SessionEntity): Promise<ObjectEntity[]> {
     const [content] = await proxyMetadataFile(session).download();
-    const contentStr = decodeProxyBuffer(content);
+    const contentStr = decodeBuffer(content);
     const entities = ObjectEntity.ArrayfromJson(contentStr, session.id);
     return entities;
   }
@@ -141,7 +139,7 @@ export class MockSessionService implements SessionService {
           md5Hash: `ID${200 + i}`,
           sizeBytes: 1234,
           mimeType: ObjectMimeType.folder,
-          createdAtISO: '2025-12-20T23:56:00.000Z',
+          uploadedAtISO: '2025-12-20T23:56:00.000Z',
           latestUpdatedAtISO: '2025-12-20T23:56:00.000Z',
         })
       );
@@ -149,12 +147,13 @@ export class MockSessionService implements SessionService {
     this.data = objects;
   }
 
-  listBuckets(args: {
-    accessKey: string;
-    secretKey: string;
-    projectId?: string;
-  }): Promise<BucketEntity[]> {
-    return Promise.resolve([]);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  listBuckets(_driver: Driver, _auth: Auth): Promise<BucketEntity[]> {
+    return Promise.resolve([
+      { name: 'mock-bucket-1' },
+      { name: 'mock-bucket-2' },
+      { name: 'mock-bucket-3' },
+    ]);
   }
   ensureMetadata(session: SessionEntity): Promise<void> {
     return Promise.resolve();

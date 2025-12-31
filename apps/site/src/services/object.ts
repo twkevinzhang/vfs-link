@@ -1,12 +1,5 @@
-import {
-  ObjectEntity,
-  SessionEntity,
-  ObjectMimeType,
-  Driver,
-} from '@site/models';
+import { ObjectEntity, SessionEntity } from '@site/models';
 import axios, { AxiosInstance } from 'axios';
-import { proxyMetadataFile } from '@site/utilities/storage';
-import { decodeProxyBuffer } from '@site/utilities';
 
 export interface ObjectService {
   get({

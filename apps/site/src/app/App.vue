@@ -2,4 +2,5 @@
   <RouterView />
   <AppDialog />
   <Toast />
+  <AppProgress />
 </template>

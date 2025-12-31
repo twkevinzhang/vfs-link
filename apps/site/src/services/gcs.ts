@@ -1,11 +1,18 @@
-import axios, { AxiosInstance } from 'axios';
+import axios from 'axios';
 
+// from service account json
 export interface GcsAuth {
-  projectId?: string;
-  clientEmail?: string;
-  privateKey?: string;
-  accessKey?: string;
-  secretKey?: string;
+  type?: string;
+  project_id?: string;
+  private_key_id?: string;
+  private_key?: string;
+  client_email?: string;
+  client_id?: string;
+  auth_uri?: string;
+  token_uri?: string;
+  auth_provider_x509_cert_url?: string;
+  client_x509_cert_url?: string;
+  universe_domain?: string;
 }
 
 export class GcsProxyClient {
@@ -122,6 +129,36 @@ export class ProxyFile {
 
   async save(data: any, options?: any) {
     return this.execute('save', [data, options]);
+  }
+
+  async createResumableUpload(options?: any) {
+    return this.execute('createResumableUpload', [options]);
+  }
+
+  async getSignedUrl(options?: {
+    action?: 'read' | 'write' | 'delete' | 'resumable';
+    expires?: number | string | Date;
+    contentType?: string;
+  }): Promise<string> {
+    const result = await this.execute('getSignedUrl', [
+      options || { action: 'read', expires: Date.now() + 3600000 },
+    ]);
+    // Result is an array with [url]
+    return Array.isArray(result) ? result[0] : result;
+  }
+
+  /**
+   * 通過 proxy 下載檔案（返回 download URL）
+   */
+  getProxyDownloadUrl(): string {
+    const params = new URLSearchParams({
+      bucket: this.bucket,
+      file: this.path,
+      projectId: this.auth.projectId || '',
+      accessKey: this.auth.accessKey || '',
+      secretKey: this.auth.secretKey || '',
+    });
+    return `${this.baseUrl}/gcs/v1/download?${params.toString()}`;
   }
 
   private async execute(method: string, args: any[]) {

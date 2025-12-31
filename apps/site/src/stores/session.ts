@@ -1,6 +1,6 @@
-import { SessionEntity } from '@site/models';
-import { INJECT_KEYS } from '@site/services';
-import { SessionService } from '@site/services/session';
+import { Driver, SessionEntity } from '@site/models';
+import { Auth, INJECT_KEYS } from '@site/services';
+import { SessionService } from '@site/services';
 import { useToast } from 'primevue/usetoast';
 
 export const useSessionStore = defineStore('session', () => {
@@ -45,13 +45,9 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  async function listBuckets(args: {
-    accessKey: string;
-    secretKey: string;
-    projectId?: string;
-  }) {
+  async function listBuckets(driver: Driver, auth: Auth) {
     try {
-      return await sessionApi.listBuckets(args);
+      return await sessionApi.listBuckets(driver, auth);
     } catch (error: any) {
       console.error('Failed to list buckets:', error);
       toast.add({

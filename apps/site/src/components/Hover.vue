@@ -7,6 +7,7 @@ const props = withDefaults(
     icon?: string | undefined;
     pt?: {
       primeIcon?: any;
+      span?: any;
     };
     suffixIcon?: string | undefined;
     position?: 'left' | 'right' | 'center' | undefined;
@@ -81,7 +82,11 @@ const classes = computed(() => {
     >
       <PrimeIcon v-if="icon" :fullname="icon" v-bind="pt?.primeIcon" />
       <slot>
-        <span v-if="!isEmpty(label)" class="text-left break-all whitespace-normal">
+        <span
+          v-if="isNotEmpty(label)"
+          class="text-left break-all whitespace-normal"
+          v-bind="pt?.span"
+        >
           {{ label }}
         </span>
       </slot>

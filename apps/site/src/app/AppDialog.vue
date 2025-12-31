@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { useDialogStore } from '@site/stores/dialog';
+import { useDialogStore } from '@site/stores';
 
 const { visible, close, replaceWith } = useDialogStore();
 </script>
@@ -82,7 +82,7 @@ const { visible, close, replaceWith } = useDialogStore();
     @update:visible="() => close('order')"
   />
 
-  <NewSessionDialog
+  <CreateSessionDialog
     :visible="visible('new-session')"
     @update:visible="() => close('new-session')"
   />
@@ -96,4 +96,16 @@ const { visible, close, replaceWith } = useDialogStore();
     :visible="visible('move')"
     @update:visible="() => close('move')"
   />
+
+  <UploadDialog
+    :visible="visible('upload')"
+    @update:visible="() => close('upload')"
+  />
+
+  <CreateFolderDialog
+    :visible="visible('create-folder')"
+    @update:visible="() => close('create-folder')"
+  />
+
+  <ViewModeDialog />
 </template>

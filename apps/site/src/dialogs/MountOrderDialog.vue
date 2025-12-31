@@ -49,7 +49,6 @@ function handleSubmit() {
   emits('update:visible', false);
 }
 
-
 function reorder(targetIndex: number) {
   if (selectedIndex.value === null || targetIndex === selectedIndex.value)
     return;

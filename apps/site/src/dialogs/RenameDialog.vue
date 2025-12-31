@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useListViewStore } from '@site/stores/list-view';
-import { useMetadataStore } from '@site/stores/metadata';
-import { useSessionStore } from '@site/stores/session';
+import { useMetadataStore } from '@site/stores';
+import { useSessionStore } from '@site/stores';
 
 const props = defineProps<{
   visible: boolean;

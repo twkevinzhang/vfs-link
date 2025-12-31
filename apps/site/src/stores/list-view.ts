@@ -59,12 +59,11 @@ export const useListViewStore = defineStore('list-view', () => {
     hiddenColumns: computed(() => hiddenColumns.value),
     hiddenColumnsCount: computed(() => hiddenColumns.value.length),
     visibleColumns: computed(() => {
-      const source =
-        !isEmpty(columnOrder.value)
-          ? (columnOrder.value
-              .map((key) => Columns.find((c) => c.key === key))
-              .filter(Boolean) as typeof Columns)
-          : Columns;
+      const source = isNotEmpty(columnOrder.value)
+        ? (columnOrder.value
+            .map((key) => Columns.find((c) => c.key === key))
+            .filter(Boolean) as typeof Columns)
+        : Columns;
 
       return source.map((c) => ({
         ...c,
@@ -72,12 +71,11 @@ export const useListViewStore = defineStore('list-view', () => {
       }));
     }),
     activeColumns: computed(() => {
-      const source =
-         !isEmpty(columnOrder.value)
-          ? (columnOrder.value
-              .map((key) => Columns.find((c) => c.key === key))
-              .filter(Boolean) as typeof Columns)
-          : Columns;
+      const source = isNotEmpty(columnOrder.value)
+        ? (columnOrder.value
+            .map((key) => Columns.find((c) => c.key === key))
+            .filter(Boolean) as typeof Columns)
+        : Columns;
       return source.filter((c) => !hiddenColumns.value.includes(c.key));
     }),
 

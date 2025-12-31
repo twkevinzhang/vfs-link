@@ -1,18 +1,18 @@
+import { GcsAuth, GcsProxyClient } from './gcs';
+import { HmacAuth } from './s3';
 import { Driver, SessionEntity } from '@site/models';
-import { GcsProxyClient } from '@site/services/gcs';
+
+export type Auth = GcsAuth | HmacAuth;
 
 export function proxyBucket(session: SessionEntity) {
-  if (session.driver !== Driver.gcs) {
+  if (session.driver === Driver.gcs) {
+    const client = new GcsProxyClient(session.auth as GcsAuth);
+
+    const bucket = client.bucket(removeLeadingSlash(session.mount));
+    return bucket;
+  } else {
     throw new Error(`Driver ${session.driver} not supported`);
   }
-  const client = new GcsProxyClient({
-    accessKey: session.accessKey,
-    secretKey: session.secretKey,
-    projectId: session.projectId,
-  });
-
-  const bucket = client.bucket(removeLeadingSlash(session.mount));
-  return bucket;
 }
 
 export function proxyMetadataFile(session: SessionEntity) {

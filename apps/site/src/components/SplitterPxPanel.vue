@@ -12,6 +12,16 @@ if (!splitter) {
   throw new Error('SplitterPxPanel must be used inside SplitterPx');
 }
 
+// Register panel with its minSize on mount
+onMounted(() => {
+  splitter.registerPanel(props.id, props.minSize);
+});
+
+// Re-register if minSize changes
+watch(() => props.minSize, (newMinSize) => {
+  splitter.registerPanel(props.id, newMinSize);
+});
+
 const handleMouseDown = (event: MouseEvent) => {
   splitter.startResize(props.id, event);
 };

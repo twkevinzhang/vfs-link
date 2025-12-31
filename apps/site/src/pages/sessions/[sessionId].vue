@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { useUiStore } from '@site/stores/ui';
-import { useSessionStore } from '@site/stores/session';
+import { useUiStore } from '@site/stores';
+import { useSessionStore } from '@site/stores';
 import { breakpointsTailwind } from '@vueuse/core';
 
 /**
@@ -141,7 +141,7 @@ const sidebarWidths = computed({
             @click="isDrawerVisible = true"
           />
         </div>
-        <div class="flex-1">
+        <div class="ml-2 flex-1 w-full">
           <div v-if="isLoading">
             Check Metadata file in {{ session?.metadataPath }}
           </div>

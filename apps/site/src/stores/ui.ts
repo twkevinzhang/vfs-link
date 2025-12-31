@@ -5,11 +5,16 @@ export const useUiStore = defineStore('ui', () => {
     'viewMode',
     'list'
   );
+  const progressTable = useLocalStorage<'collapsed' | 'expanded'>(
+    'progressTable',
+    'collapsed'
+  );
 
   return {
     isSidebarPinned,
     sidebarWidth,
     viewMode,
+    progressTable,
 
     toggleSidebarPin() {
       isSidebarPinned.value = !isSidebarPinned.value;
@@ -19,6 +24,9 @@ export const useUiStore = defineStore('ui', () => {
     },
     setViewMode(mode: 'grid' | 'list' | 'column') {
       viewMode.value = mode;
+    },
+    setProgressTable(mode: 'collapsed' | 'expanded') {
+      progressTable.value = mode;
     },
   };
 });

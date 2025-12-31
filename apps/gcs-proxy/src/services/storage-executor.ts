@@ -1,13 +1,21 @@
 import { Storage, File, Bucket } from '@google-cloud/storage';
 
+export interface ServiceAccountJson {
+  type?: string;
+  project_id?: string;
+  private_key_id?: string;
+  private_key?: string;
+  client_email?: string;
+  client_id?: string;
+  auth_uri?: string;
+  token_uri?: string;
+  auth_provider_x509_cert_url?: string;
+  client_x509_cert_url?: string;
+  universe_domain?: string;
+}
+
 export interface GcsRequest {
-  auth: {
-    projectId?: string;
-    clientEmail?: string;
-    privateKey?: string;
-    accessKey?: string;
-    secretKey?: string;
-  };
+  auth: ServiceAccountJson;
   bucket?: string;
   file?: string;
   method: string;
@@ -16,17 +24,10 @@ export interface GcsRequest {
 
 export class GcsExecutor {
   static async execute(req: GcsRequest) {
+    const serviceAccountJson = req.auth;
     const storage = new Storage({
-      projectId: req.auth.projectId,
-      credentials: req.auth.clientEmail && req.auth.privateKey ? {
-        client_email: req.auth.clientEmail,
-        private_key: req.auth.privateKey.replace(/\\n/g, '\n'),
-      } : undefined,
-      ...(req.auth.accessKey && req.auth.secretKey ? {
-        // Use HMAC via S3 compatibility layer if needed, 
-        // but for now we prioritize service account auth.
-        // Google SDK doesn't natively use HMAC keys for its primary methods.
-      } : {})
+      projectId: serviceAccountJson?.project_id,
+      credentials: serviceAccountJson,
     });
 
     let target: any = storage;
@@ -47,9 +48,9 @@ export class GcsExecutor {
 
   private static sanitize(obj: any): any {
     if (Array.isArray(obj)) {
-      return obj.map(item => this.sanitize(item));
+      return obj.map((item) => this.sanitize(item));
     }
-    
+
     if (obj instanceof File) {
       return {
         name: obj.name,
@@ -87,4 +88,3 @@ export class GcsExecutor {
     return obj;
   }
 }
-

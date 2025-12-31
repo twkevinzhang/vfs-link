@@ -23,6 +23,9 @@ importers:
       '@vueuse/integrations':
         specifier: ^14.1.0
         version: 14.1.0(axios@1.13.2)(idb-keyval@6.2.2)(vue@3.5.21(typescript@5.8.3))
+      '@vueuse/shared':
+        specifier: ^14.1.0
+        version: 14.1.0(vue@3.5.21(typescript@5.8.3))
       axios:
         specifier: ^1.13.2
         version: 1.13.2
@@ -38,6 +41,9 @@ importers:
       express:
         specifier: ^4.21.2
         version: 4.21.2
+      hash-wasm:
+        specifier: ^4.12.0
+        version: 4.12.0
       idb-keyval:
         specifier: ^6
         version: 6.2.2
@@ -3867,6 +3873,9 @@ packages:
   has-values@1.0.0:
     resolution: {integrity: sha512-ODYZC64uqzmtfGMEAX/FvZiRyWLpAC3vYnNunURUnkGVTS+mI0smVsWaPydRBsE3g+ok7h960jChO8mFcWlHaQ==}
     engines: {node: '>=0.10.0'}
+
+  hash-wasm@4.12.0:
+    resolution: {integrity: sha512-+/2B2rYLb48I/evdOIhP+K/DD2ca2fgBjp6O+GBEnCDk2e4rpeXIK8GvIyRPjTezgmWn9gmKwkQjjx6BtqDHVQ==}
 
   hasown@2.0.2:
     resolution: {integrity: sha512-0hJU9SCPvmMzIBdZFqNPXWa6dqh7WdH0cII9y+CyS8rG3nL48Bclra9HmKhVVUHyPWNH5Y7xDwAB7bfgSjkUMQ==}
@@ -10472,6 +10481,8 @@ snapshots:
     dependencies:
       is-number: 3.0.0
       kind-of: 4.0.0
+
+  hash-wasm@4.12.0: {}
 
   hasown@2.0.2:
     dependencies:

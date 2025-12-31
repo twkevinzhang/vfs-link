@@ -16,6 +16,7 @@ export default [
     files: ['**/*.ts', '**/*.tsx', '**/*.js', '**/*.jsx', '**/*.vue'],
     rules: {
       'vue/multi-word-component-names': 'off',
+      '@nx/enforce-module-boundaries': 'off'
     },
   },
 ];

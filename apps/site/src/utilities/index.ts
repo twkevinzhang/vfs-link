@@ -26,10 +26,31 @@ export function removeTrailingSlash(path: string): string {
   return path.endsWith('/') ? path.slice(0, -1) : path;
 }
 
-export function decodeProxyBuffer(data: any): string {
+export function removeTrailingPart(path: string): string {
+  path = removeTrailingSlash(path);
+  const lastSlashIndex = path.lastIndexOf('/');
+  if (lastSlashIndex === -1) return '';
+  return path.slice(0, lastSlashIndex);
+}
+
+export function getFilename(path: string): string {
+  if (count(path, '/') === 0) {
+    return path;
+  }
+  return path.split('/').pop() || '';
+}
+
+export function decodeBuffer(data: any): string {
   if (typeof data === 'string') return data;
   if (data?.type === 'Buffer' && Array.isArray(data.data)) {
     return new TextDecoder().decode(new Uint8Array(data.data));
   }
   return data?.toString() || '';
 }
+
+export function isNotEmpty(obj: any): boolean {
+  return !isEmpty(obj);
+}
+
+export * from './hash';
+export * from './download';

@@ -11,6 +11,13 @@ const startPanelWidth = ref(0);
 const { x: mouseX } = useMouse();
 const { pressed: mousePressed } = useMousePressed();
 
+// Store minSize for each panel
+const panelMinSizes = ref<Record<string, number>>({});
+
+const registerPanel = (id: string, minSize?: number) => {
+  panelMinSizes.value[id] = minSize ?? 20;
+};
+
 const startResize = (id: string, event: MouseEvent) => {
   resizingPanelId.value = id;
   startMouseX.value = event.clientX;
@@ -21,6 +28,7 @@ const startResize = (id: string, event: MouseEvent) => {
 provide('splitterPx', {
   startResize,
   resizingPanelId,
+  registerPanel,
 });
 
 watch(mousePressed, (val) => {
@@ -30,7 +38,8 @@ watch(mousePressed, (val) => {
 watch(mouseX, (currentX) => {
   if (resizingPanelId.value !== null) {
     const delta = currentX - startMouseX.value;
-    const newWidth = Math.max(20, startPanelWidth.value + delta);
+    const minSize = panelMinSizes.value[resizingPanelId.value] ?? 20;
+    const newWidth = Math.max(minSize, startPanelWidth.value + delta);
     emit('update:widths', {
       ...props.widths,
       [resizingPanelId.value]: newWidth,

@@ -1,12 +1,10 @@
 <script setup lang="ts">
 import { Form } from '@primevue/forms';
-import { SessionEntity, Driver, BucketEntity } from '@site/models';
-import { useSessionStore } from '@site/stores/session';
+import { SessionEntity, Driver, BucketEntity, EntityPath } from '@site/models';
+import { useSessionStore } from '@site/stores';
+import type { Auth } from '@site/services';
 
 const sessionStore = useSessionStore();
-
-// 支援 accessKey 的服務稱為 HmacDriver
-const HmacDriver = [Driver.gcs, Driver.s3];
 
 const RemoteDriver = [Driver.gcs, Driver.s3];
 
@@ -24,9 +22,11 @@ const initialValues = reactive({
   driver: Driver.gcs,
   mount: '/', // bucket
   metadataPath: '/metadata.json',
+  // GCS fields
+  serviceAccountJson: '',
+  // S3 fields
   accessKey: '',
   secretKey: '',
-  projectId: '',
 });
 
 const router = useRouter();
@@ -34,16 +34,43 @@ const route = useRoute();
 
 const isLoading = ref(false);
 const buckets = ref<BucketEntity[]>([]);
+const jsonError = ref<string>('');
 
 async function handleStep1Next(activateCallback: (step: string) => void) {
   if (RemoteDriver.includes(initialValues.driver)) {
     isLoading.value = true;
+    jsonError.value = '';
+
     try {
-      const result = await sessionStore.listBuckets({
-        accessKey: initialValues.accessKey,
-        secretKey: initialValues.secretKey,
-        projectId: initialValues.projectId,
-      });
+      let auth: Auth;
+
+      if (initialValues.driver === Driver.gcs) {
+        // Parse and validate service account JSON
+        try {
+          const serviceAccount = JSON.parse(initialValues.serviceAccountJson);
+
+          if (!serviceAccount.client_email || !serviceAccount.private_key) {
+            jsonError.value =
+              'Invalid service account JSON: missing client_email or private_key';
+            return;
+          }
+
+          // Use the entire service account JSON as GcsAuth (already in correct format)
+          auth = serviceAccount;
+        } catch (error: any) {
+          jsonError.value = 'Invalid JSON format: ' + error.message;
+          return;
+        }
+      } else if (initialValues.driver === Driver.s3) {
+        auth = {
+          accessKey: initialValues.accessKey,
+          secretKey: initialValues.secretKey,
+        };
+      } else {
+        throw new Error('Unsupported driver');
+      }
+
+      const result = await sessionStore.listBuckets(initialValues.driver, auth);
       buckets.value = result;
       activateCallback('2');
     } catch (error) {
@@ -55,14 +82,26 @@ async function handleStep1Next(activateCallback: (step: string) => void) {
 }
 
 function handleFinish() {
+  let auth: Auth;
+
+  if (initialValues.driver === Driver.gcs) {
+    // Parse service account JSON and use it directly
+    auth = JSON.parse(initialValues.serviceAccountJson);
+  } else if (initialValues.driver === Driver.s3) {
+    auth = {
+      accessKey: initialValues.accessKey,
+      secretKey: initialValues.secretKey,
+    };
+  } else {
+    throw new Error('Unsupported driver');
+  }
+
   const session = SessionEntity.new({
     name: initialValues.name,
     description: initialValues.description,
     driver: initialValues.driver,
     mount: initialValues.mount,
-    accessKey: initialValues.accessKey,
-    secretKey: initialValues.secretKey,
-    projectId: initialValues.projectId,
+    auth,
     metadataPath: initialValues.metadataPath,
   });
 
@@ -70,7 +109,7 @@ function handleFinish() {
   emits('update:visible', false);
 
   router.push({
-    path: `/sessions/${session.id}/mount/${session.mount}`,
+    path: EntityPath.fromRoute({ sessionId: session.id, mount: '/' }).toRoute(),
   });
 }
 </script>
@@ -109,17 +148,32 @@ function handleFinish() {
                 fluid
               />
 
-              <div class="flex flex-col gap-4" v-if="initialValues.driver">
+              <!-- GCS: Service Account JSON -->
+              <div
+                v-if="initialValues.driver === 'gcs'"
+                class="flex flex-col gap-4"
+              >
                 <FloatLabel variant="on">
-                  <InputText
-                    v-model="initialValues.projectId"
-                    name="projectId"
+                  <Textarea
+                    id="serviceAccountJson"
+                    v-model="initialValues.serviceAccountJson"
+                    name="serviceAccountJson"
                     fluid
-                    id="projectId"
+                    rows="10"
+                    :class="{ 'border-red-500': jsonError }"
                   />
-                  <label for="projectId">Project ID (Optional)</label>
+                  <label for="serviceAccountJson">Service Account JSON</label>
                 </FloatLabel>
+                <Message v-if="jsonError" severity="error" :closable="false">
+                  {{ jsonError }}
+                </Message>
+              </div>
 
+              <!-- S3: Access Key + Secret Key -->
+              <div
+                v-else-if="initialValues.driver === 's3'"
+                class="flex flex-col gap-4"
+              >
                 <FloatLabel variant="on">
                   <InputText
                     v-model="initialValues.accessKey"

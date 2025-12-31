@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { Driver, SessionEntity } from '@site/models';
-import { useSessionStore } from '@site/stores/session';
-import { useDialogStore } from '@site/stores/dialog';
+import { useSessionStore } from '@site/stores';
+import { useDialogStore } from '@site/stores';
 
 const dialogStore = useDialogStore();
 const sessionStore = useSessionStore();
