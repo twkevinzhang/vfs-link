@@ -128,18 +128,85 @@ export class DatabaseFileSystem extends FileSystem {
     return proxyStream;
   }
 
+  override async get(relativePath: string) {
+    const logicPath = this.getLogicPath(relativePath);
+    if (logicPath === '/') {
+      return {
+        name: '/',
+        mode: 0o777,
+        size: 0,
+        mtime: Date.now(),
+        isDirectory: () => true,
+        isFile: () => false,
+      };
+    }
+
+    const fileRecord = await prisma.file.findUnique({
+      where: { logicPath },
+    });
+
+    if (!fileRecord) throw new Error('no such file or directory');
+
+    return {
+      name: path.posix.basename(logicPath),
+      mode: fileRecord.isDirectory ? 0o777 : 0o666,
+      size: Number(fileRecord.size),
+      mtime: fileRecord.updatedAt.getTime(),
+      isDirectory: () => fileRecord.isDirectory,
+      isFile: () => !fileRecord.isDirectory,
+    };
+  }
+
+  async stat(relativePath: string) {
+    return this.get(relativePath);
+  }
+
   override async rename(fromPath: string, toPath: string) {
     const fromLogicPath = this.getLogicPath(fromPath);
     const toLogicPath = this.getLogicPath(toPath);
 
-    // 核心需求：僅邏輯移動，不變動實體檔案
-    await prisma.file.update({
-      where: { logicPath: fromLogicPath },
-      data: { logicPath: toLogicPath },
-    });
+    await prisma.$transaction(async (tx) => {
+      const fromFile = await tx.file.findUnique({
+        where: { logicPath: fromLogicPath },
+      });
 
-    // 如果是目錄，需遞迴更新其下所有檔案的路徑 (這部分視需求實作)
-    // 這裡先實作單一檔案移動
+      if (!fromFile) throw new Error('Source not found');
+
+      // 更新目標項本身
+      await tx.file.update({
+        where: { logicPath: fromLogicPath },
+        data: { logicPath: toLogicPath },
+      });
+
+      // 如果是目錄，需遞迴更新其下所有檔案的路徑
+      if (fromFile.isDirectory) {
+        const prefix = fromLogicPath.endsWith('/')
+          ? fromLogicPath
+          : fromLogicPath + '/';
+        const newPrefix = toLogicPath.endsWith('/')
+          ? toLogicPath
+          : toLogicPath + '/';
+
+        // 找出所有子項
+        const children = await tx.file.findMany({
+          where: {
+            logicPath: {
+              startsWith: prefix,
+            },
+          },
+        });
+
+        for (const child of children) {
+          const relativePart = child.logicPath.slice(prefix.length);
+          const newChildLogicPath = newPrefix + relativePart;
+
+          await tx.file.update({
+            where: { id: child.id },
+            data: { logicPath: newChildLogicPath },
+          });
+        }
+      }
+    });
   }
 
   override async delete(relativePath: string) {
