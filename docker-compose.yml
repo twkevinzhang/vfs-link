@@ -1,6 +1,6 @@
 services:
   ftp-server:
-    image: flat-storage/ftp-server:latest
+    image: vfs-link/ftp-server:latest
     container_name: vfs-link
     ports:
       - '21:21'

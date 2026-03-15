@@ -1,5 +1,5 @@
 {
-  "name": "@flat-storage/source",
+  "name": "@vfs-link/source",
   "version": "0.0.0",
   "license": "MIT",
   "scripts": {},
@@ -9,7 +9,6 @@
     "@primeuix/themes": "^1.2.5",
     "@primevue/forms": "^4.4.1",
     "@prisma/adapter-pg": "^7.5.0",
-    "@prisma/client": "^7.5.0",
     "@vueuse/core": "^14.0.0",
     "@vueuse/integrations": "^14.1.0",
     "@vueuse/shared": "^14.1.0",
@@ -50,6 +49,7 @@
     "@nx/web": "21.4.1",
     "@nx/workspace": "21.4.1",
     "@primevue/auto-import-resolver": "^4.4.1",
+    "@prisma/client": "^7.5.0",
     "@prisma/internals": "7.5.0",
     "@swc-node/register": "~1.9.1",
     "@swc/core": "~1.5.7",

@@ -20,9 +20,6 @@ importers:
       '@prisma/adapter-pg':
         specifier: ^7.5.0
         version: 7.5.0
-      '@prisma/client':
-        specifier: ^7.5.0
-        version: 7.5.0(prisma@7.5.0(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.8.3))(typescript@5.8.3)
       '@vueuse/core':
         specifier: ^14.0.0
         version: 14.0.0(vue@3.5.21(typescript@5.8.3))
@@ -138,6 +135,9 @@ importers:
       '@primevue/auto-import-resolver':
         specifier: ^4.4.1
         version: 4.4.1
+      '@prisma/client':
+        specifier: ^7.5.0
+        version: 7.5.0(prisma@7.5.0(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.8.3))(typescript@5.8.3)
       '@prisma/internals':
         specifier: 7.5.0
         version: 7.5.0(typescript@5.8.3)

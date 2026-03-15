@@ -4,6 +4,6 @@ import App from './App.vue';
 describe('App', () => {
   it('renders properly', async () => {
     const wrapper = mount(App, {});
-    expect(wrapper.text()).toContain('Welcome @flat-storage/site 👋');
+    expect(wrapper.text()).toContain('Welcome @vfs-link/site 👋');
   });
 });

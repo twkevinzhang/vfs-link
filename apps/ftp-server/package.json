@@ -1,5 +1,5 @@
 {
-  "name": "@flat-storage/ftp-server",
+  "name": "@vfs-link/ftp-server",
   "version": "0.0.1",
   "private": true,
   "nx": {
@@ -28,7 +28,7 @@
         "dependsOn": ["build"],
         "options": {
           "commands": [
-            "docker build -t flat-storage/ftp-server:latest -f apps/ftp-server/Dockerfile ."
+            "docker build -t vfs-link/ftp-server:latest -f apps/ftp-server/Dockerfile ."
           ],
           "parallel": false
         }
