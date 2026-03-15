@@ -64,9 +64,13 @@ model File {
 
 ### 啟動指令
 
+使用 Nx 指令自動完成「建置 Docker 映像檔」並「啟動服務」：
+
 ```bash
-docker-compose up -d
+npx nx up ftp-server
 ```
+
+> **注意**：直接使用 `docker-compose up -d` 可能會因為本地缺乏映像檔而導致錯誤或嘗試遠端拉取，建議使用上述 Nx 指令。
 
 ### Docker 服務架構
 

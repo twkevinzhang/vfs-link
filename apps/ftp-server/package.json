@@ -32,6 +32,16 @@
           ],
           "parallel": false
         }
+      },
+      "up": {
+        "executor": "nx:run-commands",
+        "dependsOn": ["docker"],
+        "options": {
+          "commands": [
+            "docker-compose up -d"
+          ],
+          "parallel": false
+        }
       }
     }
   }
