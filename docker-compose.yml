@@ -9,7 +9,7 @@ services:
       - DATABASE_URL=postgresql://postgres:postgres@db:5432/vfs_link?schema=public
       - FTP_USER=${FTP_USER:-admin}
       - FTP_PASS=${FTP_PASS:-admin123}
-      - GCS_BUCKET=${GCS_BUCKET:-storage-403503-test}
+      - GCS_BUCKET=${GCS_BUCKET}
       - GOOGLE_APPLICATION_CREDENTIALS=/app/gcp-key.json
     volumes:
       - ./.auth/gcp-key.json:/app/gcp-key.json:ro

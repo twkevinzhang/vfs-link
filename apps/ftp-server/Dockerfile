@@ -8,6 +8,7 @@ COPY dist/apps/ftp-server/index.cjs ./dist/index.js
 
 COPY apps/ftp-server/prisma ./prisma
 COPY apps/ftp-server/prisma.config.ts ./
+COPY apps/ftp-server/scripts ./scripts
 
 RUN echo '{\
   "name": "ftp-server",\
@@ -19,6 +20,7 @@ RUN echo '{\
     "ftp-srv": "^4.6.3",\
     "pg": "^8.11.0",\
     "prisma": "^7.5.0",\
+    "tsx": "^4.19.0",\
     "uuid": "^13.0.0"\
   }\
 }' > package.json

@@ -50,4 +50,4 @@ records.csv.tmp
 .github/copilot-instructions.md
 .auth
 mount/db
-apps/ftp-server/.env
+.env

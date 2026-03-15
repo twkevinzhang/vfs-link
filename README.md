@@ -55,11 +55,12 @@ model File {
 
 ### 環境變數 (.env)
 
-請參考 `.env.example` 設定以下變數：
+請參考 `.env.example` 複製出 `.env` 並設定以下變數：
 
 - `FTP_USER`: FTP 登入帳號
 - `FTP_PASS`: FTP 登入密碼
 - `GCS_BUCKET`: Google Cloud Storage Bucket 名稱
+- `GOOGLE_APPLICATION_CREDENTIALS`: Google Cloud Storage 認證檔案路徑，預設為 `.auth/gcp-key.json`
 - `DATABASE_URL`: PostgreSQL 連線字串
 
 ### 啟動指令
@@ -71,6 +72,22 @@ npx nx up ftp-server
 ```
 
 > **注意**：直接使用 `docker-compose up -d` 可能會因為本地缺乏映像檔而導致錯誤或嘗試遠端拉取，建議使用上述 Nx 指令。
+
+### 資料庫對照表維護
+
+如果需要根據 GCS 中的實體檔案重新建立資料庫對照表（例如資料庫損毀或遷移時），可以使用以下 Nx 指令：
+
+```bash
+npx nx rebuild-mapping ftp-server
+```
+
+您也可以在指令中直接傳入參數覆寫環境變數：
+
+```bash
+npx nx rebuild-mapping ftp-server --args="GCS_BUCKET=my-bucket-name"
+```
+
+腳本執行前會有 5 秒鐘的倒數提示，確保您有時間在必要時取消操作。
 
 ### Docker 服務架構
 

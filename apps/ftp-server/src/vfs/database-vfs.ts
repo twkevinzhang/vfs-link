@@ -8,7 +8,7 @@ import { Readable, Writable } from 'stream';
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const adapter = new PrismaPg(pool as any);
-const prisma = new PrismaClient({ adapter });
+const prisma = new PrismaClient({ adapter } as any) as any;
 
 export class DatabaseFileSystem extends FileSystem {
   constructor(connection: any, { root, cwd }: { root: string; cwd: string }) {
@@ -165,7 +165,7 @@ export class DatabaseFileSystem extends FileSystem {
     const fromLogicPath = this.getLogicPath(fromPath);
     const toLogicPath = this.getLogicPath(toPath);
 
-    await prisma.$transaction(async (tx) => {
+    await prisma.$transaction(async (tx: any) => {
       const fromFile = await tx.file.findUnique({
         where: { logicPath: fromLogicPath },
       });

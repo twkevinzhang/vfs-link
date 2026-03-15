@@ -7,14 +7,18 @@
     "targets": {
       "build": {
         "executor": "@nx/esbuild:esbuild",
-        "outputs": ["{options.outputPath}"],
+        "outputs": [
+          "{options.outputPath}"
+        ],
         "options": {
           "outputPath": "dist/apps/ftp-server",
           "main": "apps/ftp-server/src/index.ts",
           "tsConfig": "apps/ftp-server/tsconfig.app.json",
           "generatePackageJson": false,
           "target": "node20",
-          "format": ["cjs"],
+          "format": [
+            "cjs"
+          ],
           "thirdParty": false
         },
         "configurations": {
@@ -25,7 +29,9 @@
       },
       "docker": {
         "executor": "nx:run-commands",
-        "dependsOn": ["build"],
+        "dependsOn": [
+          "build"
+        ],
         "options": {
           "commands": [
             "docker build -t vfs-link/ftp-server:latest -f apps/ftp-server/Dockerfile ."
@@ -35,12 +41,20 @@
       },
       "up": {
         "executor": "nx:run-commands",
-        "dependsOn": ["docker"],
+        "dependsOn": [
+          "docker"
+        ],
         "options": {
           "commands": [
             "docker-compose up -d"
           ],
           "parallel": false
+        }
+      },
+      "rebuild-mapping": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "docker exec -it vfs-link npx tsx scripts/rebuild-mapping-table.ts"
         }
       }
     }
