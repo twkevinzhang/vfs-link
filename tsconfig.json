@@ -7,7 +7,7 @@
       "path": "./apps/site"
     },
     {
-      "path": "./apps/gcs-proxy"
+      "path": "./apps/ftp-server"
     }
   ]
 }

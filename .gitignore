@@ -48,3 +48,6 @@ vitest.config.*.timestamp*
 records.csv.tmp
 .specstory
 .github/copilot-instructions.md
+.auth
+mount/db
+apps/ftp-server/.env

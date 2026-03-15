@@ -1,0 +1,41 @@
+services:
+  ftp-server:
+    image: flat-storage/ftp-server:latest
+    container_name: vfs-link
+    ports:
+      - '21:21'
+      - '30000-30005:30000-30005'
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/vfs_link?schema=public
+      - FTP_USER=${FTP_USER:-admin}
+      - FTP_PASS=${FTP_PASS:-admin123}
+      - GCS_BUCKET=${GCS_BUCKET:-storage-403503-test}
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/gcp-key.json
+    volumes:
+      - ./.auth/gcp-key.json:/app/gcp-key.json:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - vfs-net
+
+  db:
+    image: postgres:15-alpine
+    container_name: vfs-db
+    ports:
+      - '5432:5432'
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=vfs_link
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - vfs-net
+
+networks:
+  vfs-net:
+    driver: bridge

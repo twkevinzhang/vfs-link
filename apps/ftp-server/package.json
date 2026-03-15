@@ -1,0 +1,38 @@
+{
+  "name": "@flat-storage/ftp-server",
+  "version": "0.0.1",
+  "private": true,
+  "nx": {
+    "name": "ftp-server",
+    "targets": {
+      "build": {
+        "executor": "@nx/esbuild:esbuild",
+        "outputs": ["{options.outputPath}"],
+        "options": {
+          "outputPath": "dist/apps/ftp-server",
+          "main": "apps/ftp-server/src/index.ts",
+          "tsConfig": "apps/ftp-server/tsconfig.app.json",
+          "generatePackageJson": false,
+          "target": "node20",
+          "format": ["cjs"],
+          "thirdParty": false
+        },
+        "configurations": {
+          "production": {
+            "minify": true
+          }
+        }
+      },
+      "docker": {
+        "executor": "nx:run-commands",
+        "dependsOn": ["build"],
+        "options": {
+          "commands": [
+            "docker build -t flat-storage/ftp-server:latest -f apps/ftp-server/Dockerfile ."
+          ],
+          "parallel": false
+        }
+      }
+    }
+  }
+}
