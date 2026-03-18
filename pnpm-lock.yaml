@@ -264,8 +264,6 @@ importers:
 
   apps/ftp-server: {}
 
-  apps/site: {}
-
 packages:
 
   '@actions/github@6.0.1':

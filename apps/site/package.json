@@ -1,8 +1,0 @@
-{
-  "name": "@vfs-link/site",
-  "version": "0.0.1",
-  "private": true,
-  "nx": {
-    "name": "site"
-  }
-}
