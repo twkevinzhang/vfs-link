@@ -16,6 +16,9 @@ export class DatabaseFileSystem extends FileSystem {
   }
 
   private getLogicPath(relativePath: string): string {
+    if (path.posix.isAbsolute(relativePath)) {
+      return path.posix.normalize(relativePath);
+    }
     return path.posix.join(this.cwd, relativePath);
   }
 
@@ -215,12 +218,26 @@ export class DatabaseFileSystem extends FileSystem {
       where: { logicPath },
     });
 
-    if (fileRecord) {
-      if (!fileRecord.isDirectory) {
-        await gcs.deleteFile(fileRecord.physicalHash);
+    if (!fileRecord) return;
+
+    if (fileRecord.isDirectory) {
+      const prefix = logicPath + '/';
+      const children = await prisma.file.findMany({
+        where: { logicPath: { startsWith: prefix } },
+      });
+      for (const child of children) {
+        if (!child.isDirectory) {
+          await gcs.deleteFile(child.physicalHash);
+        }
       }
-      await prisma.file.delete({ where: { logicPath } });
+      await prisma.file.deleteMany({
+        where: { logicPath: { startsWith: prefix } },
+      });
+    } else {
+      await gcs.deleteFile(fileRecord.physicalHash);
     }
+
+    await prisma.file.delete({ where: { logicPath } });
   }
 
   override async mkdir(relativePath: string) {
