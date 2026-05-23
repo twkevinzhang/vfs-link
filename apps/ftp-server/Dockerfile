@@ -1,14 +1,37 @@
+# syntax=docker/dockerfile:1.6
+
+# ===== Builder stage: 在 image 內 build TypeScript bundle =====
+FROM node:20-alpine AS builder
+
+RUN apk add --no-cache libc6-compat && corepack enable
+
+WORKDIR /workspace
+
+# 先 COPY manifest，最大化 layer cache
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY nx.json tsconfig.base.json tsconfig.json ./
+COPY apps/ftp-server/package.json ./apps/ftp-server/package.json
+
+RUN pnpm install --frozen-lockfile
+
+# 再 COPY source 並 build
+COPY apps/ftp-server ./apps/ftp-server
+
+RUN pnpm exec nx build ftp-server --configuration=production
+
+
+# ===== Runtime stage: 只帶必要產物 =====
 FROM node:20-alpine
 
 RUN apk add --no-cache openssl libc6-compat && npm install -g pnpm
 
 WORKDIR /app
 
-COPY dist/apps/ftp-server/index.cjs ./dist/index.js
+COPY --from=builder /workspace/dist/apps/ftp-server/index.cjs ./dist/index.js
 
-COPY apps/ftp-server/prisma ./prisma
-COPY apps/ftp-server/prisma.config.ts ./
-COPY apps/ftp-server/scripts ./scripts
+COPY --from=builder /workspace/apps/ftp-server/prisma ./prisma
+COPY --from=builder /workspace/apps/ftp-server/prisma.config.ts ./
+COPY --from=builder /workspace/apps/ftp-server/scripts ./scripts
 
 RUN echo '{\
   "name": "ftp-server",\
@@ -27,7 +50,7 @@ RUN echo '{\
 
 RUN pnpm install
 
-COPY apps/ftp-server/docker-entrypoint.sh ./
+COPY --from=builder /workspace/apps/ftp-server/docker-entrypoint.sh ./
 RUN chmod +x ./docker-entrypoint.sh
 
 ENV NODE_ENV=production
