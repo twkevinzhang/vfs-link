@@ -4,15 +4,15 @@ services:
     container_name: vfs-link
     ports:
       - '21:21'
-      - '30000-32999:30000-32999'
+      - '${FTP_PASV_MIN:-30000}-${FTP_PASV_MAX:-30005}:${FTP_PASV_MIN:-30000}-${FTP_PASV_MAX:-30005}'
     environment:
       - DATABASE_URL=postgresql://postgres:postgres@db:5432/vfs_link?schema=public
       - FTP_USER=${FTP_USER:-admin}
       - FTP_PASS=${FTP_PASS:-admin123}
       - FTP_PORT=${FTP_PORT:-21}
       - FTP_PASV_URL=${FTP_PASV_URL:-127.0.0.1}
-      - FTP_PASV_MIN=30000
-      - FTP_PASV_MAX=32999
+      - FTP_PASV_MIN=${FTP_PASV_MIN:-30000}
+      - FTP_PASV_MAX=${FTP_PASV_MAX:-30005}
       - GCS_BUCKET=${GCS_BUCKET}
       - GOOGLE_APPLICATION_CREDENTIALS=/app/gcp-key.json
     volumes:
