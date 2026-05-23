@@ -17,6 +17,9 @@ RUN pnpm install --frozen-lockfile
 # 再 COPY source 並 build
 COPY apps/ftp-server ./apps/ftp-server
 
+# nx build 前先 generate Prisma client，否則 TS 找不到 PrismaClient 型別
+RUN pnpm exec prisma generate --schema=apps/ftp-server/prisma/schema.prisma
+
 RUN pnpm exec nx build ftp-server --configuration=production
 
 
