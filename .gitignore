@@ -50,4 +50,5 @@ records.csv.tmp
 .github/copilot-instructions.md
 .auth
 mount/db
+/data
 .env

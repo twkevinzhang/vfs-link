@@ -4,11 +4,15 @@ services:
     container_name: vfs-link
     ports:
       - '21:21'
-      - '30000-30005:30000-30005'
+      - '30000-32999:30000-32999'
     environment:
       - DATABASE_URL=postgresql://postgres:postgres@db:5432/vfs_link?schema=public
       - FTP_USER=${FTP_USER:-admin}
       - FTP_PASS=${FTP_PASS:-admin123}
+      - FTP_PORT=${FTP_PORT:-21}
+      - FTP_PASV_URL=${FTP_PASV_URL:-127.0.0.1}
+      - FTP_PASV_MIN=30000
+      - FTP_PASV_MAX=32999
       - GCS_BUCKET=${GCS_BUCKET}
       - GOOGLE_APPLICATION_CREDENTIALS=/app/gcp-key.json
     volumes:
@@ -23,11 +27,13 @@ services:
     image: postgres:15-alpine
     container_name: vfs-db
     ports:
-      - '5432:5432'
+      - '5434:5432'
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
       - POSTGRES_DB=vfs_link
+    volumes:
+      - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U postgres']
       interval: 5s
@@ -35,6 +41,9 @@ services:
       retries: 5
     networks:
       - vfs-net
+
+volumes:
+  pgdata:
 
 networks:
   vfs-net:
