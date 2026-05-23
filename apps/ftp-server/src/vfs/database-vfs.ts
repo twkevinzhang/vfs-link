@@ -67,7 +67,7 @@ export class DatabaseFileSystem extends FileSystem {
       const dir = await prisma.file.findUnique({
         where: { logicPath: newPath, isDirectory: true },
       });
-      if (!dir) throw new Error('Directory not found');
+      if (!dir) throw new Error(`Directory not found: ${newPath}`);
     }
     (this as any).cwd = newPath;
     return this.cwd;
@@ -79,7 +79,7 @@ export class DatabaseFileSystem extends FileSystem {
       where: { logicPath, isDirectory: false },
     });
 
-    if (!fileRecord) throw new Error('File not found');
+    if (!fileRecord) throw new Error(`File not found: ${logicPath}`);
 
     return gcs.downloadStream(fileRecord.physicalHash);
   }
@@ -148,7 +148,7 @@ export class DatabaseFileSystem extends FileSystem {
       where: { logicPath },
     });
 
-    if (!fileRecord) throw new Error('no such file or directory');
+    if (!fileRecord) throw new Error(`no such file or directory: ${logicPath}`);
 
     return {
       name: path.posix.basename(logicPath),
@@ -173,7 +173,7 @@ export class DatabaseFileSystem extends FileSystem {
         where: { logicPath: fromLogicPath },
       });
 
-      if (!fromFile) throw new Error('Source not found');
+      if (!fromFile) throw new Error(`Source not found: ${fromLogicPath}`);
 
       // 更新目標項本身
       await tx.file.update({
