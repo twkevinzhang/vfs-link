@@ -6,25 +6,9 @@
     "name": "ftp-server",
     "targets": {
       "build": {
-        "executor": "@nx/esbuild:esbuild",
-        "outputs": [
-          "{options.outputPath}"
-        ],
+        "executor": "nx:run-commands",
         "options": {
-          "outputPath": "dist/apps/ftp-server",
-          "main": "apps/ftp-server/src/index.ts",
-          "tsConfig": "apps/ftp-server/tsconfig.app.json",
-          "generatePackageJson": false,
-          "target": "node20",
-          "format": [
-            "cjs"
-          ],
-          "thirdParty": false
-        },
-        "configurations": {
-          "production": {
-            "minify": true
-          }
+          "command": "cd apps/ftp-server && ./scripts/go.sh build ./cmd/ftp-server"
         }
       },
       "docker": {
@@ -54,7 +38,7 @@
       "rebuild-mapping": {
         "executor": "nx:run-commands",
         "options": {
-          "command": "docker exec -it vfs-link npx tsx scripts/rebuild-mapping-table.ts"
+          "command": "docker exec -it vfs-link ./ftp-server rebuild-mapping"
         }
       }
     }
