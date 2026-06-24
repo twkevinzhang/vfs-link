@@ -4,6 +4,12 @@
 
 The key design goal is fast logical movement: FTP `RNFR` / `RNTO` operations update database `logicPath` values only. GCS objects are not copied or renamed during logical moves.
 
+## Version Notes
+
+This branch is **v2**, a Go rewrite of the original Node.js / TypeScript implementation.
+
+See [docs/v1-v2-differences.md](docs/v1-v2-differences.md) for the v1/v2 comparison, migration notes, and the improvements made in this rewrite.
+
 ## Architecture
 
 - **Runtime**: Go 1.23+
