@@ -166,6 +166,20 @@ Docker Compose exposes the read-only API on `${HTTP_PORT:-8080}` and persists lo
 
 For self-hosted deployment, use `docker-compose.self-hosted.yml`. It keeps the server on host networking, reads the existing external `DATABASE_URL`, mounts the existing `./.auth/gcp-key.json` into `/app/gcp-key.json`, and stores local-first object bytes under `${LOCAL_STORAGE_HOST_PATH:-./data/objects}`. `deploy.sh` uses this compose file by default.
 
+### GitHub Actions deployment
+
+Pushes to `main` run `.github/workflows/deploy-self-hosted.yml`. The workflow runs Go tests, builds the FTP server image as a CI check, then SSHes into self-hosted and runs `deploy.sh`.
+
+Configure these repository or environment secrets before enabling the deployment job:
+
+- `SELF_HOSTED_HOST`: self-hosted SSH host or IP address.
+- `SELF_HOSTED_SSH_PRIVATE_KEY`: private key allowed to SSH into self-hosted.
+- `SELF_HOSTED_USER`: SSH user. Defaults to `self-hosted` when omitted.
+- `SELF_HOSTED_SSH_PORT`: SSH port. Defaults to `22` when omitted.
+- `SELF_HOSTED_DEPLOY_DIR`: remote checkout directory. Defaults to `~/vfs-link` when omitted.
+- `SELF_HOSTED_KNOWN_HOSTS`: optional pinned known_hosts entry. When omitted, the workflow uses `ssh-keyscan`.
+- `SELF_HOSTED_HEALTHCHECK_URL`: optional healthcheck URL. When omitted, `deploy.sh` checks `http://127.0.0.1:${HTTP_PORT:-8080}/api/status` on self-hosted.
+
 ## Rebuild Mapping Table
 
 To rebuild logical mappings from object files currently present in `LOCAL_STORAGE_ROOT`:
