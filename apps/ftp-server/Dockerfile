@@ -59,6 +59,6 @@ RUN chmod +x ./docker-entrypoint.sh
 ENV NODE_ENV=production
 ENV FTP_PORT=21
 
-EXPOSE 21 30000-30005
+EXPOSE 21 30000-30100
 
 ENTRYPOINT ["./docker-entrypoint.sh"]

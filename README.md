@@ -91,5 +91,5 @@ npx nx rebuild-mapping ftp-server --args="GCS_BUCKET=my-bucket-name"
 
 ### Docker 服務架構
 
-- **`ftp-server`**: 營運 FTP 服務，映射埠 21 與 30000-30005。
+- **`ftp-server`**: 營運 FTP 服務，映射埠 21 與 30000-30100。
 - **`db`**: PostgreSQL 15 資料庫服務。

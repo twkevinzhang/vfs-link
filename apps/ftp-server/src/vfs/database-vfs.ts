@@ -4,11 +4,21 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
 import { gcs } from '../utils/gcs.js';
 import path from 'path';
-import { Readable, Writable } from 'stream';
+import { Writable } from 'stream';
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const adapter = new PrismaPg(pool as any);
 const prisma = new PrismaClient({ adapter } as any) as any;
+let closeDatabasePromise: Promise<void> | null = null;
+
+export const closeDatabase = async () => {
+  closeDatabasePromise ??= (async () => {
+    await prisma.$disconnect();
+    await pool.end();
+  })();
+
+  await closeDatabasePromise;
+};
 
 export class DatabaseFileSystem extends FileSystem {
   constructor(connection: any, { root, cwd }: { root: string; cwd: string }) {
@@ -22,7 +32,7 @@ export class DatabaseFileSystem extends FileSystem {
     return path.posix.join(this.cwd, relativePath);
   }
 
-  override async list(relativePath: string = '.') {
+  override async list(relativePath = '.') {
     const folderPath = this.getLogicPath(relativePath);
 
     // 查詢在該目錄下的所有檔案與子目錄
@@ -88,20 +98,11 @@ export class DatabaseFileSystem extends FileSystem {
     const logicPath = this.getLogicPath(relativePath);
     const physicalHash = gcs.generatePhysicalHash(logicPath);
 
-    // 攔截寫入流
-    const passThrough = new Readable({
-      read() {},
-    });
-
-    // 實際的 GCS 上傳與 DB 更新邏輯在寫入完成後觸發
-    // ftp-srv 的 write 需回傳一個 Writable stream
-    // 我們實作一個代理流來監控進度或大小
-
     let size = 0;
     const gcsFile = gcs.getBucket().file(physicalHash);
     const gcsStream = gcsFile.createWriteStream({ resumable: false });
 
-    gcsStream.on('finish', async () => {
+    const persistMapping = async () => {
       await prisma.file.upsert({
         where: { logicPath },
         update: {
@@ -116,16 +117,55 @@ export class DatabaseFileSystem extends FileSystem {
           isDirectory: false,
         },
       });
+    };
+
+    const uploadDone = new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
+        gcsStream.off('finish', onFinish);
+        gcsStream.off('error', onError);
+      };
+
+      const onError = (error: Error) => {
+        cleanup();
+        reject(error);
+      };
+
+      const onFinish = () => {
+        cleanup();
+        persistMapping().then(resolve, reject);
+      };
+
+      gcsStream.once('finish', onFinish);
+      gcsStream.once('error', onError);
     });
 
+    let finalizing = false;
     const proxyStream = new Writable({
       write(chunk, encoding, callback) {
-        size += chunk.length;
+        size += Buffer.isBuffer(chunk)
+          ? chunk.length
+          : Buffer.byteLength(String(chunk), encoding as BufferEncoding);
         gcsStream.write(chunk, encoding, callback);
       },
       final(callback) {
-        gcsStream.end(callback);
+        finalizing = true;
+        gcsStream.end();
+        uploadDone.then(() => callback(), callback);
       },
+      destroy(error, callback) {
+        if (!gcsStream.destroyed && !gcsStream.writableEnded) {
+          gcsStream.destroy(
+            error ?? new Error(`Upload aborted before completion: ${logicPath}`),
+          );
+        }
+        callback(error);
+      },
+    });
+
+    void uploadDone.catch((error) => {
+      if (!finalizing && !proxyStream.destroyed) {
+        proxyStream.destroy(error);
+      }
     });
 
     return proxyStream;

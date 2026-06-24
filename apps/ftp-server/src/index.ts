@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import FtpServer from 'ftp-srv';
-import { DatabaseFileSystem } from './vfs/database-vfs.js';
+import { DatabaseFileSystem, closeDatabase } from './vfs/database-vfs.js';
 
 const {
   FTP_PORT = '21',
@@ -8,7 +8,7 @@ const {
   FTP_PASS = 'admin123',
   FTP_PASV_URL = '127.0.0.1',
   FTP_PASV_MIN = '30000',
-  FTP_PASV_MAX = '30005',
+  FTP_PASV_MAX = '30100',
 } = process.env;
 
 const server = new FtpServer({
@@ -18,6 +18,15 @@ const server = new FtpServer({
   pasv_max: parseInt(FTP_PASV_MAX),
   greeting: 'Welcome to vfs-link FTP Server',
 });
+
+const closeServer = server.close.bind(server);
+server.close = async () => {
+  try {
+    return await closeServer();
+  } finally {
+    await closeDatabase();
+  }
+};
 
 server.on('login', ({ connection, username, password }, resolve, reject) => {
   console.log(`Login attempt: ${username}`);
