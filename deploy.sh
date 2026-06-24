@@ -7,6 +7,7 @@ DIR="~/vfs-link"
 IMAGE_NAME="vfs-link/ftp-server"
 DOCKERFILE="apps/ftp-server/Dockerfile"
 SERVICE="ftp-server"
+COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.self-hosted.yml}"
 
 echo "=== Pulling latest code on $HOST ==="
 ssh "$HOST" "cd $DIR && git pull --ff-only"
@@ -19,8 +20,8 @@ echo "=== Building Docker image on $HOST (multi-stage, with layer cache) ==="
 ssh "$HOST" "cd $DIR && docker build -f $DOCKERFILE -t $IMAGE_NAME:$GIT_SHA -t $IMAGE_NAME:latest ."
 
 echo "=== Recreating service ==="
-ssh "$HOST" "cd $DIR && docker compose up -d --force-recreate $SERVICE"
+ssh "$HOST" "cd $DIR && docker compose -f $COMPOSE_FILE up -d --force-recreate $SERVICE"
 
 echo "=== Done! Checking status ==="
 sleep 5
-ssh "$HOST" "cd $DIR && docker compose ps"
+ssh "$HOST" "cd $DIR && docker compose -f $COMPOSE_FILE ps"

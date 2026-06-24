@@ -164,6 +164,8 @@ docker compose up -d
 
 Docker Compose exposes the read-only API on `${HTTP_PORT:-8080}` and persists local object bytes in the `objectdata` named volume.
 
+For self-hosted deployment, use `docker-compose.self-hosted.yml`. It keeps the server on host networking, reads the existing external `DATABASE_URL`, mounts the existing `./.auth/gcp-key.json` into `/app/gcp-key.json`, and stores local-first object bytes under `${LOCAL_STORAGE_HOST_PATH:-./data/objects}`. `deploy.sh` uses this compose file by default.
+
 ## Rebuild Mapping Table
 
 To rebuild logical mappings from object files currently present in `LOCAL_STORAGE_ROOT`:
