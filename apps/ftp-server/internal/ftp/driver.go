@@ -19,6 +19,8 @@ type MainDriver struct {
 	logger  *slog.Logger
 }
 
+var errTLSNotConfigured = errors.New("TLS is not configured")
+
 func NewMainDriver(cfg config.Config, store *db.Store, objects blob.Store, logger *slog.Logger) *MainDriver {
 	return &MainDriver{
 		cfg:     cfg,
@@ -56,5 +58,5 @@ func (d *MainDriver) AuthUser(cc ftpserver.ClientContext, user, pass string) (ft
 }
 
 func (d *MainDriver) GetTLSConfig() (*tls.Config, error) {
-	return nil, nil
+	return nil, errTLSNotConfigured
 }
