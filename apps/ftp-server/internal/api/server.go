@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,11 +14,13 @@ import (
 
 	"github.com/twkevinzhang/vfs-link/apps/ftp-server/internal/blob"
 	"github.com/twkevinzhang/vfs-link/apps/ftp-server/internal/db"
+	"github.com/twkevinzhang/vfs-link/apps/ftp-server/internal/share"
 )
 
 type Server struct {
 	store   *db.Store
 	objects blob.Store
+	shares  *share.Service
 }
 
 type Entry struct {
@@ -59,8 +62,33 @@ type TreeNode struct {
 	Children []*TreeNode `json:"children,omitempty"`
 }
 
-func New(store *db.Store, objects blob.Store) *Server {
-	return &Server{store: store, objects: objects}
+type createShareDraftRequest struct {
+	Path string `json:"path"`
+}
+
+type startShareRequest struct {
+	Email string `json:"email"`
+}
+
+type shareResponse struct {
+	ID                string     `json:"id"`
+	LogicPath         string     `json:"logicPath"`
+	FileName          string     `json:"fileName"`
+	Size              int64      `json:"size"`
+	DestinationObject string     `json:"destinationObject"`
+	DestinationURL    string     `json:"destinationUrl"`
+	ShareURL          string     `json:"shareUrl"`
+	Email             string     `json:"email"`
+	Status            string     `json:"status"`
+	Error             string     `json:"error,omitempty"`
+	CreatedAt         time.Time  `json:"createdAt"`
+	UpdatedAt         time.Time  `json:"updatedAt"`
+	CompletedAt       *time.Time `json:"completedAt,omitempty"`
+	NotifiedAt        *time.Time `json:"notifiedAt,omitempty"`
+}
+
+func New(store *db.Store, objects blob.Store, shares *share.Service) *Server {
+	return &Server{store: store, objects: objects, shares: shares}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -69,6 +97,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/files", s.handleFiles)
 	mux.HandleFunc("/api/tree", s.handleTree)
 	mux.HandleFunc("/api/download", s.handleDownload)
+	mux.HandleFunc("/api/shares/drafts", s.handleCreateShareDraft)
+	mux.HandleFunc("/api/shares/", s.handleShare)
 	return withCORS(mux)
 }
 
@@ -191,6 +221,65 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handleCreateShareDraft(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var request createShareDraftRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	record, err := s.shares.CreateDraft(r.Context(), request.Path)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	writeJSON(w, toShareResponse(record))
+}
+
+func (s *Server) handleShare(w http.ResponseWriter, r *http.Request) {
+	suffix := strings.TrimPrefix(r.URL.Path, "/api/shares/")
+	parts := strings.Split(strings.Trim(suffix, "/"), "/")
+	if len(parts) == 0 || parts[0] == "" {
+		writeError(w, http.StatusNotFound, "share not found")
+		return
+	}
+
+	id := parts[0]
+	if len(parts) == 1 && r.Method == http.MethodGet {
+		record, found, err := s.shares.Find(r.Context(), id)
+		if err != nil {
+			writeAPIError(w, err)
+			return
+		}
+		if !found {
+			writeError(w, http.StatusNotFound, "share not found")
+			return
+		}
+		writeJSON(w, toShareResponse(record))
+		return
+	}
+
+	if len(parts) == 2 && parts[1] == "start" && r.Method == http.MethodPost {
+		var request startShareRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+		record, err := s.shares.Start(r.Context(), id, request.Email)
+		if err != nil {
+			writeAPIError(w, err)
+			return
+		}
+		writeJSON(w, toShareResponse(record))
+		return
+	}
+
+	writeError(w, http.StatusNotFound, "share endpoint not found")
+}
+
 func (s *Server) directChildren(ctx context.Context, dirPath string) ([]Entry, error) {
 	prefix := withTrailingSlash(dirPath)
 	records, err := s.store.ListPrefix(ctx, prefix)
@@ -257,6 +346,25 @@ func kind(record db.FileRecord) string {
 	return "file"
 }
 
+func toShareResponse(record db.ShareRecord) shareResponse {
+	return shareResponse{
+		ID:                record.ID,
+		LogicPath:         record.LogicPath,
+		FileName:          record.FileName,
+		Size:              record.Size,
+		DestinationObject: record.DestinationObject,
+		DestinationURL:    record.ShareURL,
+		ShareURL:          record.ShareURL,
+		Email:             record.Email,
+		Status:            record.Status,
+		Error:             record.Error,
+		CreatedAt:         record.CreatedAt,
+		UpdatedAt:         record.UpdatedAt,
+		CompletedAt:       record.CompletedAt,
+		NotifiedAt:        record.NotifiedAt,
+	}
+}
+
 func breadcrumbs(logicPath string) []Entry {
 	if logicPath == "/" {
 		return []Entry{{Name: "/", Path: "/", Kind: "directory"}}
@@ -294,7 +402,7 @@ func withTrailingSlash(value string) string {
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -315,4 +423,12 @@ func writeError(w http.ResponseWriter, code int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
+}
+
+func writeAPIError(w http.ResponseWriter, err error) {
+	if errors.Is(err, db.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "file not found")
+		return
+	}
+	writeError(w, http.StatusBadRequest, err.Error())
 }

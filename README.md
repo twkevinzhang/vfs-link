@@ -58,6 +58,9 @@ CREATE INDEX IF NOT EXISTS "File_logicPath_idx" ON "File" ("logicPath");
 - `GET /api/files?path=/`: direct children for a logical directory.
 - `GET /api/tree`: full logical directory tree.
 - `GET /api/download?path=/docs/a.pdf`: downloads a logical file.
+- `POST /api/shares/drafts`: creates a GCS share draft for a logical file.
+- `GET /api/shares/{id}`: reads a share job.
+- `POST /api/shares/{id}/start`: uploads the file to GCS and sends email when configured.
 
 ## Local React Browser
 
@@ -94,6 +97,27 @@ Build the web app:
 pnpm --dir apps/web build
 ```
 
+## File Sharing
+
+v3 remains local-first for FTP storage. File sharing is an export workflow: the Go server reads the local object, uploads it to the configured GCS bucket, then optionally sends the share link by email.
+
+Required for sharing:
+
+- `SHARE_GCS_BUCKET`: destination GCS bucket
+- `GOOGLE_APPLICATION_CREDENTIALS`: service account credentials, or another ADC source available to the Go process
+
+Optional:
+
+- `SHARE_GCS_PREFIX`: object prefix, defaults to `shares`
+- `SHARE_PUBLIC_BASE_URL`: public base URL for generated links; defaults to `https://storage.googleapis.com/{bucket}`
+- `SMTP_HOST`: SMTP host for email notifications
+- `SMTP_PORT`: SMTP port, defaults to `587`
+- `SMTP_USER`: SMTP username
+- `SMTP_PASS`: SMTP password
+- `SMTP_FROM`: sender address
+
+When `SMTP_HOST` or `SMTP_FROM` is missing, uploads still complete but email delivery for requested recipients is marked as `email_failed`.
+
 ## Environment
 
 Required:
@@ -111,6 +135,10 @@ Optional:
 - `FTP_PASV_URL`: passive mode public host/IP, defaults to `127.0.0.1`
 - `FTP_PASV_MIN`: passive port range start, defaults to `30000`
 - `FTP_PASV_MAX`: passive port range end, defaults to `30005`
+- `SHARE_GCS_BUCKET`: GCS bucket for file sharing
+- `SHARE_GCS_PREFIX`: GCS object prefix for shares, defaults to `shares`
+- `SHARE_PUBLIC_BASE_URL`: optional public URL prefix for share links
+- `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`: optional email notification settings
 
 ## Local Build
 

@@ -20,6 +20,14 @@ type Config struct {
 	DatabaseURL      string
 	StorageDriver    string
 	LocalStorageRoot string
+	ShareGCSBucket   string
+	ShareGCSPrefix   string
+	SharePublicURL   string
+	SMTPHost         string
+	SMTPPort         int
+	SMTPUser         string
+	SMTPPass         string
+	SMTPFrom         string
 	CommandArgs      []string
 	AssumeYes        bool
 }
@@ -38,6 +46,14 @@ func Load(args []string) (Config, error) {
 		DatabaseURL:      strings.TrimSpace(os.Getenv("DATABASE_URL")),
 		StorageDriver:    envString("STORAGE_DRIVER", "local"),
 		LocalStorageRoot: envString("LOCAL_STORAGE_ROOT", "./data/objects"),
+		ShareGCSBucket:   envString("SHARE_GCS_BUCKET", ""),
+		ShareGCSPrefix:   envString("SHARE_GCS_PREFIX", "shares"),
+		SharePublicURL:   envString("SHARE_PUBLIC_BASE_URL", ""),
+		SMTPHost:         envString("SMTP_HOST", ""),
+		SMTPPort:         envInt("SMTP_PORT", 587),
+		SMTPUser:         envString("SMTP_USER", ""),
+		SMTPPass:         envString("SMTP_PASS", ""),
+		SMTPFrom:         envString("SMTP_FROM", ""),
 	}
 
 	for _, arg := range args {
@@ -110,6 +126,22 @@ func applyOverride(cfg *Config, key, value string) {
 		cfg.StorageDriver = value
 	case "LOCAL_STORAGE_ROOT":
 		cfg.LocalStorageRoot = value
+	case "SHARE_GCS_BUCKET":
+		cfg.ShareGCSBucket = value
+	case "SHARE_GCS_PREFIX":
+		cfg.ShareGCSPrefix = value
+	case "SHARE_PUBLIC_BASE_URL":
+		cfg.SharePublicURL = value
+	case "SMTP_HOST":
+		cfg.SMTPHost = value
+	case "SMTP_PORT":
+		cfg.SMTPPort = parseInt(value, cfg.SMTPPort)
+	case "SMTP_USER":
+		cfg.SMTPUser = value
+	case "SMTP_PASS":
+		cfg.SMTPPass = value
+	case "SMTP_FROM":
+		cfg.SMTPFrom = value
 	}
 }
 

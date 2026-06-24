@@ -18,6 +18,7 @@ import (
 	"github.com/twkevinzhang/vfs-link/apps/ftp-server/internal/config"
 	"github.com/twkevinzhang/vfs-link/apps/ftp-server/internal/db"
 	ftpdriver "github.com/twkevinzhang/vfs-link/apps/ftp-server/internal/ftp"
+	"github.com/twkevinzhang/vfs-link/apps/ftp-server/internal/share"
 )
 
 func main() {
@@ -59,9 +60,10 @@ func run(logger *slog.Logger) error {
 
 	driver := ftpdriver.NewMainDriver(cfg, store, objects, logger)
 	server := ftpserver.NewFtpServer(driver)
+	shareService := share.NewService(cfg, store, objects, logger)
 	apiServer := &http.Server{
 		Addr:              cfg.HTTPListenAddr(),
-		Handler:           api.New(store, objects).Handler(),
+		Handler:           api.New(store, objects, shareService).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

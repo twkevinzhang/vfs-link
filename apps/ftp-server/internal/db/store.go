@@ -21,6 +21,23 @@ type FileRecord struct {
 	UpdatedAt    time.Time
 }
 
+type ShareRecord struct {
+	ID                string
+	LogicPath         string
+	PhysicalHash      string
+	FileName          string
+	Size              int64
+	DestinationObject string
+	ShareURL          string
+	Email             string
+	Status            string
+	Error             string
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+	CompletedAt       *time.Time
+	NotifiedAt        *time.Time
+}
+
 type Store struct {
 	pool *pgxpool.Pool
 }
@@ -52,6 +69,25 @@ CREATE TABLE IF NOT EXISTS "File" (
   "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS "File_logicPath_idx" ON "File" ("logicPath");
+
+CREATE TABLE IF NOT EXISTS "Share" (
+  id TEXT PRIMARY KEY,
+  "logicPath" TEXT NOT NULL,
+  "physicalHash" TEXT NOT NULL,
+  "fileName" TEXT NOT NULL,
+  size BIGINT NOT NULL DEFAULT 0,
+  "destinationObject" TEXT NOT NULL,
+  "shareUrl" TEXT NOT NULL,
+  email TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL,
+  error TEXT NOT NULL DEFAULT '',
+  "createdAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
+  "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT now(),
+  "completedAt" TIMESTAMPTZ,
+  "notifiedAt" TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS "Share_logicPath_idx" ON "Share" ("logicPath");
+CREATE INDEX IF NOT EXISTS "Share_status_idx" ON "Share" (status);
 `)
 	return err
 }
@@ -278,6 +314,95 @@ func (s *Store) DeletePrefix(ctx context.Context, prefix string) error {
 	return err
 }
 
+func (s *Store) CreateShare(ctx context.Context, record ShareRecord) (ShareRecord, error) {
+	row := s.pool.QueryRow(ctx, `
+INSERT INTO "Share" (
+  id, "logicPath", "physicalHash", "fileName", size,
+  "destinationObject", "shareUrl", email, status, error
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, '')
+RETURNING id, "logicPath", "physicalHash", "fileName", size, "destinationObject",
+  "shareUrl", email, status, error, "createdAt", "updatedAt", "completedAt", "notifiedAt"
+`, record.ID, record.LogicPath, record.PhysicalHash, record.FileName, record.Size,
+		record.DestinationObject, record.ShareURL, record.Email, record.Status)
+	return scanShare(row)
+}
+
+func (s *Store) FindShare(ctx context.Context, id string) (ShareRecord, bool, error) {
+	row := s.pool.QueryRow(ctx, `
+SELECT id, "logicPath", "physicalHash", "fileName", size, "destinationObject",
+  "shareUrl", email, status, error, "createdAt", "updatedAt", "completedAt", "notifiedAt"
+FROM "Share"
+WHERE id = $1
+`, id)
+
+	record, err := scanShare(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ShareRecord{}, false, nil
+	}
+	if err != nil {
+		return ShareRecord{}, false, err
+	}
+	return record, true, nil
+}
+
+func (s *Store) MarkShareUploading(ctx context.Context, id, email string) (ShareRecord, error) {
+	row := s.pool.QueryRow(ctx, `
+UPDATE "Share"
+SET email = $2,
+  status = 'uploading',
+  error = '',
+  "updatedAt" = now(),
+  "completedAt" = NULL,
+  "notifiedAt" = NULL
+WHERE id = $1
+RETURNING id, "logicPath", "physicalHash", "fileName", size, "destinationObject",
+  "shareUrl", email, status, error, "createdAt", "updatedAt", "completedAt", "notifiedAt"
+`, id, email)
+	return scanShare(row)
+}
+
+func (s *Store) MarkShareUploaded(ctx context.Context, id string) (ShareRecord, error) {
+	row := s.pool.QueryRow(ctx, `
+UPDATE "Share"
+SET status = 'completed',
+  error = '',
+  "updatedAt" = now(),
+  "completedAt" = now()
+WHERE id = $1
+RETURNING id, "logicPath", "physicalHash", "fileName", size, "destinationObject",
+  "shareUrl", email, status, error, "createdAt", "updatedAt", "completedAt", "notifiedAt"
+`, id)
+	return scanShare(row)
+}
+
+func (s *Store) MarkShareEmailSent(ctx context.Context, id string) (ShareRecord, error) {
+	row := s.pool.QueryRow(ctx, `
+UPDATE "Share"
+SET status = 'email_sent',
+  error = '',
+  "updatedAt" = now(),
+  "notifiedAt" = now()
+WHERE id = $1
+RETURNING id, "logicPath", "physicalHash", "fileName", size, "destinationObject",
+  "shareUrl", email, status, error, "createdAt", "updatedAt", "completedAt", "notifiedAt"
+`, id)
+	return scanShare(row)
+}
+
+func (s *Store) MarkShareFailed(ctx context.Context, id, status, message string) (ShareRecord, error) {
+	row := s.pool.QueryRow(ctx, `
+UPDATE "Share"
+SET status = $2,
+  error = $3,
+  "updatedAt" = now()
+WHERE id = $1
+RETURNING id, "logicPath", "physicalHash", "fileName", size, "destinationObject",
+  "shareUrl", email, status, error, "createdAt", "updatedAt", "completedAt", "notifiedAt"
+`, id, status, message)
+	return scanShare(row)
+}
+
 type rowScanner interface {
 	Scan(dest ...any) error
 }
@@ -291,6 +416,27 @@ func scanFile(row rowScanner) (FileRecord, error) {
 		&record.Size,
 		&record.IsDirectory,
 		&record.UpdatedAt,
+	)
+	return record, err
+}
+
+func scanShare(row rowScanner) (ShareRecord, error) {
+	var record ShareRecord
+	err := row.Scan(
+		&record.ID,
+		&record.LogicPath,
+		&record.PhysicalHash,
+		&record.FileName,
+		&record.Size,
+		&record.DestinationObject,
+		&record.ShareURL,
+		&record.Email,
+		&record.Status,
+		&record.Error,
+		&record.CreatedAt,
+		&record.UpdatedAt,
+		&record.CompletedAt,
+		&record.NotifiedAt,
 	)
 	return record, err
 }

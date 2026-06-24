@@ -15,6 +15,7 @@ v2 已將 FTP server 從 Node.js 改寫為 Go，但 physical file bytes 仍存�
 | Physical bytes | GCS object | local object file |
 | HTTP API | none | `GET /api/status`, `/api/files`, `/api/tree`, `/api/download` |
 | Browser UI | none | `apps/web` React local browser |
+| File sharing | none | local object export to configured GCS bucket |
 | Compose volume | GCS key mount | `objectdata:/data/objects` |
 | Runtime image | Go binary | Go binary, plus HTTP API port |
 
@@ -81,6 +82,18 @@ pnpm --dir apps/web dev
 pnpm --dir apps/web build
 ```
 
+### 5. File sharing via GCS
+
+v3 新增「檔案分享」流程。主儲存仍維持 local-first；分享時才由 Go server 將指定 logical file 的 local object 上傳到 `SHARE_GCS_BUCKET`，產生分享連結，並在使用者輸入 email 時寄送通知。
+
+影響：
+
+- GCS 回到系統中，但角色變成分享出口，不是 FTP 主儲存。
+- 前端檔案列表新增 `Share` action，會開啟 `/share/:id` 新頁面。
+- 分享頁顯示目的 GCS URL、檔案資訊、email 輸入欄、上傳狀態與完成連結。
+- 後端以 `"Share"` table 持久化狀態，支援 `draft`、`uploading`、`completed`、`email_sent`、`failed`、`email_failed`。
+- email 設定缺漏時，GCS 上傳仍可完成，但 email 狀態會標示為 `email_failed`。
+
 ## 實機驗證重點
 
 - FTP `STOR` 後 local object file 是否產生，DB mapping 是否一致。
@@ -89,4 +102,7 @@ pnpm --dir apps/web build
 - `/api/files?path=/` 是否與 FTP `LIST /` 一致。
 - `/api/download?path=...` 是否能下載同一個 logical file。
 - `apps/web` 是否能顯示 `/api/status`、`/api/tree` 與 `/api/files` 的資料。
+- 分享 draft 是否能由檔案 row 建立並開啟 `/share/:id`。
+- `POST /api/shares/{id}/start` 是否能將 local object 上傳到 `SHARE_GCS_BUCKET`。
+- 有 email 時，完成上傳後是否寄出包含分享連結的通知。
 - Docker Compose volume `objectdata` 是否能跨 container restart 保留 object bytes。

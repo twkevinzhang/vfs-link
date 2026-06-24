@@ -8,6 +8,7 @@ import {
   RefreshCcw,
   Search,
   Server,
+  Share2,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { MetaFunction } from 'react-router';
@@ -24,7 +25,13 @@ import {
 } from '../components/ui/card';
 import { Input } from '../components/ui/input';
 import { Skeleton } from '../components/ui/skeleton';
-import { getDownloadUrl, getFiles, getStatus, getTree } from '../lib/api';
+import {
+  createShareDraft,
+  getDownloadUrl,
+  getFiles,
+  getStatus,
+  getTree,
+} from '../lib/api';
 import { formatBytes, formatDate, normalizePath } from '../lib/format';
 import {
   FileEntry,
@@ -53,6 +60,8 @@ export default function Index() {
   const [currentPath, setCurrentPath] = useState('/');
   const [query, setQuery] = useState('');
   const [state, setState] = useState<LoadState>({ loading: true });
+  const [shareError, setShareError] = useState<string>();
+  const [sharingPath, setSharingPath] = useState<string>();
 
   const load = useCallback(async (path: string) => {
     setState((previous) => ({ ...previous, loading: true, error: undefined }));
@@ -135,6 +144,21 @@ export default function Index() {
               <div className="grid gap-1">
                 <p className="font-semibold">API unavailable</p>
                 <p className="text-sm text-foreground">{state.error}</p>
+              </div>
+            </div>
+          </Alert>
+        )}
+
+        {shareError && (
+          <Alert className="border-destructive/35 bg-white text-destructive">
+            <div className="flex items-start gap-3">
+              <AlertCircle
+                aria-hidden="true"
+                className="mt-0.5 h-5 w-5 shrink-0"
+              />
+              <div className="grid gap-1">
+                <p className="font-semibold">Share unavailable</p>
+                <p className="text-sm text-foreground">{shareError}</p>
               </div>
             </div>
           </Alert>
@@ -226,9 +250,36 @@ export default function Index() {
               ) : (
                 <FileTable
                   entries={visibleEntries}
+                  sharingPath={sharingPath}
                   onOpenFolder={(path) => {
                     setCurrentPath(path);
                     setQuery('');
+                  }}
+                  onShareFile={async (path) => {
+                    setShareError(undefined);
+                    setSharingPath(path);
+                    const popup = window.open('about:blank', '_blank');
+                    try {
+                      const draft = await createShareDraft(path);
+                      const sharePath = `/share/${encodeURIComponent(
+                        draft.id
+                      )}`;
+                      if (popup) {
+                        popup.opener = null;
+                        popup.location.replace(sharePath);
+                      } else {
+                        window.location.href = sharePath;
+                      }
+                    } catch (error) {
+                      popup?.close();
+                      setShareError(
+                        error instanceof Error
+                          ? error.message
+                          : 'Unable to create share'
+                      );
+                    } finally {
+                      setSharingPath(undefined);
+                    }
                   }}
                 />
               )}
@@ -319,10 +370,14 @@ function Breadcrumbs({
 
 function FileTable({
   entries,
+  sharingPath,
   onOpenFolder,
+  onShareFile,
 }: {
   entries: FileEntry[];
+  sharingPath?: string;
   onOpenFolder: (path: string) => void;
+  onShareFile: (path: string) => void;
 }) {
   return (
     <div className="overflow-x-auto">
@@ -333,7 +388,7 @@ function FileTable({
             <th className="px-4 py-3 font-semibold">Type</th>
             <th className="px-4 py-3 text-right font-semibold">Size</th>
             <th className="px-4 py-3 font-semibold">Modified</th>
-            <th className="px-4 py-3 text-right font-semibold">Action</th>
+            <th className="px-4 py-3 text-right font-semibold">Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -389,16 +444,28 @@ function FileTable({
                       Open
                     </Button>
                   ) : (
-                    <a href={getDownloadUrl(entry.path)}>
+                    <div className="flex justify-end gap-2">
                       <Button
                         variant="outline"
                         size="sm"
-                        title={`Download ${entry.name}`}
+                        onClick={() => onShareFile(entry.path)}
+                        disabled={sharingPath === entry.path}
+                        title={`Share ${entry.name}`}
                       >
-                        <Download aria-hidden="true" className="h-4 w-4" />
-                        Download
+                        <Share2 aria-hidden="true" className="h-4 w-4" />
+                        {sharingPath === entry.path ? 'Sharing' : 'Share'}
                       </Button>
-                    </a>
+                      <a href={getDownloadUrl(entry.path)}>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          title={`Download ${entry.name}`}
+                        >
+                          <Download aria-hidden="true" className="h-4 w-4" />
+                          Download
+                        </Button>
+                      </a>
+                    </div>
                   )}
                 </td>
               </tr>
