@@ -3,7 +3,6 @@ package config
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -11,30 +10,34 @@ import (
 )
 
 type Config struct {
-	FTPPort     int
-	FTPUser     string
-	FTPPass     string
-	FTPPasvURL  string
-	FTPPasvMin  int
-	FTPPasvMax  int
-	DatabaseURL string
-	GCSBucket   string
-	CommandArgs []string
-	AssumeYes   bool
+	FTPPort          int
+	HTTPPort         int
+	FTPUser          string
+	FTPPass          string
+	FTPPasvURL       string
+	FTPPasvMin       int
+	FTPPasvMax       int
+	DatabaseURL      string
+	StorageDriver    string
+	LocalStorageRoot string
+	CommandArgs      []string
+	AssumeYes        bool
 }
 
 func Load(args []string) (Config, error) {
 	_ = godotenv.Load()
 
 	cfg := Config{
-		FTPPort:     envInt("FTP_PORT", 21),
-		FTPUser:     envString("FTP_USER", "admin"),
-		FTPPass:     envString("FTP_PASS", "admin123"),
-		FTPPasvURL:  envString("FTP_PASV_URL", "127.0.0.1"),
-		FTPPasvMin:  envInt("FTP_PASV_MIN", 30000),
-		FTPPasvMax:  envInt("FTP_PASV_MAX", 30005),
-		DatabaseURL: strings.TrimSpace(os.Getenv("DATABASE_URL")),
-		GCSBucket:   strings.TrimSpace(os.Getenv("GCS_BUCKET")),
+		FTPPort:          envInt("FTP_PORT", 21),
+		HTTPPort:         envInt("HTTP_PORT", 8080),
+		FTPUser:          envString("FTP_USER", "admin"),
+		FTPPass:          envString("FTP_PASS", "admin123"),
+		FTPPasvURL:       envString("FTP_PASV_URL", "127.0.0.1"),
+		FTPPasvMin:       envInt("FTP_PASV_MIN", 30000),
+		FTPPasvMax:       envInt("FTP_PASV_MAX", 30005),
+		DatabaseURL:      strings.TrimSpace(os.Getenv("DATABASE_URL")),
+		StorageDriver:    envString("STORAGE_DRIVER", "local"),
+		LocalStorageRoot: envString("LOCAL_STORAGE_ROOT", "./data/objects"),
 	}
 
 	for _, arg := range args {
@@ -52,17 +55,14 @@ func Load(args []string) (Config, error) {
 	if cfg.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("DATABASE_URL is required")
 	}
-	if cfg.GCSBucket == "" {
-		return Config{}, fmt.Errorf("GCS_BUCKET is required")
+	if cfg.StorageDriver != "local" {
+		return Config{}, fmt.Errorf("unsupported STORAGE_DRIVER %q", cfg.StorageDriver)
+	}
+	if cfg.LocalStorageRoot == "" {
+		return Config{}, fmt.Errorf("LOCAL_STORAGE_ROOT is required")
 	}
 	if cfg.FTPPasvMax < cfg.FTPPasvMin {
 		return Config{}, fmt.Errorf("FTP_PASV_MAX must be >= FTP_PASV_MIN")
-	}
-
-	if creds := strings.TrimSpace(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")); creds != "" {
-		if abs, err := filepath.Abs(creds); err == nil {
-			_ = os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", abs)
-		}
 	}
 
 	return cfg, nil
@@ -70,6 +70,10 @@ func Load(args []string) (Config, error) {
 
 func (c Config) ListenAddr() string {
 	return fmt.Sprintf("0.0.0.0:%d", c.FTPPort)
+}
+
+func (c Config) HTTPListenAddr() string {
+	return fmt.Sprintf("0.0.0.0:%d", c.HTTPPort)
 }
 
 func envString(key, fallback string) string {
@@ -88,6 +92,8 @@ func applyOverride(cfg *Config, key, value string) {
 	switch key {
 	case "FTP_PORT":
 		cfg.FTPPort = parseInt(value, cfg.FTPPort)
+	case "HTTP_PORT":
+		cfg.HTTPPort = parseInt(value, cfg.HTTPPort)
 	case "FTP_USER":
 		cfg.FTPUser = value
 	case "FTP_PASS":
@@ -100,10 +106,10 @@ func applyOverride(cfg *Config, key, value string) {
 		cfg.FTPPasvMax = parseInt(value, cfg.FTPPasvMax)
 	case "DATABASE_URL":
 		cfg.DatabaseURL = value
-	case "GCS_BUCKET":
-		cfg.GCSBucket = value
-	case "GOOGLE_APPLICATION_CREDENTIALS":
-		_ = os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", value)
+	case "STORAGE_DRIVER":
+		cfg.StorageDriver = value
+	case "LOCAL_STORAGE_ROOT":
+		cfg.LocalStorageRoot = value
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -12,10 +13,11 @@ import (
 	"time"
 
 	"github.com/fclairamb/ftpserverlib"
+	"github.com/twkevinzhang/vfs-link/apps/ftp-server/internal/api"
+	"github.com/twkevinzhang/vfs-link/apps/ftp-server/internal/blob"
 	"github.com/twkevinzhang/vfs-link/apps/ftp-server/internal/config"
 	"github.com/twkevinzhang/vfs-link/apps/ftp-server/internal/db"
 	ftpdriver "github.com/twkevinzhang/vfs-link/apps/ftp-server/internal/ftp"
-	"github.com/twkevinzhang/vfs-link/apps/ftp-server/internal/gcs"
 )
 
 func main() {
@@ -45,7 +47,7 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("ensure schema: %w", err)
 	}
 
-	objects, err := gcs.New(ctx, cfg.GCSBucket)
+	objects, err := blob.NewLocal(cfg.LocalStorageRoot)
 	if err != nil {
 		return err
 	}
@@ -57,8 +59,13 @@ func run(logger *slog.Logger) error {
 
 	driver := ftpdriver.NewMainDriver(cfg, store, objects, logger)
 	server := ftpserver.NewFtpServer(driver)
+	apiServer := &http.Server{
+		Addr:              cfg.HTTPListenAddr(),
+		Handler:           api.New(store, objects).Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
 
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
 	go func() {
 		logger.Info("starting FTP server",
 			"listen", cfg.ListenAddr(),
@@ -68,11 +75,24 @@ func run(logger *slog.Logger) error {
 		)
 		errCh <- server.ListenAndServe()
 	}()
+	go func() {
+		logger.Info("starting HTTP API", "listen", cfg.HTTPListenAddr(), "storage_root", objects.Root())
+		if err := apiServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+			return
+		}
+		errCh <- nil
+	}()
 
 	select {
 	case <-ctx.Done():
 		logger.Info("shutdown signal received")
 		server.Stop()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := apiServer.Shutdown(shutdownCtx); err != nil {
+			return err
+		}
 		select {
 		case err := <-errCh:
 			if err != nil && !errors.Is(err, context.Canceled) {
@@ -87,9 +107,9 @@ func run(logger *slog.Logger) error {
 	}
 }
 
-func rebuildMapping(ctx context.Context, cfg config.Config, store *db.Store, objects *gcs.Client, logger *slog.Logger) error {
+func rebuildMapping(ctx context.Context, cfg config.Config, store *db.Store, objects blob.Store, logger *slog.Logger) error {
 	if !cfg.AssumeYes {
-		logger.Warn("rebuilding mapping table from GCS bucket content", "bucket", cfg.GCSBucket)
+		logger.Warn("rebuilding mapping table from local object store", "root", objects.Root())
 		for i := 5; i > 0; i-- {
 			logger.Info("starting soon", "seconds", i)
 			select {
@@ -102,10 +122,10 @@ func rebuildMapping(ctx context.Context, cfg config.Config, store *db.Store, obj
 
 	objectList, err := objects.List(ctx)
 	if err != nil {
-		return fmt.Errorf("list GCS objects: %w", err)
+		return fmt.Errorf("list local objects: %w", err)
 	}
 
-	logger.Info("processing GCS objects", "count", len(objectList))
+	logger.Info("processing local objects", "count", len(objectList))
 	for idx, object := range objectList {
 		isDir := strings.HasSuffix(object.Name, "/")
 		logicPath := "/" + strings.TrimPrefix(strings.TrimSuffix(object.Name, "/"), "/")

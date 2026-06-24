@@ -7,10 +7,9 @@ import (
 	"os"
 	"sync"
 
-	"cloud.google.com/go/storage"
 	"github.com/spf13/afero"
+	"github.com/twkevinzhang/vfs-link/apps/ftp-server/internal/blob"
 	"github.com/twkevinzhang/vfs-link/apps/ftp-server/internal/db"
-	"github.com/twkevinzhang/vfs-link/apps/ftp-server/internal/gcs"
 )
 
 var errUnsupported = errors.New("operation is not supported by database VFS")
@@ -71,6 +70,24 @@ func (f *baseFile) Readdirnames(int) ([]string, error) {
 func (f *baseFile) Close() error {
 	return nil
 }
+
+type errorFile struct {
+	err error
+}
+
+func (f *errorFile) Name() string                       { return "" }
+func (f *errorFile) Close() error                       { return f.err }
+func (f *errorFile) Read([]byte) (int, error)           { return 0, f.err }
+func (f *errorFile) ReadAt([]byte, int64) (int, error)  { return 0, f.err }
+func (f *errorFile) Seek(int64, int) (int64, error)     { return 0, f.err }
+func (f *errorFile) Write([]byte) (int, error)          { return 0, f.err }
+func (f *errorFile) WriteAt([]byte, int64) (int, error) { return 0, f.err }
+func (f *errorFile) WriteString(string) (int, error)    { return 0, f.err }
+func (f *errorFile) Readdir(int) ([]os.FileInfo, error) { return nil, f.err }
+func (f *errorFile) Readdirnames(int) ([]string, error) { return nil, f.err }
+func (f *errorFile) Stat() (os.FileInfo, error)         { return nil, f.err }
+func (f *errorFile) Sync() error                        { return f.err }
+func (f *errorFile) Truncate(int64) error               { return f.err }
 
 type dirFile struct {
 	baseFile
@@ -142,28 +159,29 @@ func (f *readFile) Close() error {
 type uploadFile struct {
 	baseFile
 	store        *db.Store
-	objects      *gcs.Client
+	objects      blob.Store
 	logicPath    string
 	physicalHash string
-	writer       *storage.Writer
-	cancel       context.CancelFunc
+	writer       io.WriteCloser
 	size         int64
 	transferErr  error
 	mu           sync.Mutex
 	closed       bool
 }
 
-func newUploadFile(store *db.Store, objects *gcs.Client, logicPath string) afero.File {
-	ctx, cancel := context.WithCancel(context.Background())
-	physicalHash := gcs.GeneratePhysicalHash(logicPath)
+func newUploadFile(store *db.Store, objects blob.Store, logicPath string) afero.File {
+	physicalHash := blob.GeneratePhysicalHash(logicPath)
+	writer, err := objects.NewWriter(context.Background(), physicalHash)
+	if err != nil {
+		return &errorFile{err: err}
+	}
 	return &uploadFile{
 		baseFile:     baseFile{name: logicPath, info: fileInfo{name: pathBase(logicPath), mode: 0o666, modTime: now()}},
 		store:        store,
 		objects:      objects,
 		logicPath:    logicPath,
 		physicalHash: physicalHash,
-		writer:       objects.NewWriter(ctx, physicalHash),
-		cancel:       cancel,
+		writer:       writer,
 	}
 }
 
@@ -189,7 +207,6 @@ func (f *uploadFile) Close() error {
 	f.mu.Unlock()
 
 	closeErr := f.writer.Close()
-	f.cancel()
 
 	if transferErr != nil {
 		_ = f.objects.Delete(context.Background(), f.physicalHash)
@@ -199,9 +216,13 @@ func (f *uploadFile) Close() error {
 		_ = f.objects.Delete(context.Background(), f.physicalHash)
 		return closeErr
 	}
-	if err := f.store.UpsertFile(context.Background(), f.logicPath, f.physicalHash, f.size); err != nil {
+	previousPhysicalHash, err := f.store.ReplaceFile(context.Background(), f.logicPath, f.physicalHash, f.size)
+	if err != nil {
 		_ = f.objects.Delete(context.Background(), f.physicalHash)
 		return err
+	}
+	if previousPhysicalHash != "" {
+		return f.objects.Delete(context.Background(), previousPhysicalHash)
 	}
 	return nil
 }

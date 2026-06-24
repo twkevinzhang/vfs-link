@@ -9,16 +9,16 @@ import (
 	"time"
 
 	"github.com/spf13/afero"
+	"github.com/twkevinzhang/vfs-link/apps/ftp-server/internal/blob"
 	"github.com/twkevinzhang/vfs-link/apps/ftp-server/internal/db"
-	"github.com/twkevinzhang/vfs-link/apps/ftp-server/internal/gcs"
 )
 
 type FS struct {
 	store   *db.Store
-	objects *gcs.Client
+	objects blob.Store
 }
 
-func New(store *db.Store, objects *gcs.Client) *FS {
+func New(store *db.Store, objects blob.Store) *FS {
 	return &FS{
 		store:   store,
 		objects: objects,

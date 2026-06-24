@@ -24,6 +24,6 @@ RUN chmod +x ./docker-entrypoint.sh
 
 ENV FTP_PORT=21
 
-EXPOSE 21 30000-30100
+EXPOSE 21 8080 30000-30100
 
 ENTRYPOINT ["./docker-entrypoint.sh"]

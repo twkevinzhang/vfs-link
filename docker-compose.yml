@@ -4,19 +4,21 @@ services:
     container_name: vfs-link
     ports:
       - '21:21'
+      - '${HTTP_PORT:-8080}:8080'
       - '${FTP_PASV_MIN:-30000}-${FTP_PASV_MAX:-30100}:${FTP_PASV_MIN:-30000}-${FTP_PASV_MAX:-30100}'
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/vfs_link?schema=public
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/vfs_link?sslmode=disable
+      - STORAGE_DRIVER=local
+      - LOCAL_STORAGE_ROOT=/data/objects
       - FTP_USER=${FTP_USER:-admin}
       - FTP_PASS=${FTP_PASS:-admin123}
       - FTP_PORT=${FTP_PORT:-21}
+      - HTTP_PORT=${HTTP_PORT:-8080}
       - FTP_PASV_URL=${FTP_PASV_URL:-127.0.0.1}
       - FTP_PASV_MIN=${FTP_PASV_MIN:-30000}
       - FTP_PASV_MAX=${FTP_PASV_MAX:-30100}
-      - GCS_BUCKET=${GCS_BUCKET}
-      - GOOGLE_APPLICATION_CREDENTIALS=/app/gcp-key.json
     volumes:
-      - ./.auth/gcp-key.json:/app/gcp-key.json:ro
+      - objectdata:/data/objects
     depends_on:
       db:
         condition: service_healthy
@@ -44,6 +46,7 @@ services:
 
 volumes:
   pgdata:
+  objectdata:
 
 networks:
   vfs-net:

@@ -6,20 +6,20 @@ import (
 	"log/slog"
 
 	"github.com/fclairamb/ftpserverlib"
+	"github.com/twkevinzhang/vfs-link/apps/ftp-server/internal/blob"
 	"github.com/twkevinzhang/vfs-link/apps/ftp-server/internal/config"
 	"github.com/twkevinzhang/vfs-link/apps/ftp-server/internal/db"
-	"github.com/twkevinzhang/vfs-link/apps/ftp-server/internal/gcs"
 	"github.com/twkevinzhang/vfs-link/apps/ftp-server/internal/vfs"
 )
 
 type MainDriver struct {
 	cfg     config.Config
 	store   *db.Store
-	objects *gcs.Client
+	objects blob.Store
 	logger  *slog.Logger
 }
 
-func NewMainDriver(cfg config.Config, store *db.Store, objects *gcs.Client, logger *slog.Logger) *MainDriver {
+func NewMainDriver(cfg config.Config, store *db.Store, objects blob.Store, logger *slog.Logger) *MainDriver {
 	return &MainDriver{
 		cfg:     cfg,
 		store:   store,

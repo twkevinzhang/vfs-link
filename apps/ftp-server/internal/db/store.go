@@ -96,6 +96,28 @@ ORDER BY "logicPath"
 	return records, rows.Err()
 }
 
+func (s *Store) ListAll(ctx context.Context) ([]FileRecord, error) {
+	rows, err := s.pool.Query(ctx, `
+SELECT id, "logicPath", "physicalHash", size, "isDirectory", "updatedAt"
+FROM "File"
+ORDER BY "logicPath"
+`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var records []FileRecord
+	for rows.Next() {
+		record, err := scanFile(rows)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	return records, rows.Err()
+}
+
 func (s *Store) UpsertFile(ctx context.Context, logicPath, physicalHash string, size int64) error {
 	_, err := s.pool.Exec(ctx, `
 INSERT INTO "File" ("logicPath", "physicalHash", size, "isDirectory", "updatedAt")
@@ -108,6 +130,56 @@ DO UPDATE SET
   "updatedAt" = now()
 `, logicPath, physicalHash, size)
 	return err
+}
+
+func (s *Store) ReplaceFile(ctx context.Context, logicPath, physicalHash string, size int64) (string, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback(ctx)
+
+	var previousPhysicalHash string
+	var previousIsDirectory bool
+	err = tx.QueryRow(ctx, `
+SELECT "physicalHash", "isDirectory"
+FROM "File"
+WHERE "logicPath" = $1
+FOR UPDATE
+`, logicPath).Scan(&previousPhysicalHash, &previousIsDirectory)
+	if errors.Is(err, pgx.ErrNoRows) {
+		if _, err := tx.Exec(ctx, `
+INSERT INTO "File" ("logicPath", "physicalHash", size, "isDirectory", "updatedAt")
+VALUES ($1, $2, $3, false, now())
+`, logicPath, physicalHash, size); err != nil {
+			return "", err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return "", err
+		}
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+
+	if _, err := tx.Exec(ctx, `
+UPDATE "File"
+SET "physicalHash" = $1,
+  size = $2,
+  "isDirectory" = false,
+  "updatedAt" = now()
+WHERE "logicPath" = $3
+`, physicalHash, size, logicPath); err != nil {
+		return "", err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", err
+	}
+	if previousIsDirectory || previousPhysicalHash == physicalHash {
+		return "", nil
+	}
+	return previousPhysicalHash, nil
 }
 
 func (s *Store) UpsertDirectory(ctx context.Context, logicPath string) error {

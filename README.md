@@ -1,21 +1,27 @@
-# vfs-link (Go FTP Server)
+# vfs-link (local-first Go FTP Server)
 
-`vfs-link` is a PostgreSQL-backed FTP server that stores physical file bytes in Google Cloud Storage while exposing a virtual FTP path tree from the database.
+`vfs-link` is a PostgreSQL-backed FTP server that stores physical file bytes in a local object store while exposing a virtual FTP path tree from the database.
 
-The key design goal is fast logical movement: FTP `RNFR` / `RNTO` operations update database `logicPath` values only. GCS objects are not copied or renamed during logical moves.
+The key design goal is fast logical movement: FTP `RNFR` / `RNTO` operations update database `logicPath` values only. Physical files are not copied or renamed during logical moves.
 
 ## Version Notes
 
-This branch is **v2**, a Go rewrite of the original Node.js / TypeScript implementation.
+This branch is **v3**, a local-first evolution of the v2 Go rewrite.
 
-See [docs/v1-v2-differences.md](docs/v1-v2-differences.md) for the v1/v2 comparison, migration notes, and the improvements made in this rewrite.
+- v1: Node.js / TypeScript + `ftp-srv` + Prisma + GCS.
+- v2: Go FTP server + PostgreSQL mapping + GCS object storage.
+- v3: Go FTP server + PostgreSQL mapping + local object storage + local React browser.
+
+See [docs/v1-v2-differences.md](docs/v1-v2-differences.md) for the v1/v2 comparison. v3 keeps the v2 Go runtime shape and replaces GCS with local storage by default.
 
 ## Architecture
 
 - **Runtime**: Go 1.23+
 - **FTP engine**: `github.com/fclairamb/ftpserverlib`
 - **Database**: PostgreSQL
-- **Storage**: Google Cloud Storage
+- **Storage**: local object store under `LOCAL_STORAGE_ROOT`
+- **HTTP API**: read-only file browsing API on `HTTP_PORT`
+- **Web UI**: React local file browser under `apps/web`
 - **Deployment**: Docker Compose
 
 ## Data Model
@@ -34,28 +40,74 @@ CREATE TABLE IF NOT EXISTS "File" (
 CREATE INDEX IF NOT EXISTS "File_logicPath_idx" ON "File" ("logicPath");
 ```
 
+`logicPath` is the user-facing FTP path. `physicalHash` is the local object key stored under `LOCAL_STORAGE_ROOT`.
+
 ## Core Behavior
 
 - `LIST` / `MLSD`: reads children from PostgreSQL and returns only the direct entries for the requested directory.
-- `RETR`: resolves `logicPath` to `physicalHash` and streams the GCS object to the FTP data connection.
-- `STOR`: streams upload data into a new GCS object and upserts the mapping after the upload closes cleanly.
-- `RNFR` / `RNTO`: updates database paths only; physical GCS object names stay unchanged.
-- `DELE` / `RMD`: deletes GCS objects for files and removes their database mappings.
+- `RETR`: resolves `logicPath` to `physicalHash` and streams the local object file to the FTP data connection.
+- `STOR`: streams upload data into a local object file, upserts the mapping after the upload closes cleanly, and removes the replaced object after a successful overwrite.
+- `RNFR` / `RNTO`: updates database paths only; local object names stay unchanged.
+- `DELE` / `RMD`: deletes local object files for files and removes their database mappings.
 - `MKD`: creates directory mappings in PostgreSQL.
+- HTTP API: exposes read-only browsing endpoints for the local React UI.
+
+## HTTP API
+
+- `GET /api/status`: storage driver, storage root, and aggregate file stats.
+- `GET /api/files?path=/`: direct children for a logical directory.
+- `GET /api/tree`: full logical directory tree.
+- `GET /api/download?path=/docs/a.pdf`: downloads a logical file.
+
+## Local React Browser
+
+The browser app lives in `apps/web` and reads the Go server's HTTP API. It does not connect to PostgreSQL or `LOCAL_STORAGE_ROOT` directly.
+
+Start the API/FTP server locally:
+
+```bash
+docker compose up -d db
+
+cd apps/ftp-server
+DATABASE_URL='postgresql://postgres:postgres@localhost:5434/vfs_link?sslmode=disable' \
+LOCAL_STORAGE_ROOT='../../data/objects' \
+FTP_PORT=2121 \
+HTTP_PORT=8080 \
+./scripts/go.sh run ./cmd/ftp-server
+```
+
+Start the React browser:
+
+```bash
+pnpm --dir apps/web dev
+```
+
+Open `http://localhost:5173`. If the API is not on `http://localhost:8080`, set `VITE_API_BASE_URL` before starting the web app:
+
+```bash
+VITE_API_BASE_URL='http://localhost:18080' pnpm --dir apps/web dev
+```
+
+Build the web app:
+
+```bash
+pnpm --dir apps/web build
+```
 
 ## Environment
 
 Required:
 
 - `DATABASE_URL`: PostgreSQL connection string
-- `GCS_BUCKET`: Google Cloud Storage bucket name
-- `GOOGLE_APPLICATION_CREDENTIALS`: service account JSON path when not using workload identity
+- `LOCAL_STORAGE_ROOT`: local object storage root
 
 Optional:
 
+- `STORAGE_DRIVER`: storage driver, currently only `local`, defaults to `local`
 - `FTP_USER`: FTP username, defaults to `admin`
 - `FTP_PASS`: FTP password, defaults to `admin123`
 - `FTP_PORT`: FTP control port, defaults to `21`
+- `HTTP_PORT`: read-only HTTP API port, defaults to `8080`
 - `FTP_PASV_URL`: passive mode public host/IP, defaults to `127.0.0.1`
 - `FTP_PASV_MIN`: passive port range start, defaults to `30000`
 - `FTP_PASV_MAX`: passive port range end, defaults to `30005`
@@ -82,9 +134,11 @@ docker build -t vfs-link/ftp-server:latest -f apps/ftp-server/Dockerfile .
 docker compose up -d
 ```
 
+Docker Compose exposes the read-only API on `${HTTP_PORT:-8080}` and persists local object bytes in the `objectdata` named volume.
+
 ## Rebuild Mapping Table
 
-To rebuild logical mappings from the objects currently present in GCS:
+To rebuild logical mappings from object files currently present in `LOCAL_STORAGE_ROOT`:
 
 ```bash
 docker exec -it vfs-link ./ftp-server rebuild-mapping

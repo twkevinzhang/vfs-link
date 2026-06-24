@@ -9,8 +9,8 @@ if [ -z "$DATABASE_URL" ]; then
   exit 1
 fi
 
-if [ -z "$GCS_BUCKET" ]; then
-  echo "Error: GCS_BUCKET is not set."
+if [ -z "$LOCAL_STORAGE_ROOT" ]; then
+  echo "Error: LOCAL_STORAGE_ROOT is not set."
   exit 1
 fi
 
