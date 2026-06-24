@@ -1,16 +1,12 @@
-# syntax=docker/dockerfile:1.6
-
 FROM golang:1.23-alpine AS builder
 
 WORKDIR /src
 
 COPY apps/ftp-server/go.mod apps/ftp-server/go.sum* ./
-RUN --mount=type=cache,target=/go/pkg/mod go mod download
+RUN go mod download
 
 COPY apps/ftp-server ./
-RUN --mount=type=cache,target=/go/pkg/mod \
-  --mount=type=cache,target=/root/.cache/go-build \
-  CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/ftp-server ./cmd/ftp-server
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/ftp-server ./cmd/ftp-server
 
 FROM alpine:3.20
 
