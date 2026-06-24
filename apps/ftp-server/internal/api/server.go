@@ -18,9 +18,10 @@ import (
 )
 
 type Server struct {
-	store   *db.Store
-	objects blob.Store
-	shares  *share.Service
+	store      *db.Store
+	objects    blob.Store
+	shares     *share.Service
+	webHandler http.Handler
 }
 
 type Entry struct {
@@ -87,8 +88,13 @@ type shareResponse struct {
 	NotifiedAt        *time.Time `json:"notifiedAt,omitempty"`
 }
 
-func New(store *db.Store, objects blob.Store, shares *share.Service) *Server {
-	return &Server{store: store, objects: objects, shares: shares}
+func New(store *db.Store, objects blob.Store, shares *share.Service, webStaticRoot string, webBasePath string) *Server {
+	return &Server{
+		store:      store,
+		objects:    objects,
+		shares:     shares,
+		webHandler: newWebHandler(webStaticRoot, webBasePath),
+	}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -99,6 +105,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/download", s.handleDownload)
 	mux.HandleFunc("/api/shares/drafts", s.handleCreateShareDraft)
 	mux.HandleFunc("/api/shares/", s.handleShare)
+	if s.webHandler != nil {
+		mux.Handle("/", s.webHandler)
+	}
 	return withCORS(mux)
 }
 

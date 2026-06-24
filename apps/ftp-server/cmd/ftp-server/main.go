@@ -63,7 +63,7 @@ func run(logger *slog.Logger) error {
 	shareService := share.NewService(cfg, store, objects, logger)
 	apiServer := &http.Server{
 		Addr:              cfg.HTTPListenAddr(),
-		Handler:           api.New(store, objects, shareService).Handler(),
+		Handler:           api.New(store, objects, shareService, cfg.WebStaticRoot, cfg.WebBasePath).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -78,7 +78,7 @@ func run(logger *slog.Logger) error {
 		errCh <- server.ListenAndServe()
 	}()
 	go func() {
-		logger.Info("starting HTTP API", "listen", cfg.HTTPListenAddr(), "storage_root", objects.Root())
+		logger.Info("starting HTTP API", "listen", cfg.HTTPListenAddr(), "storage_root", objects.Root(), "web_static_root", cfg.WebStaticRoot, "web_base_path", cfg.WebBasePath)
 		if err := apiServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 			return

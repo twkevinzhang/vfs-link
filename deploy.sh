@@ -16,6 +16,8 @@ DOCKERFILE="${DOCKERFILE:-apps/ftp-server/Dockerfile}"
 SERVICE="${SERVICE:-ftp-server}"
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.self-hosted.yml}"
 HEALTHCHECK_URL="${HEALTHCHECK_URL:-}"
+VITE_BASE_PATH="${VITE_BASE_PATH:-/vfs-link/index}"
+VITE_API_BASE_URL="${VITE_API_BASE_URL:-/vfs-link}"
 
 SSH_TARGET="$DEPLOY_HOST"
 if [ -n "$DEPLOY_USER" ]; then
@@ -40,6 +42,8 @@ REMOTE_ENV=$(
   printf "DOCKERFILE=%s " "$(shell_quote "$DOCKERFILE")"
   printf "SERVICE=%s " "$(shell_quote "$SERVICE")"
   printf "COMPOSE_FILE=%s " "$(shell_quote "$COMPOSE_FILE")"
+  printf "VITE_BASE_PATH=%s " "$(shell_quote "$VITE_BASE_PATH")"
+  printf "VITE_API_BASE_URL=%s " "$(shell_quote "$VITE_API_BASE_URL")"
   printf "HEALTHCHECK_URL=%s" "$(shell_quote "$HEALTHCHECK_URL")"
 )
 
@@ -134,7 +138,13 @@ git merge --ff-only "$target_commit"
 
 git_sha="$(git rev-parse --short HEAD)"
 echo "=== Building $IMAGE_NAME:$git_sha and $IMAGE_NAME:latest ==="
-docker build -f "$DOCKERFILE" -t "$IMAGE_NAME:$git_sha" -t "$IMAGE_NAME:latest" .
+docker build \
+  --build-arg "VITE_BASE_PATH=$VITE_BASE_PATH" \
+  --build-arg "VITE_API_BASE_URL=$VITE_API_BASE_URL" \
+  -f "$DOCKERFILE" \
+  -t "$IMAGE_NAME:$git_sha" \
+  -t "$IMAGE_NAME:latest" \
+  .
 
 echo "=== Validating compose config ==="
 docker compose -f "$COMPOSE_FILE" config >/dev/null

@@ -25,6 +25,7 @@ import {
 } from '../components/ui/card';
 import { Input } from '../components/ui/input';
 import { Skeleton } from '../components/ui/skeleton';
+import { appPath } from '../lib/base-path';
 import {
   createShareDraft,
   getDownloadUrl,
@@ -266,9 +267,9 @@ export default function Index() {
                       )}`;
                       if (popup) {
                         popup.opener = null;
-                        popup.location.replace(sharePath);
+                        popup.location.replace(appPath(sharePath));
                       } else {
-                        window.location.href = sharePath;
+                        window.location.href = appPath(sharePath);
                       }
                     } catch (error) {
                       popup?.close();

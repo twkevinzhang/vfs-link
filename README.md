@@ -97,6 +97,13 @@ Build the web app:
 pnpm --dir apps/web build
 ```
 
+When the web app is deployed behind a path gateway, build it with the public
+base path and the API gateway root:
+
+```bash
+VITE_BASE_PATH='/vfs-link/index' VITE_API_BASE_URL='/vfs-link' pnpm --dir apps/web build
+```
+
 ## File Sharing
 
 v3 remains local-first for FTP storage. File sharing is an export workflow: the Go server reads the local object, uploads it to the configured GCS bucket, then optionally sends the share link by email.
@@ -165,6 +172,9 @@ docker compose up -d
 Docker Compose exposes the read-only API on `${HTTP_PORT:-8080}` and persists local object bytes in the `objectdata` named volume.
 
 For self-hosted deployment, use `docker-compose.self-hosted.yml`. It keeps the server on host networking, reads the existing external `DATABASE_URL`, mounts the existing `./.auth/gcp-key.json` into `/app/gcp-key.json`, and stores local-first object bytes under `${LOCAL_STORAGE_HOST_PATH:-./data/objects}`. `deploy.sh` uses this compose file by default.
+The self-hosted deploy build also includes the React browser in the Go image and
+defaults it to `/vfs-link/index`, with API requests routed through
+`/vfs-link/api`.
 
 ### GitHub Actions deployment
 

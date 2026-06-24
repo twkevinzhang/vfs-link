@@ -28,6 +28,8 @@ type Config struct {
 	SMTPUser         string
 	SMTPPass         string
 	SMTPFrom         string
+	WebStaticRoot    string
+	WebBasePath      string
 	CommandArgs      []string
 	AssumeYes        bool
 }
@@ -54,6 +56,8 @@ func Load(args []string) (Config, error) {
 		SMTPUser:         envString("SMTP_USER", ""),
 		SMTPPass:         envString("SMTP_PASS", ""),
 		SMTPFrom:         envString("SMTP_FROM", ""),
+		WebStaticRoot:    envString("WEB_STATIC_ROOT", ""),
+		WebBasePath:      envString("WEB_BASE_PATH", "/"),
 	}
 
 	for _, arg := range args {
@@ -142,6 +146,10 @@ func applyOverride(cfg *Config, key, value string) {
 		cfg.SMTPPass = value
 	case "SMTP_FROM":
 		cfg.SMTPFrom = value
+	case "WEB_STATIC_ROOT":
+		cfg.WebStaticRoot = value
+	case "WEB_BASE_PATH":
+		cfg.WebBasePath = value
 	}
 }
 

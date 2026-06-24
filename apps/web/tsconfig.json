@@ -16,6 +16,7 @@
   "include": [
     "app/**/*.ts",
     "app/**/*.tsx",
+    "base-path.config.ts",
     "react-router.config.ts",
     "vite.config.ts",
     ".react-router/types/**/*"

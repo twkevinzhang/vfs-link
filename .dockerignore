@@ -1,0 +1,12 @@
+.git
+.DS_Store
+.env
+.auth
+.nx
+node_modules
+apps/*/node_modules
+apps/web/build
+apps/web/.react-router
+dist
+data
+mount

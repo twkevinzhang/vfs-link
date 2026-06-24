@@ -2,9 +2,10 @@ import type { LinksFunction } from 'react-router';
 import { Links, Meta, Outlet, Scripts, ScrollRestoration } from 'react-router';
 
 import './app.css';
+import { appPath } from './lib/base-path';
 
 export const links: LinksFunction = () => [
-  { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' },
+  { rel: 'icon', type: 'image/svg+xml', href: appPath('/favicon.svg') },
 ];
 
 export function Layout({ children }: { children: React.ReactNode }) {
