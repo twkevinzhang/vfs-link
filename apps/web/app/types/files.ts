@@ -21,6 +21,8 @@ export type TreeNode = {
   path: string;
   name: string;
   kind: EntryKind;
+  size?: number;
+  updatedAt?: string;
   children?: TreeNode[];
 };
 

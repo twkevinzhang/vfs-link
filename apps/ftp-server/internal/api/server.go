@@ -57,10 +57,12 @@ type StatusResponse struct {
 }
 
 type TreeNode struct {
-	Name     string      `json:"name"`
-	Path     string      `json:"path"`
-	Kind     string      `json:"kind"`
-	Children []*TreeNode `json:"children,omitempty"`
+	Name      string      `json:"name"`
+	Path      string      `json:"path"`
+	Kind      string      `json:"kind"`
+	Size      int64       `json:"size"`
+	UpdatedAt time.Time   `json:"updatedAt"`
+	Children  []*TreeNode `json:"children,omitempty"`
 }
 
 type createShareDraftRequest struct {
@@ -182,9 +184,11 @@ func (s *Server) handleTree(w http.ResponseWriter, r *http.Request) {
 	sort.Slice(records, func(i, j int) bool { return records[i].LogicPath < records[j].LogicPath })
 	for _, record := range records {
 		node := &TreeNode{
-			Name: path.Base(record.LogicPath),
-			Path: record.LogicPath,
-			Kind: kind(record),
+			Name:      path.Base(record.LogicPath),
+			Path:      record.LogicPath,
+			Kind:      kind(record),
+			Size:      record.Size,
+			UpdatedAt: record.UpdatedAt,
 		}
 		nodes[record.LogicPath] = node
 		parentPath := path.Dir(record.LogicPath)

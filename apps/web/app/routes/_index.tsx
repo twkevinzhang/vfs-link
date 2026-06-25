@@ -5,6 +5,7 @@ import {
   File,
   Folder,
   HardDrive,
+  Play,
   RefreshCcw,
   Search,
   Server,
@@ -34,6 +35,7 @@ import {
   getTree,
 } from '../lib/api';
 import { formatBytes, formatDate, normalizePath } from '../lib/format';
+import { cn } from '../lib/utils';
 import {
   FileEntry,
   FilesResponse,
@@ -63,6 +65,7 @@ export default function Index() {
   const [state, setState] = useState<LoadState>({ loading: true });
   const [shareError, setShareError] = useState<string>();
   const [sharingPath, setSharingPath] = useState<string>();
+  const [selectedFile, setSelectedFile] = useState<FileEntry>();
 
   const load = useCallback(async (path: string) => {
     setState((previous) => ({ ...previous, loading: true, error: undefined }));
@@ -101,6 +104,43 @@ export default function Index() {
     (sum, entry) => sum + (entry.kind === 'directory' ? 0 : entry.size),
     0
   );
+
+  const selectFile = useCallback((entry: FileEntry) => {
+    setSelectedFile(entry);
+    setShareError(undefined);
+    const parentPath = parentDirectory(entry.path);
+    setCurrentPath(parentPath);
+    setQuery('');
+  }, []);
+
+  const openFolder = useCallback((path: string) => {
+    setCurrentPath(path);
+    setSelectedFile(undefined);
+    setQuery('');
+  }, []);
+
+  const shareFile = useCallback(async (path: string) => {
+    setShareError(undefined);
+    setSharingPath(path);
+    const popup = window.open('about:blank', '_blank');
+    try {
+      const draft = await createShareDraft(path);
+      const sharePath = `/share/${encodeURIComponent(draft.id)}`;
+      if (popup) {
+        popup.opener = null;
+        popup.location.replace(appPath(sharePath));
+      } else {
+        window.location.href = appPath(sharePath);
+      }
+    } catch (error) {
+      popup?.close();
+      setShareError(
+        error instanceof Error ? error.message : 'Unable to create share'
+      );
+    } finally {
+      setSharingPath(undefined);
+    }
+  }, []);
 
   return (
     <main className="min-h-screen bg-background text-foreground">
@@ -211,10 +251,17 @@ export default function Index() {
                 <TreeView
                   node={state.tree}
                   currentPath={currentPath}
-                  onSelectPath={(path) => {
-                    setCurrentPath(path);
-                    setQuery('');
-                  }}
+                  selectedFilePath={selectedFile?.path}
+                  onSelectPath={openFolder}
+                  onSelectFile={(node) =>
+                    selectFile({
+                      path: node.path,
+                      name: node.name,
+                      kind: 'file',
+                      size: node.size ?? 0,
+                      updatedAt: node.updatedAt ?? '',
+                    })
+                  }
                 />
               )}
             </div>
@@ -226,7 +273,7 @@ export default function Index() {
                 <Breadcrumbs
                   entries={state.files?.breadcrumbs ?? []}
                   currentPath={currentPath}
-                  onSelectPath={setCurrentPath}
+                  onSelectPath={openFolder}
                 />
               </div>
               <div className="relative min-w-[220px] md:w-[320px]">
@@ -243,6 +290,15 @@ export default function Index() {
               </div>
             </div>
 
+            {selectedFile && (
+              <SelectedFilePanel
+                file={selectedFile}
+                sharingPath={sharingPath}
+                onClear={() => setSelectedFile(undefined)}
+                onShareFile={shareFile}
+              />
+            )}
+
             <div className="overflow-hidden rounded-lg border border-border bg-white">
               {state.loading && !state.files ? (
                 <LoadingTable />
@@ -252,36 +308,10 @@ export default function Index() {
                 <FileTable
                   entries={visibleEntries}
                   sharingPath={sharingPath}
-                  onOpenFolder={(path) => {
-                    setCurrentPath(path);
-                    setQuery('');
-                  }}
-                  onShareFile={async (path) => {
-                    setShareError(undefined);
-                    setSharingPath(path);
-                    const popup = window.open('about:blank', '_blank');
-                    try {
-                      const draft = await createShareDraft(path);
-                      const sharePath = `/share/${encodeURIComponent(
-                        draft.id
-                      )}`;
-                      if (popup) {
-                        popup.opener = null;
-                        popup.location.replace(appPath(sharePath));
-                      } else {
-                        window.location.href = appPath(sharePath);
-                      }
-                    } catch (error) {
-                      popup?.close();
-                      setShareError(
-                        error instanceof Error
-                          ? error.message
-                          : 'Unable to create share'
-                      );
-                    } finally {
-                      setSharingPath(undefined);
-                    }
-                  }}
+                  selectedPath={selectedFile?.path}
+                  onOpenFolder={openFolder}
+                  onSelectFile={selectFile}
+                  onShareFile={shareFile}
                 />
               )}
             </div>
@@ -372,12 +402,16 @@ function Breadcrumbs({
 function FileTable({
   entries,
   sharingPath,
+  selectedPath,
   onOpenFolder,
+  onSelectFile,
   onShareFile,
 }: {
   entries: FileEntry[];
   sharingPath?: string;
+  selectedPath?: string;
   onOpenFolder: (path: string) => void;
+  onSelectFile: (entry: FileEntry) => void;
   onShareFile: (path: string) => void;
 }) {
   return (
@@ -395,18 +429,25 @@ function FileTable({
         <tbody>
           {entries.map((entry) => {
             const isDirectory = entry.kind === 'directory';
+            const isSelected = entry.path === selectedPath;
 
             return (
               <tr
                 key={entry.path}
-                className="border-b border-border last:border-b-0"
+                className={cn(
+                  'border-b border-border last:border-b-0',
+                  isSelected && 'bg-muted/50'
+                )}
               >
                 <td className="px-4 py-3">
                   <button
                     type="button"
-                    className="flex max-w-[360px] items-center gap-2 overflow-hidden text-left font-medium hover:text-accent disabled:hover:text-foreground"
-                    onClick={() => isDirectory && onOpenFolder(entry.path)}
-                    disabled={!isDirectory}
+                    className="flex max-w-[360px] items-center gap-2 overflow-hidden text-left font-medium hover:text-accent"
+                    onClick={() =>
+                      isDirectory
+                        ? onOpenFolder(entry.path)
+                        : onSelectFile(entry)
+                    }
                     title={entry.path}
                   >
                     {isDirectory ? (
@@ -478,6 +519,66 @@ function FileTable({
   );
 }
 
+function SelectedFilePanel({
+  file,
+  sharingPath,
+  onClear,
+  onShareFile,
+}: {
+  file: FileEntry;
+  sharingPath?: string;
+  onClear: () => void;
+  onShareFile: (path: string) => void;
+}) {
+  return (
+    <section className="rounded-lg border border-border bg-white p-4">
+      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+        <div className="min-w-0">
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <Badge variant="outline">selected file</Badge>
+            <Badge variant="secondary">{formatBytes(file.size)}</Badge>
+          </div>
+          <h2 className="truncate text-base font-semibold" title={file.path}>
+            {file.name}
+          </h2>
+          <p className="mt-1 break-all text-xs text-muted-foreground">
+            {file.path}
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Modified {formatDate(file.updatedAt)}
+          </p>
+        </div>
+        <div className="flex shrink-0 flex-wrap gap-2">
+          <a href={getDownloadUrl(file.path)} target="_blank" rel="noreferrer">
+            <Button variant="outline" size="sm">
+              <Play aria-hidden="true" className="h-4 w-4" />
+              Open
+            </Button>
+          </a>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => onShareFile(file.path)}
+            disabled={sharingPath === file.path}
+          >
+            <Share2 aria-hidden="true" className="h-4 w-4" />
+            {sharingPath === file.path ? 'Sharing' : 'Share'}
+          </Button>
+          <a href={getDownloadUrl(file.path)}>
+            <Button variant="outline" size="sm">
+              <Download aria-hidden="true" className="h-4 w-4" />
+              Download
+            </Button>
+          </a>
+          <Button variant="ghost" size="sm" onClick={onClear}>
+            Clear
+          </Button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function EmptyState({ query }: { query: string }) {
   return (
     <div className="grid min-h-[320px] place-items-center p-8 text-center">
@@ -514,4 +615,13 @@ function LoadingTable() {
       ))}
     </div>
   );
+}
+
+function parentDirectory(filePath: string) {
+  const normalized = normalizePath(filePath);
+  const index = normalized.lastIndexOf('/');
+  if (index <= 0) {
+    return '/';
+  }
+  return normalized.slice(0, index);
 }

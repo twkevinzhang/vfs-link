@@ -8,10 +8,18 @@ import { TreeNode } from '../types/files';
 type TreeViewProps = {
   node?: TreeNode;
   currentPath: string;
+  selectedFilePath?: string;
   onSelectPath: (path: string) => void;
+  onSelectFile: (node: TreeNode) => void;
 };
 
-export function TreeView({ node, currentPath, onSelectPath }: TreeViewProps) {
+export function TreeView({
+  node,
+  currentPath,
+  selectedFilePath,
+  onSelectPath,
+  onSelectFile,
+}: TreeViewProps) {
   if (!node) {
     return null;
   }
@@ -21,7 +29,9 @@ export function TreeView({ node, currentPath, onSelectPath }: TreeViewProps) {
       <TreeItem
         node={node}
         currentPath={normalizePath(currentPath)}
+        selectedFilePath={selectedFilePath && normalizePath(selectedFilePath)}
         onSelectPath={onSelectPath}
+        onSelectFile={onSelectFile}
         depth={0}
       />
     </nav>
@@ -31,18 +41,24 @@ export function TreeView({ node, currentPath, onSelectPath }: TreeViewProps) {
 function TreeItem({
   node,
   currentPath,
+  selectedFilePath,
   onSelectPath,
+  onSelectFile,
   depth,
 }: {
   node: TreeNode;
   currentPath: string;
+  selectedFilePath?: string;
   onSelectPath: (path: string) => void;
+  onSelectFile: (node: TreeNode) => void;
   depth: number;
 }) {
   const path = normalizePath(node.path);
-  const isSelected = path === currentPath;
   const children = node.children ?? [];
   const isDirectory = node.kind === 'directory';
+  const isSelected = isDirectory
+    ? path === currentPath
+    : path === selectedFilePath;
   const hasChildren = children.length > 0;
   const Icon = !isDirectory ? File : isSelected ? FolderOpen : Folder;
 
@@ -56,7 +72,7 @@ function TreeItem({
           isSelected && 'font-semibold'
         )}
         style={{ paddingLeft: `${Math.min(depth * 14 + 8, 56)}px` }}
-        onClick={() => onSelectPath(path)}
+        onClick={() => (isDirectory ? onSelectPath(path) : onSelectFile(node))}
         title={path}
       >
         {isDirectory ? (
@@ -80,7 +96,9 @@ function TreeItem({
               key={child.path}
               node={child}
               currentPath={currentPath}
+              selectedFilePath={selectedFilePath}
               onSelectPath={onSelectPath}
+              onSelectFile={onSelectFile}
               depth={depth + 1}
             />
           ))}

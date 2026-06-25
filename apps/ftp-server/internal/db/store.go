@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -113,9 +114,9 @@ func (s *Store) ListPrefix(ctx context.Context, prefix string) ([]FileRecord, er
 	rows, err := s.pool.Query(ctx, `
 SELECT id, "logicPath", "physicalHash", size, "isDirectory", "updatedAt"
 FROM "File"
-WHERE left("logicPath", $2) = $1
+WHERE left("logicPath", char_length($1)) = $1
 ORDER BY "logicPath"
-`, prefix, len(prefix))
+`, prefix)
 	if err != nil {
 		return nil, err
 	}
@@ -265,9 +266,9 @@ WHERE id = $2
 		children, err := tx.Query(ctx, `
 SELECT id, "logicPath"
 FROM "File"
-WHERE left("logicPath", $2) = $1
+WHERE left("logicPath", char_length($1)) = $1
 ORDER BY "logicPath"
-`, oldPrefix, len(oldPrefix))
+`, oldPrefix)
 		if err != nil {
 			return err
 		}
@@ -290,7 +291,7 @@ ORDER BY "logicPath"
 		}
 
 		for _, child := range childRows {
-			newChildPath := newPrefix + child.logicPath[len(oldPrefix):]
+			newChildPath := newPrefix + strings.TrimPrefix(child.logicPath, oldPrefix)
 			if _, err := tx.Exec(ctx, `
 UPDATE "File"
 SET "logicPath" = $1, "updatedAt" = now()
@@ -310,7 +311,7 @@ func (s *Store) DeletePath(ctx context.Context, logicPath string) error {
 }
 
 func (s *Store) DeletePrefix(ctx context.Context, prefix string) error {
-	_, err := s.pool.Exec(ctx, `DELETE FROM "File" WHERE left("logicPath", $2) = $1`, prefix, len(prefix))
+	_, err := s.pool.Exec(ctx, `DELETE FROM "File" WHERE left("logicPath", char_length($1)) = $1`, prefix)
 	return err
 }
 
