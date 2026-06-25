@@ -86,16 +86,16 @@ pnpm --dir apps/web build
 
 ### 5. File sharing via GCS
 
-v3 新增「檔案分享」流程。主儲存仍維持 local-first；分享時才由 Go server 將指定 logical file 的 local object 上傳到 `SHARE_GCS_BUCKET`，產生分享連結，並在使用者輸入 email 時寄送通知。
+v3 新增「檔案分享」流程。主儲存仍維持 local-first；分享時才由 Go server 將指定 logical file 的 local object 上傳到 `SHARE_GCS_BUCKET`，產生分享連結，並透過 Telegram Bot API 發送通知。
 
 影響：
 
 - GCS 回到系統中，但角色變成分享出口，不是 FTP 主儲存。
 - legacy GCS source 只用於舊資料 lazy backfill；分享目的 bucket 仍由 `SHARE_GCS_BUCKET` 決定。
 - 前端檔案列表新增 `Share` action，會開啟 `/share/:id` 新頁面。
-- 分享頁顯示目的 GCS URL、檔案資訊、email 輸入欄、上傳狀態與完成連結。
-- 後端以 `"Share"` table 持久化狀態，支援 `draft`、`uploading`、`completed`、`email_sent`、`failed`、`email_failed`。
-- email 設定缺漏時，GCS 上傳仍可完成，但 email 狀態會標示為 `email_failed`。
+- 分享頁顯示目的 GCS URL、檔案資訊、Telegram 目標 chat、上傳狀態與完成連結。
+- 後端以 `"Share"` table 持久化狀態，支援 `draft`、`uploading`、`completed`、`notified`、`notification_failed`、`failed`，並保留舊 `email_failed` 狀態重試相容性。
+- Telegram 設定缺漏或 bot 無法送到目標 chat 時，GCS 上傳仍可完成，但通知狀態會標示為 `notification_failed`。
 
 ## 實機驗證重點
 
@@ -108,5 +108,5 @@ v3 新增「檔案分享」流程。主儲存仍維持 local-first；分享時�
 - `apps/web` 是否能顯示 `/api/status`、`/api/tree` 與 `/api/files` 的資料。
 - 分享 draft 是否能由檔案 row 建立並開啟 `/share/:id`。
 - `POST /api/shares/{id}/start` 是否能將 local object 上傳到 `SHARE_GCS_BUCKET`。
-- 有 email 時，完成上傳後是否寄出包含分享連結的通知。
+- 完成上傳後是否透過 Telegram 送出包含分享連結的通知。
 - Docker Compose volume `objectdata` 是否能跨 container restart 保留 object bytes。

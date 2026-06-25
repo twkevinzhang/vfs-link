@@ -76,8 +76,9 @@ export function getShare(id: string) {
   return requestJson<ShareRecord>(`/api/shares/${encodeURIComponent(id)}`);
 }
 
-export function startShare(id: string, email: string) {
-  return postJson<ShareRecord>(`/api/shares/${encodeURIComponent(id)}/start`, {
-    email,
-  });
+export function startShare(id: string) {
+  return postJson<ShareRecord>(
+    `/api/shares/${encodeURIComponent(id)}/start`,
+    {}
+  );
 }

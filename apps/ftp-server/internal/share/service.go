@@ -6,8 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net/mail"
-	"net/smtp"
+	"net/http"
 	"net/url"
 	"path"
 	"strings"
@@ -21,12 +20,13 @@ import (
 )
 
 const (
-	StatusDraft       = "draft"
-	StatusUploading   = "uploading"
-	StatusCompleted   = "completed"
-	StatusEmailSent   = "email_sent"
-	StatusFailed      = "failed"
-	StatusEmailFailed = "email_failed"
+	StatusDraft             = "draft"
+	StatusUploading         = "uploading"
+	StatusCompleted         = "completed"
+	StatusNotified          = "notified"
+	StatusFailed            = "failed"
+	StatusNotifyFailed      = "notification_failed"
+	StatusEmailFailedLegacy = "email_failed"
 )
 
 type Service struct {
@@ -77,16 +77,7 @@ func (s *Service) Find(ctx context.Context, id string) (db.ShareRecord, bool, er
 	return s.store.FindShare(ctx, id)
 }
 
-func (s *Service) Start(ctx context.Context, id, email string) (db.ShareRecord, error) {
-	email = strings.TrimSpace(email)
-	if email != "" {
-		parsedEmail, err := mail.ParseAddress(email)
-		if err != nil {
-			return db.ShareRecord{}, fmt.Errorf("invalid email address")
-		}
-		email = parsedEmail.Address
-	}
-
+func (s *Service) Start(ctx context.Context, id string) (db.ShareRecord, error) {
 	record, found, err := s.store.FindShare(ctx, id)
 	if err != nil {
 		return db.ShareRecord{}, err
@@ -97,11 +88,12 @@ func (s *Service) Start(ctx context.Context, id, email string) (db.ShareRecord, 
 	if record.Status == StatusUploading {
 		return record, nil
 	}
-	if record.Status != StatusDraft && record.Status != StatusFailed && record.Status != StatusEmailFailed {
+	if record.Status != StatusDraft && record.Status != StatusFailed &&
+		record.Status != StatusNotifyFailed && record.Status != StatusEmailFailedLegacy {
 		return record, nil
 	}
 
-	record, err = s.store.MarkShareUploading(ctx, id, email)
+	record, err = s.store.MarkShareUploading(ctx, id, strings.TrimSpace(s.cfg.TelegramChatID))
 	if err != nil {
 		return db.ShareRecord{}, err
 	}
@@ -131,16 +123,17 @@ func (s *Service) run(id string) {
 		return
 	}
 
-	if strings.TrimSpace(record.Email) == "" {
+	if strings.TrimSpace(s.cfg.TelegramBotToken) == "" || strings.TrimSpace(s.cfg.TelegramChatID) == "" {
+		_, _ = s.store.MarkShareFailed(context.Background(), id, StatusNotifyFailed, "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are required")
 		return
 	}
-	if err := s.sendNotification(record); err != nil {
-		s.logger.Error("share email failed", "share_id", id, "email", record.Email, "error", err)
-		_, _ = s.store.MarkShareFailed(context.Background(), id, StatusEmailFailed, err.Error())
+	if err := s.sendNotification(ctx, record); err != nil {
+		s.logger.Error("share telegram notification failed", "share_id", id, "chat_id", s.cfg.TelegramChatID, "error", err)
+		_, _ = s.store.MarkShareFailed(context.Background(), id, StatusNotifyFailed, err.Error())
 		return
 	}
-	if _, err := s.store.MarkShareEmailSent(context.Background(), id); err != nil {
-		s.logger.Error("mark share email sent", "share_id", id, "error", err)
+	if _, err := s.store.MarkShareNotified(context.Background(), id); err != nil {
+		s.logger.Error("mark share notified", "share_id", id, "error", err)
 	}
 }
 
@@ -173,41 +166,55 @@ func (s *Service) upload(ctx context.Context, record db.ShareRecord) error {
 	return nil
 }
 
-func (s *Service) sendNotification(record db.ShareRecord) error {
-	if strings.TrimSpace(record.Email) == "" {
-		return nil
-	}
-	if strings.TrimSpace(s.cfg.SMTPHost) == "" || strings.TrimSpace(s.cfg.SMTPFrom) == "" {
-		return errors.New("SMTP_HOST and SMTP_FROM are required to send share email")
-	}
-	from, err := mail.ParseAddress(s.cfg.SMTPFrom)
-	if err != nil {
-		return fmt.Errorf("invalid SMTP_FROM address")
-	}
-	to, err := mail.ParseAddress(record.Email)
-	if err != nil {
-		return fmt.Errorf("invalid share email address")
+func (s *Service) sendNotification(ctx context.Context, record db.ShareRecord) error {
+	botToken := strings.TrimSpace(s.cfg.TelegramBotToken)
+	chatID := strings.TrimSpace(s.cfg.TelegramChatID)
+	if botToken == "" || chatID == "" {
+		return errors.New("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are required")
 	}
 
-	addr := fmt.Sprintf("%s:%d", s.cfg.SMTPHost, s.cfg.SMTPPort)
-	var auth smtp.Auth
-	if strings.TrimSpace(s.cfg.SMTPUser) != "" || strings.TrimSpace(s.cfg.SMTPPass) != "" {
-		auth = smtp.PlainAuth("", s.cfg.SMTPUser, s.cfg.SMTPPass, s.cfg.SMTPHost)
-	}
-
-	subject := fmt.Sprintf("vfs-link shared file: %s", sanitizeHeader(record.FileName))
-	body := fmt.Sprintf("File: %s\nLink: %s\n", record.FileName, record.ShareURL)
 	message := strings.Join([]string{
-		fmt.Sprintf("From: %s", from.String()),
-		fmt.Sprintf("To: %s", to.String()),
-		fmt.Sprintf("Subject: %s", subject),
-		"MIME-Version: 1.0",
-		"Content-Type: text/plain; charset=UTF-8",
-		"",
-		body,
-	}, "\r\n")
+		"vfs-link shared file",
+		fmt.Sprintf("File: %s", record.FileName),
+		fmt.Sprintf("Path: %s", record.LogicPath),
+		fmt.Sprintf("Size: %s", formatBytes(record.Size)),
+		fmt.Sprintf("Link: %s", record.ShareURL),
+	}, "\n")
 
-	return smtp.SendMail(addr, auth, from.Address, []string{to.Address}, []byte(message))
+	form := url.Values{}
+	form.Set("chat_id", chatID)
+	form.Set("text", message)
+	form.Set("disable_web_page_preview", "true")
+
+	endpoint := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", botToken)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		return fmt.Errorf("create telegram request: %w", err)
+	}
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return fmt.Errorf("send telegram message: %s", redactTelegramToken(err.Error(), botToken))
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		return fmt.Errorf(
+			"telegram sendMessage status %d: %s",
+			response.StatusCode,
+			redactTelegramToken(strings.TrimSpace(string(body)), botToken),
+		)
+	}
+	return nil
+}
+
+func redactTelegramToken(value, botToken string) string {
+	if botToken == "" {
+		return value
+	}
+	return strings.ReplaceAll(value, botToken, "<redacted>")
 }
 
 func (s *Service) destinationObject(id, fileName string) string {
@@ -237,12 +244,6 @@ func escapeObjectName(objectName string) string {
 	return strings.Join(parts, "/")
 }
 
-func sanitizeHeader(value string) string {
-	value = strings.ReplaceAll(value, "\r", " ")
-	value = strings.ReplaceAll(value, "\n", " ")
-	return strings.TrimSpace(value)
-}
-
 func cleanPath(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" || value == "." {
@@ -252,4 +253,17 @@ func cleanPath(value string) string {
 		value = "/" + value
 	}
 	return path.Clean(value)
+}
+
+func formatBytes(size int64) string {
+	const unit = 1024
+	if size < unit {
+		return fmt.Sprintf("%d B", size)
+	}
+	div, exp := int64(unit), 0
+	for value := size / unit; value >= unit; value /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(size)/float64(div), "KMGTPE"[exp])
 }

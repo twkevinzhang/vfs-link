@@ -4,7 +4,6 @@ import {
   CheckCircle2,
   Copy,
   Loader2,
-  Mail,
   RefreshCcw,
   Send,
   UploadCloud,
@@ -21,7 +20,6 @@ import {
   CardHeader,
   CardTitle,
 } from '../components/ui/card';
-import { Input } from '../components/ui/input';
 import { Skeleton } from '../components/ui/skeleton';
 import { getShare, startShare } from '../lib/api';
 import { formatBytes, formatDate } from '../lib/format';
@@ -29,6 +27,8 @@ import { ShareRecord, ShareStatus } from '../types/share';
 
 const terminalStatuses = new Set<ShareStatus>([
   'completed',
+  'notified',
+  'notification_failed',
   'email_sent',
   'failed',
   'email_failed',
@@ -38,6 +38,8 @@ const statusLabels = {
   draft: 'draft',
   uploading: 'uploading',
   completed: 'completed',
+  notified: 'notified',
+  notification_failed: 'notification failed',
   email_sent: 'email sent',
   failed: 'failed',
   email_failed: 'email failed',
@@ -46,7 +48,6 @@ const statusLabels = {
 export default function ShareRoute() {
   const { shareId } = useParams();
   const [share, setShare] = useState<ShareRecord>();
-  const [email, setEmail] = useState('');
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string>();
@@ -61,9 +62,6 @@ export default function ShareRoute() {
     try {
       const nextShare = await getShare(shareId);
       setShare(nextShare);
-      if (nextShare.email) {
-        setEmail(nextShare.email);
-      }
       setError(undefined);
     } catch (loadError) {
       setError(
@@ -95,7 +93,7 @@ export default function ShareRoute() {
     setStarting(true);
     setError(undefined);
     try {
-      const nextShare = await startShare(shareId, email.trim());
+      const nextShare = await startShare(shareId);
       setShare(nextShare);
     } catch (startError) {
       setError(
@@ -120,10 +118,13 @@ export default function ShareRoute() {
   const canStart =
     share?.status === 'draft' ||
     share?.status === 'failed' ||
+    share?.status === 'notification_failed' ||
     share?.status === 'email_failed';
   const isBusy = share?.status === 'uploading' || starting;
   const isSuccessful =
-    share?.status === 'completed' || share?.status === 'email_sent';
+    share?.status === 'completed' ||
+    share?.status === 'notified' ||
+    share?.status === 'email_sent';
 
   return (
     <main className="min-h-screen bg-background text-foreground">
@@ -198,18 +199,17 @@ export default function ShareRoute() {
               <Card>
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2">
-                    <Mail aria-hidden="true" className="h-5 w-5" />
-                    Notification
+                    <Send aria-hidden="true" className="h-5 w-5" />
+                    Telegram notification
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="grid gap-4">
-                  <Input
-                    type="email"
-                    value={email}
-                    onChange={(event) => setEmail(event.target.value)}
-                    placeholder="Email"
-                    disabled={!canStart || isBusy}
-                  />
+                  <div className="rounded-md border border-border bg-muted/40 p-3 text-sm">
+                    <p className="font-medium">Target chat</p>
+                    <p className="mt-1 break-all text-muted-foreground">
+                      {share.notificationTarget || 'Configured on server'}
+                    </p>
+                  </div>
                   <div className="flex flex-wrap gap-2">
                     <Button
                       onClick={() => void handleStart()}
@@ -249,7 +249,11 @@ export default function ShareRoute() {
                 />
                 <StatusRow
                   active={share.status === 'uploading'}
-                  done={isSuccessful || share.status === 'email_failed'}
+                  done={
+                    isSuccessful ||
+                    share.status === 'notification_failed' ||
+                    share.status === 'email_failed'
+                  }
                   label="Upload"
                   detail={
                     share.completedAt
@@ -258,13 +262,13 @@ export default function ShareRoute() {
                   }
                 />
                 <StatusRow
-                  active={share.status === 'email_sent'}
-                  done={share.status === 'email_sent'}
-                  label="Email"
+                  active={share.status === 'notified'}
+                  done={share.status === 'notified'}
+                  label="Telegram"
                   detail={
                     share.notifiedAt
                       ? formatDate(share.notifiedAt)
-                      : share.email || '-'
+                      : share.notificationTarget || share.email || '-'
                   }
                 />
                 {share.error && (

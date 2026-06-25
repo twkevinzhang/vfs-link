@@ -20,11 +20,8 @@ services:
       - SHARE_GCS_BUCKET=${SHARE_GCS_BUCKET:-}
       - SHARE_GCS_PREFIX=${SHARE_GCS_PREFIX:-shares}
       - SHARE_PUBLIC_BASE_URL=${SHARE_PUBLIC_BASE_URL:-}
-      - SMTP_HOST=${SMTP_HOST:-}
-      - SMTP_PORT=${SMTP_PORT:-587}
-      - SMTP_USER=${SMTP_USER:-}
-      - SMTP_PASS=${SMTP_PASS:-}
-      - SMTP_FROM=${SMTP_FROM:-}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
     volumes:
       - objectdata:/data/objects
     depends_on:

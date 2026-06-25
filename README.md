@@ -60,7 +60,7 @@ CREATE INDEX IF NOT EXISTS "File_logicPath_idx" ON "File" ("logicPath");
 - `GET /api/download?path=/docs/a.pdf`: downloads a logical file.
 - `POST /api/shares/drafts`: creates a GCS share draft for a logical file.
 - `GET /api/shares/{id}`: reads a share job.
-- `POST /api/shares/{id}/start`: uploads the file to GCS and sends email when configured.
+- `POST /api/shares/{id}/start`: uploads the file to GCS and sends a Telegram notification when configured.
 
 ## Local React Browser
 
@@ -106,7 +106,7 @@ VITE_BASE_PATH='/vfs-link/index' VITE_API_BASE_URL='/vfs-link' pnpm --dir apps/w
 
 ## File Sharing
 
-v3 remains local-first for FTP storage. File sharing is an export workflow: the Go server reads the local object, uploads it to the configured GCS bucket, then optionally sends the share link by email.
+v3 remains local-first for FTP storage. File sharing is an export workflow: the Go server reads the local object, uploads it to the configured GCS bucket, then sends the share link through Telegram when configured.
 
 For deployments migrated from the v2 GCS-backed store, set `LEGACY_GCS_BUCKET`
 or keep the old `GCS_BUCKET`. When a local object is missing, the server reads
@@ -125,13 +125,10 @@ Optional:
 - `LEGACY_GCS_BUCKET`: legacy source bucket for lazy local backfill
 - `SHARE_GCS_PREFIX`: object prefix, defaults to `shares`
 - `SHARE_PUBLIC_BASE_URL`: public base URL for generated links; defaults to `https://storage.googleapis.com/{bucket}`
-- `SMTP_HOST`: SMTP host for email notifications
-- `SMTP_PORT`: SMTP port, defaults to `587`
-- `SMTP_USER`: SMTP username
-- `SMTP_PASS`: SMTP password
-- `SMTP_FROM`: sender address
+- `TELEGRAM_BOT_TOKEN`: Telegram bot token for share notifications
+- `TELEGRAM_CHAT_ID`: Telegram channel, group, or private chat id
 
-When `SMTP_HOST` or `SMTP_FROM` is missing, uploads still complete but email delivery for requested recipients is marked as `email_failed`.
+When `TELEGRAM_BOT_TOKEN` or `TELEGRAM_CHAT_ID` is missing, uploads still complete but notification delivery is marked as `notification_failed`.
 
 ## Environment
 
@@ -154,7 +151,7 @@ Optional:
 - `SHARE_GCS_BUCKET`: GCS bucket for file sharing
 - `SHARE_GCS_PREFIX`: GCS object prefix for shares, defaults to `shares`
 - `SHARE_PUBLIC_BASE_URL`: optional public URL prefix for share links
-- `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`: optional email notification settings
+- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`: optional Telegram notification settings
 
 ## Local Build
 

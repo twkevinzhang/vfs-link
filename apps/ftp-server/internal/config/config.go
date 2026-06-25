@@ -24,11 +24,8 @@ type Config struct {
 	ShareGCSBucket   string
 	ShareGCSPrefix   string
 	SharePublicURL   string
-	SMTPHost         string
-	SMTPPort         int
-	SMTPUser         string
-	SMTPPass         string
-	SMTPFrom         string
+	TelegramBotToken string
+	TelegramChatID   string
 	WebStaticRoot    string
 	WebBasePath      string
 	CommandArgs      []string
@@ -53,11 +50,8 @@ func Load(args []string) (Config, error) {
 		ShareGCSBucket:   envString("SHARE_GCS_BUCKET", ""),
 		ShareGCSPrefix:   envString("SHARE_GCS_PREFIX", "shares"),
 		SharePublicURL:   envString("SHARE_PUBLIC_BASE_URL", ""),
-		SMTPHost:         envString("SMTP_HOST", ""),
-		SMTPPort:         envInt("SMTP_PORT", 587),
-		SMTPUser:         envString("SMTP_USER", ""),
-		SMTPPass:         envString("SMTP_PASS", ""),
-		SMTPFrom:         envString("SMTP_FROM", ""),
+		TelegramBotToken: envString("TELEGRAM_BOT_TOKEN", ""),
+		TelegramChatID:   envString("TELEGRAM_CHAT_ID", ""),
 		WebStaticRoot:    envString("WEB_STATIC_ROOT", ""),
 		WebBasePath:      envString("WEB_BASE_PATH", "/"),
 	}
@@ -144,16 +138,10 @@ func applyOverride(cfg *Config, key, value string) {
 		cfg.ShareGCSPrefix = value
 	case "SHARE_PUBLIC_BASE_URL":
 		cfg.SharePublicURL = value
-	case "SMTP_HOST":
-		cfg.SMTPHost = value
-	case "SMTP_PORT":
-		cfg.SMTPPort = parseInt(value, cfg.SMTPPort)
-	case "SMTP_USER":
-		cfg.SMTPUser = value
-	case "SMTP_PASS":
-		cfg.SMTPPass = value
-	case "SMTP_FROM":
-		cfg.SMTPFrom = value
+	case "TELEGRAM_BOT_TOKEN":
+		cfg.TelegramBotToken = value
+	case "TELEGRAM_CHAT_ID":
+		cfg.TelegramChatID = value
 	case "WEB_STATIC_ROOT":
 		cfg.WebStaticRoot = value
 	case "WEB_BASE_PATH":

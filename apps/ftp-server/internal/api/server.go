@@ -69,25 +69,22 @@ type createShareDraftRequest struct {
 	Path string `json:"path"`
 }
 
-type startShareRequest struct {
-	Email string `json:"email"`
-}
-
 type shareResponse struct {
-	ID                string     `json:"id"`
-	LogicPath         string     `json:"logicPath"`
-	FileName          string     `json:"fileName"`
-	Size              int64      `json:"size"`
-	DestinationObject string     `json:"destinationObject"`
-	DestinationURL    string     `json:"destinationUrl"`
-	ShareURL          string     `json:"shareUrl"`
-	Email             string     `json:"email"`
-	Status            string     `json:"status"`
-	Error             string     `json:"error,omitempty"`
-	CreatedAt         time.Time  `json:"createdAt"`
-	UpdatedAt         time.Time  `json:"updatedAt"`
-	CompletedAt       *time.Time `json:"completedAt,omitempty"`
-	NotifiedAt        *time.Time `json:"notifiedAt,omitempty"`
+	ID                 string     `json:"id"`
+	LogicPath          string     `json:"logicPath"`
+	FileName           string     `json:"fileName"`
+	Size               int64      `json:"size"`
+	DestinationObject  string     `json:"destinationObject"`
+	DestinationURL     string     `json:"destinationUrl"`
+	ShareURL           string     `json:"shareUrl"`
+	Email              string     `json:"email"`
+	NotificationTarget string     `json:"notificationTarget"`
+	Status             string     `json:"status"`
+	Error              string     `json:"error,omitempty"`
+	CreatedAt          time.Time  `json:"createdAt"`
+	UpdatedAt          time.Time  `json:"updatedAt"`
+	CompletedAt        *time.Time `json:"completedAt,omitempty"`
+	NotifiedAt         *time.Time `json:"notifiedAt,omitempty"`
 }
 
 func New(store *db.Store, objects blob.Store, shares *share.Service, webStaticRoot string, webBasePath string) *Server {
@@ -276,12 +273,7 @@ func (s *Server) handleShare(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(parts) == 2 && parts[1] == "start" && r.Method == http.MethodPost {
-		var request startShareRequest
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON body")
-			return
-		}
-		record, err := s.shares.Start(r.Context(), id, request.Email)
+		record, err := s.shares.Start(r.Context(), id)
 		if err != nil {
 			writeAPIError(w, err)
 			return
@@ -361,20 +353,21 @@ func kind(record db.FileRecord) string {
 
 func toShareResponse(record db.ShareRecord) shareResponse {
 	return shareResponse{
-		ID:                record.ID,
-		LogicPath:         record.LogicPath,
-		FileName:          record.FileName,
-		Size:              record.Size,
-		DestinationObject: record.DestinationObject,
-		DestinationURL:    record.ShareURL,
-		ShareURL:          record.ShareURL,
-		Email:             record.Email,
-		Status:            record.Status,
-		Error:             record.Error,
-		CreatedAt:         record.CreatedAt,
-		UpdatedAt:         record.UpdatedAt,
-		CompletedAt:       record.CompletedAt,
-		NotifiedAt:        record.NotifiedAt,
+		ID:                 record.ID,
+		LogicPath:          record.LogicPath,
+		FileName:           record.FileName,
+		Size:               record.Size,
+		DestinationObject:  record.DestinationObject,
+		DestinationURL:     record.ShareURL,
+		ShareURL:           record.ShareURL,
+		Email:              record.Email,
+		NotificationTarget: record.Email,
+		Status:             record.Status,
+		Error:              record.Error,
+		CreatedAt:          record.CreatedAt,
+		UpdatedAt:          record.UpdatedAt,
+		CompletedAt:        record.CompletedAt,
+		NotifiedAt:         record.NotifiedAt,
 	}
 }
 

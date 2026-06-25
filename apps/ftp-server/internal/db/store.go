@@ -347,7 +347,7 @@ WHERE id = $1
 	return record, true, nil
 }
 
-func (s *Store) MarkShareUploading(ctx context.Context, id, email string) (ShareRecord, error) {
+func (s *Store) MarkShareUploading(ctx context.Context, id, notificationTarget string) (ShareRecord, error) {
 	row := s.pool.QueryRow(ctx, `
 UPDATE "Share"
 SET email = $2,
@@ -359,7 +359,7 @@ SET email = $2,
 WHERE id = $1
 RETURNING id, "logicPath", "physicalHash", "fileName", size, "destinationObject",
   "shareUrl", email, status, error, "createdAt", "updatedAt", "completedAt", "notifiedAt"
-`, id, email)
+`, id, notificationTarget)
 	return scanShare(row)
 }
 
@@ -377,10 +377,10 @@ RETURNING id, "logicPath", "physicalHash", "fileName", size, "destinationObject"
 	return scanShare(row)
 }
 
-func (s *Store) MarkShareEmailSent(ctx context.Context, id string) (ShareRecord, error) {
+func (s *Store) MarkShareNotified(ctx context.Context, id string) (ShareRecord, error) {
 	row := s.pool.QueryRow(ctx, `
 UPDATE "Share"
-SET status = 'email_sent',
+SET status = 'notified',
   error = '',
   "updatedAt" = now(),
   "notifiedAt" = now()
