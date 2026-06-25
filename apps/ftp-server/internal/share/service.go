@@ -147,7 +147,7 @@ func (s *Service) run(id string) {
 func (s *Service) upload(ctx context.Context, record db.ShareRecord) error {
 	reader, err := s.objects.NewReader(ctx, record.PhysicalHash)
 	if err != nil {
-		return fmt.Errorf("open local object: %w", err)
+		return fmt.Errorf("open source object: %w", err)
 	}
 	defer reader.Close()
 

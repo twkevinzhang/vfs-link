@@ -20,6 +20,7 @@ type Config struct {
 	DatabaseURL      string
 	StorageDriver    string
 	LocalStorageRoot string
+	LegacyGCSBucket  string
 	ShareGCSBucket   string
 	ShareGCSPrefix   string
 	SharePublicURL   string
@@ -48,6 +49,7 @@ func Load(args []string) (Config, error) {
 		DatabaseURL:      strings.TrimSpace(os.Getenv("DATABASE_URL")),
 		StorageDriver:    envString("STORAGE_DRIVER", "local"),
 		LocalStorageRoot: envString("LOCAL_STORAGE_ROOT", "./data/objects"),
+		LegacyGCSBucket:  envString("LEGACY_GCS_BUCKET", envString("GCS_BUCKET", "")),
 		ShareGCSBucket:   envString("SHARE_GCS_BUCKET", ""),
 		ShareGCSPrefix:   envString("SHARE_GCS_PREFIX", "shares"),
 		SharePublicURL:   envString("SHARE_PUBLIC_BASE_URL", ""),
@@ -130,6 +132,12 @@ func applyOverride(cfg *Config, key, value string) {
 		cfg.StorageDriver = value
 	case "LOCAL_STORAGE_ROOT":
 		cfg.LocalStorageRoot = value
+	case "LEGACY_GCS_BUCKET":
+		cfg.LegacyGCSBucket = value
+	case "GCS_BUCKET":
+		if cfg.LegacyGCSBucket == "" {
+			cfg.LegacyGCSBucket = value
+		}
 	case "SHARE_GCS_BUCKET":
 		cfg.ShareGCSBucket = value
 	case "SHARE_GCS_PREFIX":

@@ -108,6 +108,13 @@ VITE_BASE_PATH='/vfs-link/index' VITE_API_BASE_URL='/vfs-link' pnpm --dir apps/w
 
 v3 remains local-first for FTP storage. File sharing is an export workflow: the Go server reads the local object, uploads it to the configured GCS bucket, then optionally sends the share link by email.
 
+For deployments migrated from the v2 GCS-backed store, set `LEGACY_GCS_BUCKET`
+or keep the old `GCS_BUCKET`. When a local object is missing, the server reads
+that physical object from the legacy bucket, writes it back into
+`LOCAL_STORAGE_ROOT`, then retries from local storage. This is a lazy backfill:
+new FTP uploads still write to local storage first, and GCS is only used as a
+compatibility source for old records.
+
 Required for sharing:
 
 - `SHARE_GCS_BUCKET`: destination GCS bucket
@@ -115,6 +122,7 @@ Required for sharing:
 
 Optional:
 
+- `LEGACY_GCS_BUCKET`: legacy source bucket for lazy local backfill
 - `SHARE_GCS_PREFIX`: object prefix, defaults to `shares`
 - `SHARE_PUBLIC_BASE_URL`: public base URL for generated links; defaults to `https://storage.googleapis.com/{bucket}`
 - `SMTP_HOST`: SMTP host for email notifications
@@ -135,6 +143,7 @@ Required:
 Optional:
 
 - `STORAGE_DRIVER`: storage driver, currently only `local`, defaults to `local`
+- `LEGACY_GCS_BUCKET`: optional legacy GCS source for lazy backfill; falls back to `GCS_BUCKET` when unset
 - `FTP_USER`: FTP username, defaults to `admin`
 - `FTP_PASS`: FTP password, defaults to `admin123`
 - `FTP_PORT`: FTP control port, defaults to `21`
@@ -171,7 +180,7 @@ docker compose up -d
 
 Docker Compose exposes the read-only API on `${HTTP_PORT:-8080}` and persists local object bytes in the `objectdata` named volume.
 
-For self-hosted deployment, use `docker-compose.self-hosted.yml`. It keeps the server on host networking, reads the existing external `DATABASE_URL`, mounts the existing `./.auth/gcp-key.json` into `/app/gcp-key.json`, and stores local-first object bytes under `${LOCAL_STORAGE_HOST_PATH:-./data/objects}`. `deploy.sh` uses this compose file by default.
+For self-hosted deployment, use `docker-compose.self-hosted.yml`. It keeps the server on host networking, reads the existing external `DATABASE_URL`, mounts the existing `./.auth/gcp-key.json` into `/app/gcp-key.json`, and stores local-first object bytes under `${LOCAL_STORAGE_HOST_PATH:-./data/objects}`. If the existing `.env` still has `GCS_BUCKET`, the compose file passes it through so legacy v2 objects can be lazily backfilled into the local store. `deploy.sh` uses this compose file by default.
 The self-hosted deploy build also includes the React browser in the Go image and
 defaults it to `/vfs-link/index`, with API requests routed through
 `/vfs-link/api`.

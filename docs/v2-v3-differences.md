@@ -49,6 +49,7 @@ v3 將原本直接依賴 GCS client 的 VFS 改為依賴 `blob.Store` interface�
 
 - FTP/VFS logic 與 storage implementation 解耦。
 - 後續若要恢復 GCS、增加 S3、R2 或 hybrid sync，可新增 adapter 而不是重寫 FTP path。
+- 從 v2 GCS storage 遷移到 v3 local-first 時，可設定 `LEGACY_GCS_BUCKET` 或沿用 `GCS_BUCKET`。當 local object 不存在時，server 會從 legacy bucket 讀取同一個 `physicalHash`，寫回 `LOCAL_STORAGE_ROOT`，再從 local storage 服務後續下載與分享。
 
 ### 3. Read-only HTTP API
 
@@ -58,6 +59,7 @@ v3 新增 HTTP API，讓 local browser 可以用同一份 PostgreSQL mapping 瀏
 
 - 可直接用瀏覽器檢查目前 virtual file tree。
 - 可下載 logical file，實際 bytes 仍由 local object store stream。
+- 若該 bytes 尚未完成 local backfill，第一次下載會先從 legacy GCS source 補回 local object。
 - API 初版保持 read-only，避免 UI 一開始就具有破壞性操作。
 
 ### 4. Local React browser
@@ -89,6 +91,7 @@ v3 新增「檔案分享」流程。主儲存仍維持 local-first；分享時�
 影響：
 
 - GCS 回到系統中，但角色變成分享出口，不是 FTP 主儲存。
+- legacy GCS source 只用於舊資料 lazy backfill；分享目的 bucket 仍由 `SHARE_GCS_BUCKET` 決定。
 - 前端檔案列表新增 `Share` action，會開啟 `/share/:id` 新頁面。
 - 分享頁顯示目的 GCS URL、檔案資訊、email 輸入欄、上傳狀態與完成連結。
 - 後端以 `"Share"` table 持久化狀態，支援 `draft`、`uploading`、`completed`、`email_sent`、`failed`、`email_failed`。
@@ -101,6 +104,7 @@ v3 新增「檔案分享」流程。主儲存仍維持 local-first；分享時�
 - FTP rename 是否只改 DB，不改 physical object file name。
 - `/api/files?path=/` 是否與 FTP `LIST /` 一致。
 - `/api/download?path=...` 是否能下載同一個 logical file。
+- 舊 v2 檔案第一次下載或分享後，`LOCAL_STORAGE_ROOT` 是否出現對應 `physicalHash` 檔案。
 - `apps/web` 是否能顯示 `/api/status`、`/api/tree` 與 `/api/files` 的資料。
 - 分享 draft 是否能由檔案 row 建立並開啟 `/share/:id`。
 - `POST /api/shares/{id}/start` 是否能將 local object 上傳到 `SHARE_GCS_BUCKET`。

@@ -48,9 +48,19 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("ensure schema: %w", err)
 	}
 
-	objects, err := blob.NewLocal(cfg.LocalStorageRoot)
+	localObjects, err := blob.NewLocal(cfg.LocalStorageRoot)
 	if err != nil {
 		return err
+	}
+	var objects blob.Store = localObjects
+	if cfg.LegacyGCSBucket != "" {
+		legacyObjects, err := blob.NewGCS(ctx, cfg.LegacyGCSBucket)
+		if err != nil {
+			_ = localObjects.Close()
+			return err
+		}
+		objects = blob.NewFallback(localObjects, legacyObjects, logger)
+		logger.Info("enabled legacy GCS fallback", "bucket", cfg.LegacyGCSBucket)
 	}
 	defer objects.Close()
 
