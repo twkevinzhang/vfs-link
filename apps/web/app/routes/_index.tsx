@@ -333,23 +333,20 @@ function HeaderMetricBadge({
 
 function VisibleMetric({ value, detail }: { value: string; detail: string }) {
   return (
-    <div className="flex min-h-10 w-full items-center gap-3 rounded-md border border-border bg-white px-3 py-2 shadow-sm md:w-auto md:min-w-[170px]">
+    <Badge
+      variant="outline"
+      className="max-w-full gap-2 bg-white px-3 py-2 text-foreground shadow-sm"
+    >
       <Folder
         aria-hidden="true"
         className="h-4 w-4 shrink-0 text-muted-foreground"
       />
-      <div className="min-w-0">
-        <div className="truncate text-xs font-semibold text-muted-foreground">
-          Visible here
-        </div>
-        <div className="truncate text-sm font-semibold">
-          {value}
-          <span className="ml-2 text-xs font-normal text-muted-foreground">
-            {detail}
-          </span>
-        </div>
-      </div>
-    </div>
+      <span className="truncate text-muted-foreground">Visible here</span>
+      <span className="shrink-0 font-semibold">{value}</span>
+      <span className="shrink-0 font-normal text-muted-foreground">
+        {detail}
+      </span>
+    </Badge>
   );
 }
 
