@@ -137,8 +137,8 @@ export default function Index() {
   }, []);
 
   return (
-    <main className="min-h-screen bg-background text-foreground">
-      <div className="mx-auto flex min-h-screen w-full max-w-[1440px] flex-col gap-4 px-4 py-4 sm:px-6 lg:px-8">
+    <main className="min-h-screen bg-background text-foreground lg:h-screen lg:min-h-0 lg:overflow-hidden">
+      <div className="mx-auto flex min-h-screen w-full max-w-[1440px] flex-col gap-3 px-4 py-4 sm:px-6 lg:h-full lg:min-h-0 lg:px-8">
         <header className="flex flex-col gap-3 border-b border-border pb-3 xl:flex-row xl:items-center xl:justify-between">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <h1 className="mr-1 text-2xl font-semibold tracking-normal sm:text-3xl">
@@ -225,15 +225,15 @@ export default function Index() {
           </Alert>
         )}
 
-        <section className="grid min-h-[620px] gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
-          <aside className="rounded-lg border border-border bg-white p-4">
-            <div className="mb-4 grid gap-1">
+        <section className="grid gap-4 lg:min-h-0 lg:flex-1 lg:grid-cols-[320px_minmax(0,1fr)]">
+          <aside className="min-h-0 overflow-auto rounded-lg border border-border bg-white p-4">
+            <div className="mb-4 grid min-w-max gap-1">
               <h2 className="text-sm font-semibold">Folders</h2>
               <p className="text-xs text-muted-foreground">
                 {state.status?.storageRoot ?? 'LOCAL_STORAGE_ROOT'}
               </p>
             </div>
-            <div className="max-h-[560px] overflow-auto pr-1">
+            <div className="min-w-max pr-1">
               {state.loading && !state.tree ? (
                 <div className="grid gap-2">
                   <Skeleton className="h-8" />
@@ -260,9 +260,9 @@ export default function Index() {
             </div>
           </aside>
 
-          <section className="grid min-w-0 grid-rows-[auto_auto_minmax(0,1fr)] gap-4">
-            <div className="rounded-lg border border-border bg-white p-4">
-              <div className="min-w-0">
+          <section className="flex min-w-0 flex-col gap-4 lg:min-h-0">
+            <div className="overflow-x-auto rounded-lg border border-border bg-white p-4">
+              <div className="min-w-max">
                 <Breadcrumbs
                   entries={state.files?.breadcrumbs ?? []}
                   currentPath={currentPath}
@@ -280,7 +280,7 @@ export default function Index() {
               />
             )}
 
-            <div className="overflow-hidden rounded-lg border border-border bg-white">
+            <div className="min-h-0 overflow-hidden rounded-lg border border-border bg-white lg:flex-1">
               {state.loading && !state.files ? (
                 <LoadingTable />
               ) : visibleEntries.length === 0 ? (
@@ -377,7 +377,7 @@ function Breadcrumbs({
         ];
 
   return (
-    <div className="flex min-w-0 flex-wrap items-center gap-1 text-sm">
+    <div className="flex min-w-max flex-nowrap items-center gap-1 text-sm">
       {crumbs.map((entry, index) => {
         const path = normalizePath(entry.path);
         const isLast =
@@ -385,12 +385,12 @@ function Breadcrumbs({
         return (
           <div
             key={`${entry.path}-${index}`}
-            className="flex min-w-0 items-center gap-1"
+            className="flex shrink-0 items-center gap-1"
           >
             <Button
               variant={isLast ? 'secondary' : 'ghost'}
               size="sm"
-              className="max-w-[200px] truncate"
+              className="max-w-none shrink-0 whitespace-nowrap"
               onClick={() => onSelectPath(path)}
               title={path}
             >
@@ -420,7 +420,7 @@ function FileTable({
   onShareFile: (path: string) => void;
 }) {
   return (
-    <div className="overflow-x-auto">
+    <div className="h-full min-h-0 overflow-auto">
       <table className="w-full min-w-[760px] border-collapse text-sm">
         <thead>
           <tr className="border-b border-border bg-muted/70 text-left text-xs uppercase tracking-normal text-muted-foreground">
