@@ -138,46 +138,44 @@ export default function Index() {
 
   return (
     <main className="min-h-screen bg-background text-foreground">
-      <div className="mx-auto flex min-h-screen w-full max-w-[1440px] flex-col gap-6 px-4 py-5 sm:px-6 lg:px-8">
-        <header className="grid gap-4 border-b border-border pb-5">
-          <div className="grid gap-3">
-            <h1 className="text-2xl font-semibold tracking-normal sm:text-3xl">
+      <div className="mx-auto flex min-h-screen w-full max-w-[1440px] flex-col gap-4 px-4 py-4 sm:px-6 lg:px-8">
+        <header className="flex flex-col gap-3 border-b border-border pb-3 xl:flex-row xl:items-center xl:justify-between">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <h1 className="mr-1 text-2xl font-semibold tracking-normal sm:text-3xl">
               vfs-link file browser
             </h1>
-            <div className="flex flex-wrap items-center gap-2">
-              <HeaderMetricBadge
-                icon={<Database aria-hidden="true" className="h-4 w-4" />}
-                label="Files"
-                value={
-                  state.status ? String(state.status.stats.fileCount) : '-'
-                }
-                detail={`${state.status?.stats.directoryCount ?? 0} folders`}
-              />
-              <HeaderMetricBadge
-                icon={<HardDrive aria-hidden="true" className="h-4 w-4" />}
-                label="Logical bytes"
-                value={formatBytes(state.status?.stats.totalBytes ?? 0)}
-                detail="Postgres file records"
-              />
-              <HeaderMetricBadge
-                icon={<Server aria-hidden="true" className="h-4 w-4" />}
-                label="Local objects"
-                value={String(state.status?.stats.localObjectCount ?? 0)}
-                detail={formatBytes(state.status?.stats.localObjectBytes ?? 0)}
-              />
-            </div>
+            <HeaderMetricBadge
+              icon={<Database aria-hidden="true" className="h-3.5 w-3.5" />}
+              label="Files"
+              value={state.status ? String(state.status.stats.fileCount) : '-'}
+              detail={`${state.status?.stats.directoryCount ?? 0} folders`}
+            />
+            <HeaderMetricBadge
+              icon={<HardDrive aria-hidden="true" className="h-3.5 w-3.5" />}
+              label="Logical bytes"
+              shortLabel="Bytes"
+              value={formatBytes(state.status?.stats.totalBytes ?? 0)}
+              detail="Postgres file records"
+            />
+            <HeaderMetricBadge
+              icon={<Server aria-hidden="true" className="h-3.5 w-3.5" />}
+              label="Local objects"
+              shortLabel="Objects"
+              value={String(state.status?.stats.localObjectCount ?? 0)}
+              detail={formatBytes(state.status?.stats.localObjectBytes ?? 0)}
+            />
           </div>
-          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-end">
-            <div className="relative w-full md:max-w-[420px]">
+          <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-end xl:shrink-0">
+            <div className="relative w-full md:w-[320px]">
               <Search
                 aria-hidden="true"
-                className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+                className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
               />
               <Input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="Search current folder"
-                className="pl-9"
+                className="h-9 pl-8"
               />
             </div>
             <VisibleMetric
@@ -189,7 +187,7 @@ export default function Index() {
               onClick={() => void load(currentPath)}
               disabled={state.loading}
               title="重新整理"
-              className="w-full md:w-auto"
+              className="h-9 w-full px-3 md:w-auto"
             >
               <RefreshCcw aria-hidden="true" className="h-4 w-4" />
               Refresh
@@ -308,23 +306,28 @@ export default function Index() {
 function HeaderMetricBadge({
   icon,
   label,
+  shortLabel,
   value,
   detail,
 }: {
   icon: React.ReactNode;
   label: string;
+  shortLabel?: string;
   value: string;
   detail: string;
 }) {
   return (
     <Badge
       variant="outline"
-      className="max-w-full gap-2 bg-white px-3 py-2 text-foreground shadow-sm"
+      className="h-8 max-w-full gap-1.5 bg-white px-2.5 py-1.5 text-foreground shadow-sm"
+      title={`${label}: ${value} (${detail})`}
     >
       <span className="shrink-0 text-muted-foreground">{icon}</span>
-      <span className="truncate text-muted-foreground">{label}</span>
+      <span className="truncate text-muted-foreground">
+        {shortLabel ?? label}
+      </span>
       <span className="shrink-0 font-semibold">{value}</span>
-      <span className="hidden truncate font-normal text-muted-foreground sm:inline">
+      <span className="hidden truncate font-normal text-muted-foreground 2xl:inline">
         {detail}
       </span>
     </Badge>
@@ -335,11 +338,12 @@ function VisibleMetric({ value, detail }: { value: string; detail: string }) {
   return (
     <Badge
       variant="outline"
-      className="max-w-full gap-2 bg-white px-3 py-2 text-foreground shadow-sm"
+      className="h-9 max-w-full gap-1.5 bg-white px-2.5 py-1.5 text-foreground shadow-sm"
+      title={`Visible here: ${value} (${detail})`}
     >
       <Folder
         aria-hidden="true"
-        className="h-4 w-4 shrink-0 text-muted-foreground"
+        className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
       />
       <span className="truncate text-muted-foreground">Visible here</span>
       <span className="shrink-0 font-semibold">{value}</span>
