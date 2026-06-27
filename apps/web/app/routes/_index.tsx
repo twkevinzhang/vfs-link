@@ -140,14 +140,12 @@ export default function Index() {
     <main className="min-h-screen bg-background text-foreground">
       <div className="mx-auto flex min-h-screen w-full max-w-[1440px] flex-col gap-6 px-4 py-5 sm:px-6 lg:px-8">
         <header className="grid gap-4 border-b border-border pb-5">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-            <div className="min-w-0">
-              <h1 className="text-2xl font-semibold tracking-normal sm:text-3xl">
-                vfs-link file browser
-              </h1>
-            </div>
-            <div className="grid gap-3 sm:grid-cols-3 lg:min-w-[620px] xl:min-w-[720px]">
-              <HeaderMetric
+          <div className="grid gap-3">
+            <h1 className="text-2xl font-semibold tracking-normal sm:text-3xl">
+              vfs-link file browser
+            </h1>
+            <div className="flex flex-wrap items-center gap-2">
+              <HeaderMetricBadge
                 icon={<Database aria-hidden="true" className="h-4 w-4" />}
                 label="Files"
                 value={
@@ -155,13 +153,13 @@ export default function Index() {
                 }
                 detail={`${state.status?.stats.directoryCount ?? 0} folders`}
               />
-              <HeaderMetric
+              <HeaderMetricBadge
                 icon={<HardDrive aria-hidden="true" className="h-4 w-4" />}
                 label="Logical bytes"
                 value={formatBytes(state.status?.stats.totalBytes ?? 0)}
                 detail="Postgres file records"
               />
-              <HeaderMetric
+              <HeaderMetricBadge
                 icon={<Server aria-hidden="true" className="h-4 w-4" />}
                 label="Local objects"
                 value={String(state.status?.stats.localObjectCount ?? 0)}
@@ -307,7 +305,7 @@ export default function Index() {
   );
 }
 
-function HeaderMetric({
+function HeaderMetricBadge({
   icon,
   label,
   value,
@@ -319,16 +317,17 @@ function HeaderMetric({
   detail: string;
 }) {
   return (
-    <div className="min-w-0 rounded-lg border border-border bg-white px-4 py-3 shadow-sm">
-      <div className="grid gap-1">
-        <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground">
-          {icon}
-          <span className="truncate">{label}</span>
-        </div>
-        <div className="truncate text-xl font-semibold">{value}</div>
-        <div className="truncate text-xs text-muted-foreground">{detail}</div>
-      </div>
-    </div>
+    <Badge
+      variant="outline"
+      className="max-w-full gap-2 bg-white px-3 py-2 text-foreground shadow-sm"
+    >
+      <span className="shrink-0 text-muted-foreground">{icon}</span>
+      <span className="truncate text-muted-foreground">{label}</span>
+      <span className="shrink-0 font-semibold">{value}</span>
+      <span className="hidden truncate font-normal text-muted-foreground sm:inline">
+        {detail}
+      </span>
+    </Badge>
   );
 }
 
