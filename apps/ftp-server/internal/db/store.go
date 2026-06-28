@@ -22,6 +22,19 @@ type FileRecord struct {
 	UpdatedAt    time.Time
 }
 
+type DirectChildrenOptions struct {
+	Query           string
+	DirectoriesOnly bool
+	Limit           int
+	Offset          int
+}
+
+type DirectChildrenPage struct {
+	Records    []FileRecord
+	Total      int
+	TotalBytes int64
+}
+
 type ShareRecord struct {
 	ID                string
 	LogicPath         string
@@ -153,6 +166,87 @@ ORDER BY "logicPath"
 		records = append(records, record)
 	}
 	return records, rows.Err()
+}
+
+func (s *Store) ListDirectChildren(ctx context.Context, dirPath string, options DirectChildrenOptions) (DirectChildrenPage, error) {
+	prefix := withTrailingSlash(dirPath)
+	filters := []string{`suffix <> ''`, `position('/' in suffix) = 0`}
+	args := []any{prefix, dirPath}
+
+	if options.DirectoriesOnly {
+		filters = append(filters, `"isDirectory" = true`)
+	}
+
+	query := strings.TrimSpace(strings.ToLower(options.Query))
+	if query != "" {
+		args = append(args, "%"+query+"%")
+		placeholder := fmt.Sprintf("$%d", len(args))
+		filters = append(filters, fmt.Sprintf(`(lower(suffix) LIKE %s OR lower("logicPath") LIKE %s)`, placeholder, placeholder))
+	}
+
+	whereClause := strings.Join(filters, " AND ")
+	baseSQL := `
+WITH direct AS (
+  SELECT id, "logicPath", "physicalHash", size, "isDirectory", "updatedAt",
+    substring("logicPath" from char_length($1) + 1) AS suffix
+  FROM "File"
+  WHERE "logicPath" <> $2
+    AND left("logicPath", char_length($1)) = $1
+)
+`
+
+	var page DirectChildrenPage
+	countSQL := fmt.Sprintf(`%s
+SELECT count(*), coalesce(sum(CASE WHEN "isDirectory" THEN 0 ELSE size END), 0)::bigint
+FROM direct
+WHERE %s
+`, baseSQL, whereClause)
+	var total int64
+	if err := s.pool.QueryRow(ctx, countSQL, args...).Scan(&total, &page.TotalBytes); err != nil {
+		return DirectChildrenPage{}, err
+	}
+	page.Total = int(total)
+	if page.Total == 0 {
+		return page, nil
+	}
+
+	limitClause := ""
+	recordArgs := append([]any{}, args...)
+	if options.Limit > 0 {
+		limit := options.Limit
+		offset := options.Offset
+		if offset < 0 {
+			offset = 0
+		}
+		recordArgs = append(recordArgs, limit, offset)
+		limitClause = fmt.Sprintf("LIMIT $%d OFFSET $%d", len(recordArgs)-1, len(recordArgs))
+	}
+
+	recordsSQL := fmt.Sprintf(`%s
+SELECT id, "logicPath", "physicalHash", size, "isDirectory", "updatedAt"
+FROM direct
+WHERE %s
+ORDER BY "isDirectory" DESC, suffix
+%s
+`, baseSQL, whereClause, limitClause)
+
+	rows, err := s.pool.Query(ctx, recordsSQL, recordArgs...)
+	if err != nil {
+		return DirectChildrenPage{}, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		record, err := scanFile(rows)
+		if err != nil {
+			return DirectChildrenPage{}, err
+		}
+		page.Records = append(page.Records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return DirectChildrenPage{}, err
+	}
+	return page, nil
 }
 
 func (s *Store) UpsertFile(ctx context.Context, logicPath, physicalHash string, size int64) error {

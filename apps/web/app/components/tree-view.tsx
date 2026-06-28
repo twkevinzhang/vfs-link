@@ -1,4 +1,4 @@
-import { ChevronRight, File, Folder, FolderOpen } from 'lucide-react';
+import { ChevronRight, Folder, FolderOpen } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 import { Button } from './ui/button';
@@ -11,21 +11,19 @@ const TREE_BATCH_SIZE = 50;
 type TreeViewProps = {
   node?: TreeNode;
   currentPath: string;
-  selectedFilePath?: string;
+  loadingPaths: Set<string>;
   onSelectPath: (path: string) => void;
-  onSelectFile: (node: TreeNode) => void;
+  onLoadChildren: (path: string) => void;
 };
 
 export function TreeView({
   node,
   currentPath,
-  selectedFilePath,
+  loadingPaths,
   onSelectPath,
-  onSelectFile,
+  onLoadChildren,
 }: TreeViewProps) {
   const normalizedCurrentPath = normalizePath(currentPath);
-  const normalizedSelectedFilePath =
-    selectedFilePath && normalizePath(selectedFilePath);
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(
     () => new Set(['/'])
   );
@@ -53,7 +51,8 @@ export function TreeView({
   const togglePath = (path: string) => {
     setExpandedPaths((previous) => {
       const next = new Set(previous);
-      if (next.has(path)) {
+      const isExpanded = next.has(path);
+      if (isExpanded) {
         next.delete(path);
       } else {
         next.add(path);
@@ -67,7 +66,17 @@ export function TreeView({
     });
   };
 
-  const selectPath = (path: string) => {
+  const selectPath = (node: TreeNode) => {
+    const path = normalizePath(node.path);
+    const willExpand = !expandedPaths.has(path);
+    const shouldLoadChildren =
+      willExpand &&
+      node.kind === 'directory' &&
+      node.childrenLoaded !== true &&
+      !loadingPaths.has(path);
+    if (shouldLoadChildren) {
+      onLoadChildren(path);
+    }
     togglePath(path);
     onSelectPath(path);
   };
@@ -77,10 +86,9 @@ export function TreeView({
       <TreeItem
         node={node}
         currentPath={normalizedCurrentPath}
-        selectedFilePath={normalizedSelectedFilePath}
         expandedPaths={expandedPaths}
+        loadingPaths={loadingPaths}
         onSelectPath={selectPath}
-        onSelectFile={onSelectFile}
         depth={0}
       />
     </nav>
@@ -90,30 +98,30 @@ export function TreeView({
 function TreeItem({
   node,
   currentPath,
-  selectedFilePath,
   expandedPaths,
+  loadingPaths,
   onSelectPath,
-  onSelectFile,
   depth,
 }: {
   node: TreeNode;
   currentPath: string;
-  selectedFilePath?: string;
   expandedPaths: Set<string>;
-  onSelectPath: (path: string) => void;
-  onSelectFile: (node: TreeNode) => void;
+  loadingPaths: Set<string>;
+  onSelectPath: (node: TreeNode) => void;
   depth: number;
 }) {
   const path = normalizePath(node.path);
   const children = node.children ?? [];
   const isDirectory = node.kind === 'directory';
   const label = formatPathDisplayName(path, node.name);
-  const isSelected = isDirectory
-    ? path === currentPath
-    : path === selectedFilePath;
-  const hasChildren = children.length > 0;
+  const isSelected = path === currentPath;
+  const isLoading = loadingPaths.has(path);
+  const hasChildren =
+    children.length > 0 ||
+    node.childrenLoaded !== true ||
+    node.hasChildren === true;
   const isExpanded = isDirectory && expandedPaths.has(path);
-  const Icon = !isDirectory ? File : isExpanded ? FolderOpen : Folder;
+  const Icon = isExpanded ? FolderOpen : Folder;
 
   return (
     <div className="grid gap-1">
@@ -126,32 +134,30 @@ function TreeItem({
           isSelected && 'font-semibold'
         )}
         style={{ paddingLeft: `${Math.min(depth * 14 + 8, 56)}px` }}
-        onClick={() => (isDirectory ? onSelectPath(path) : onSelectFile(node))}
+        onClick={() => onSelectPath(node)}
         title={path === '/' ? label : path}
       >
-        {isDirectory ? (
-          <ChevronRight
-            aria-hidden="true"
-            className={cn(
-              'h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform',
-              isExpanded && 'rotate-90',
-              !hasChildren && 'opacity-0'
-            )}
-          />
-        ) : (
-          <span className="w-3.5 shrink-0" />
-        )}
+        <ChevronRight
+          aria-hidden="true"
+          className={cn(
+            'h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform',
+            isExpanded && 'rotate-90',
+            !hasChildren && 'opacity-0'
+          )}
+        />
         <Icon aria-hidden="true" className="h-4 w-4 shrink-0" />
-        <span className="whitespace-nowrap">{label}</span>
+        <span className="whitespace-nowrap">
+          {label}
+          {isLoading ? ' ...' : ''}
+        </span>
       </Button>
-      {hasChildren && isExpanded && (
+      {children.length > 0 && isExpanded && (
         <TreeChildren
           nodes={children}
           currentPath={currentPath}
-          selectedFilePath={selectedFilePath}
           expandedPaths={expandedPaths}
+          loadingPaths={loadingPaths}
           onSelectPath={onSelectPath}
-          onSelectFile={onSelectFile}
           depth={depth + 1}
         />
       )}
@@ -162,18 +168,16 @@ function TreeItem({
 function TreeChildren({
   nodes,
   currentPath,
-  selectedFilePath,
   expandedPaths,
+  loadingPaths,
   onSelectPath,
-  onSelectFile,
   depth,
 }: {
   nodes: TreeNode[];
   currentPath: string;
-  selectedFilePath?: string;
   expandedPaths: Set<string>;
-  onSelectPath: (path: string) => void;
-  onSelectFile: (node: TreeNode) => void;
+  loadingPaths: Set<string>;
+  onSelectPath: (node: TreeNode) => void;
   depth: number;
 }) {
   const [visibleCount, setVisibleCount] = useState(TREE_BATCH_SIZE);
@@ -187,10 +191,9 @@ function TreeChildren({
           key={child.path}
           node={child}
           currentPath={currentPath}
-          selectedFilePath={selectedFilePath}
           expandedPaths={expandedPaths}
+          loadingPaths={loadingPaths}
           onSelectPath={onSelectPath}
-          onSelectFile={onSelectFile}
           depth={depth}
         />
       ))}

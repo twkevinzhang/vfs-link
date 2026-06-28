@@ -13,8 +13,19 @@ export type FilesResponse = {
   path: string;
   breadcrumbs: FileEntry[];
   entries: FileEntry[];
-  stats: Stats;
+  pagination: Pagination;
+  visibleBytes: number;
+  stats?: Stats;
   generatedAt: string;
+};
+
+export type Pagination = {
+  limit: number;
+  offset: number;
+  total: number;
+  query: string;
+  hasNext: boolean;
+  hasPrev: boolean;
 };
 
 export type TreeNode = {
@@ -23,6 +34,8 @@ export type TreeNode = {
   kind: EntryKind;
   size?: number;
   updatedAt?: string;
+  hasChildren?: boolean;
+  childrenLoaded?: boolean;
   children?: TreeNode[];
 };
 

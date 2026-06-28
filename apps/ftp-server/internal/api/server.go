@@ -8,13 +8,18 @@ import (
 	"io"
 	"net/http"
 	"path"
-	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/twkevinzhang/vfs-link/apps/ftp-server/internal/blob"
 	"github.com/twkevinzhang/vfs-link/apps/ftp-server/internal/db"
 	"github.com/twkevinzhang/vfs-link/apps/ftp-server/internal/share"
+)
+
+const (
+	defaultFilePageLimit = 100
+	maxFilePageLimit     = 500
 )
 
 type Server struct {
@@ -34,11 +39,22 @@ type Entry struct {
 }
 
 type FilesResponse struct {
-	Path        string  `json:"path"`
-	Breadcrumbs []Entry `json:"breadcrumbs"`
-	Entries     []Entry `json:"entries"`
-	Stats       Stats   `json:"stats"`
-	GeneratedAt string  `json:"generatedAt"`
+	Path         string     `json:"path"`
+	Breadcrumbs  []Entry    `json:"breadcrumbs"`
+	Entries      []Entry    `json:"entries"`
+	Pagination   Pagination `json:"pagination"`
+	VisibleBytes int64      `json:"visibleBytes"`
+	Stats        *Stats     `json:"stats,omitempty"`
+	GeneratedAt  string     `json:"generatedAt"`
+}
+
+type Pagination struct {
+	Limit   int    `json:"limit"`
+	Offset  int    `json:"offset"`
+	Total   int    `json:"total"`
+	Query   string `json:"query"`
+	HasNext bool   `json:"hasNext"`
+	HasPrev bool   `json:"hasPrev"`
 }
 
 type Stats struct {
@@ -57,12 +73,13 @@ type StatusResponse struct {
 }
 
 type TreeNode struct {
-	Name      string      `json:"name"`
-	Path      string      `json:"path"`
-	Kind      string      `json:"kind"`
-	Size      int64       `json:"size"`
-	UpdatedAt time.Time   `json:"updatedAt"`
-	Children  []*TreeNode `json:"children,omitempty"`
+	Name        string      `json:"name"`
+	Path        string      `json:"path"`
+	Kind        string      `json:"kind"`
+	Size        int64       `json:"size"`
+	UpdatedAt   time.Time   `json:"updatedAt"`
+	HasChildren bool        `json:"hasChildren,omitempty"`
+	Children    []*TreeNode `json:"children,omitempty"`
 }
 
 type createShareDraftRequest struct {
@@ -146,23 +163,33 @@ func (s *Server) handleFiles(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	entries, err := s.directChildren(r.Context(), logicPath)
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	limit, offset := parsePagination(r)
+	page, err := s.store.ListDirectChildren(r.Context(), logicPath, db.DirectChildrenOptions{
+		Query:  query,
+		Limit:  limit,
+		Offset: offset,
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	stats, err := s.stats(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
+	entries := entriesFromRecords(page.Records)
 
 	writeJSON(w, FilesResponse{
 		Path:        logicPath,
 		Breadcrumbs: breadcrumbs(logicPath),
 		Entries:     entries,
-		Stats:       stats,
-		GeneratedAt: time.Now().Format(time.RFC3339),
+		Pagination: Pagination{
+			Limit:   limit,
+			Offset:  offset,
+			Total:   page.Total,
+			Query:   query,
+			HasNext: offset+len(entries) < page.Total,
+			HasPrev: offset > 0,
+		},
+		VisibleBytes: page.TotalBytes,
+		GeneratedAt:  time.Now().Format(time.RFC3339),
 	})
 }
 
@@ -171,34 +198,41 @@ func (s *Server) handleTree(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	records, err := s.store.ListAll(r.Context())
+	logicPath := cleanPath(r.URL.Query().Get("path"))
+	if logicPath != "/" {
+		record, found, err := s.store.Find(r.Context(), logicPath)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if !found || !record.IsDirectory {
+			writeError(w, http.StatusNotFound, "directory not found")
+			return
+		}
+	}
+
+	page, err := s.store.ListDirectChildren(r.Context(), logicPath, db.DirectChildrenOptions{
+		DirectoriesOnly: true,
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	root := TreeNode{Name: "/", Path: "/", Kind: "directory"}
-	nodes := map[string]*TreeNode{"/": &root}
-	sort.Slice(records, func(i, j int) bool { return records[i].LogicPath < records[j].LogicPath })
-	for _, record := range records {
-		node := &TreeNode{
+
+	node := TreeNode{Name: path.Base(logicPath), Path: logicPath, Kind: "directory"}
+	if logicPath == "/" {
+		node.Name = "/"
+	}
+	for _, record := range page.Records {
+		node.Children = append(node.Children, &TreeNode{
 			Name:      path.Base(record.LogicPath),
 			Path:      record.LogicPath,
 			Kind:      kind(record),
 			Size:      record.Size,
 			UpdatedAt: record.UpdatedAt,
-		}
-		nodes[record.LogicPath] = node
-		parentPath := path.Dir(record.LogicPath)
-		if parentPath == "." {
-			parentPath = "/"
-		}
-		parent, ok := nodes[parentPath]
-		if !ok {
-			continue
-		}
-		parent.Children = append(parent.Children, node)
+		})
 	}
-	writeJSON(w, root)
+	writeJSON(w, node)
 }
 
 func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
@@ -285,27 +319,12 @@ func (s *Server) handleShare(w http.ResponseWriter, r *http.Request) {
 	writeError(w, http.StatusNotFound, "share endpoint not found")
 }
 
-func (s *Server) directChildren(ctx context.Context, dirPath string) ([]Entry, error) {
-	prefix := withTrailingSlash(dirPath)
-	records, err := s.store.ListPrefix(ctx, prefix)
-	if err != nil {
-		return nil, err
-	}
+func entriesFromRecords(records []db.FileRecord) []Entry {
 	entries := make([]Entry, 0, len(records))
 	for _, record := range records {
-		suffix := strings.TrimPrefix(record.LogicPath, prefix)
-		if suffix == "" || strings.Contains(suffix, "/") {
-			continue
-		}
 		entries = append(entries, entryFromRecord(record))
 	}
-	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].Kind != entries[j].Kind {
-			return entries[i].Kind == "directory"
-		}
-		return entries[i].Name < entries[j].Name
-	})
-	return entries, nil
+	return entries
 }
 
 func (s *Server) stats(ctx context.Context) (Stats, error) {
@@ -395,14 +414,27 @@ func cleanPath(value string) string {
 	return path.Clean(value)
 }
 
-func withTrailingSlash(value string) string {
-	if value == "/" {
-		return "/"
+func parsePagination(r *http.Request) (int, int) {
+	limit := parseBoundedInt(r.URL.Query().Get("limit"), defaultFilePageLimit, 1, maxFilePageLimit)
+	offset := parseBoundedInt(r.URL.Query().Get("offset"), 0, 0, 1<<31-1)
+	return limit, offset
+}
+
+func parseBoundedInt(value string, fallback int, minimum int, maximum int) int {
+	if value == "" {
+		return fallback
 	}
-	if strings.HasSuffix(value, "/") {
-		return value
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
 	}
-	return value + "/"
+	if parsed < minimum {
+		return minimum
+	}
+	if parsed > maximum {
+		return maximum
+	}
+	return parsed
 }
 
 func withCORS(next http.Handler) http.Handler {

@@ -11,7 +11,7 @@ import {
   Server,
   Share2,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { MetaFunction } from 'react-router';
 
 import { TreeView } from '../components/tree-view';
@@ -38,6 +38,7 @@ import { cn } from '../lib/utils';
 import {
   FileEntry,
   FilesResponse,
+  Pagination,
   StatusResponse,
   TreeNode,
 } from '../types/files';
@@ -58,59 +59,131 @@ type LoadState = {
   error?: string;
 };
 
+const FILE_PAGE_SIZE = 100;
+const SEARCH_DEBOUNCE_MS = 250;
+
 export default function Index() {
   const [currentPath, setCurrentPath] = useState('/');
   const [query, setQuery] = useState('');
+  const [fileQuery, setFileQuery] = useState('');
+  const [pageOffset, setPageOffset] = useState(0);
   const [state, setState] = useState<LoadState>({ loading: true });
   const [shareError, setShareError] = useState<string>();
   const [sharingPath, setSharingPath] = useState<string>();
   const [selectedFile, setSelectedFile] = useState<FileEntry>();
-  const loadedTreeRef = useRef(false);
+  const [treeLoadingPaths, setTreeLoadingPaths] = useState<Set<string>>(
+    () => new Set()
+  );
+  const filesRequestRef = useRef(0);
 
-  const load = useCallback(async (path: string, refreshTree = false) => {
-    setState((previous) => ({ ...previous, loading: true, error: undefined }));
+  const loadStatus = useCallback(async () => {
     try {
-      if (refreshTree || !loadedTreeRef.current) {
-        const [status, files, tree] = await Promise.all([
-          getStatus(),
-          getFiles(path),
-          getTree(),
-        ]);
-        loadedTreeRef.current = true;
-        setState({ status, files, tree, loading: false });
-        return;
-      }
-
-      const files = await getFiles(path);
-      setState((previous) => ({ ...previous, files, loading: false }));
+      const status = await getStatus();
+      setState((previous) => ({ ...previous, status }));
     } catch (error) {
       setState((previous) => ({
         ...previous,
-        loading: false,
-        error: error instanceof Error ? error.message : 'Unable to load files',
+        error: error instanceof Error ? error.message : 'Unable to load status',
       }));
     }
   }, []);
 
-  useEffect(() => {
-    void load(currentPath);
-  }, [currentPath, load]);
-
-  const visibleEntries = useMemo(() => {
-    const entries = state.files?.entries ?? [];
-    const normalizedQuery = query.trim().toLowerCase();
-    if (!normalizedQuery) {
-      return entries;
+  const loadTreePath = useCallback(async (path: string) => {
+    const normalizedPath = normalizePath(path);
+    setTreeLoadingPaths((previous) => new Set(previous).add(normalizedPath));
+    try {
+      const tree = markTreeNodeLoaded(await getTree(normalizedPath));
+      setState((previous) => ({
+        ...previous,
+        tree: mergeTreeNode(previous.tree, tree),
+      }));
+    } catch (error) {
+      setState((previous) => ({
+        ...previous,
+        error: error instanceof Error ? error.message : 'Unable to load tree',
+      }));
+    } finally {
+      setTreeLoadingPaths((previous) => {
+        const next = new Set(previous);
+        next.delete(normalizedPath);
+        return next;
+      });
     }
-    return entries.filter((entry) =>
-      `${entry.name} ${entry.path}`.toLowerCase().includes(normalizedQuery)
-    );
-  }, [query, state.files?.entries]);
+  }, []);
 
-  const totalVisibleBytes = visibleEntries.reduce(
-    (sum, entry) => sum + (entry.kind === 'directory' ? 0 : entry.size),
-    0
+  const loadFiles = useCallback(
+    async (path: string, searchQuery: string, offset: number) => {
+      const requestId = filesRequestRef.current + 1;
+      filesRequestRef.current = requestId;
+      setState((previous) => ({
+        ...previous,
+        loading: true,
+        error: undefined,
+      }));
+      try {
+        const files = await getFiles(path, {
+          query: searchQuery,
+          limit: FILE_PAGE_SIZE,
+          offset,
+        });
+        if (filesRequestRef.current !== requestId) {
+          return;
+        }
+        setState((previous) => ({ ...previous, files, loading: false }));
+      } catch (error) {
+        if (filesRequestRef.current !== requestId) {
+          return;
+        }
+        setState((previous) => ({
+          ...previous,
+          loading: false,
+          error:
+            error instanceof Error ? error.message : 'Unable to load files',
+        }));
+      }
+    },
+    []
   );
+
+  const refresh = useCallback(() => {
+    const nextOffset = 0;
+    setPageOffset(nextOffset);
+    void Promise.all([
+      loadStatus(),
+      loadTreePath('/'),
+      loadFiles(currentPath, fileQuery, nextOffset),
+    ]);
+  }, [currentPath, fileQuery, loadFiles, loadStatus, loadTreePath]);
+
+  useEffect(() => {
+    void Promise.all([loadStatus(), loadTreePath('/')]);
+  }, [loadStatus, loadTreePath]);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      setPageOffset(0);
+      setFileQuery(query.trim());
+    }, SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(timeout);
+  }, [query]);
+
+  useEffect(() => {
+    void loadFiles(currentPath, fileQuery, pageOffset);
+  }, [currentPath, fileQuery, pageOffset, loadFiles]);
+
+  useEffect(() => {
+    const missingParentPath = firstMissingTreeParentPath(
+      state.tree,
+      currentPath
+    );
+    if (missingParentPath && !treeLoadingPaths.has(missingParentPath)) {
+      void loadTreePath(missingParentPath);
+    }
+  }, [currentPath, loadTreePath, state.tree, treeLoadingPaths]);
+
+  const visibleEntries = state.files?.entries ?? [];
+  const currentPagination = state.files?.pagination;
+  const totalVisibleBytes = state.files?.visibleBytes ?? 0;
 
   const selectFile = useCallback((entry: FileEntry) => {
     setSelectedFile(entry);
@@ -118,12 +191,16 @@ export default function Index() {
     const parentPath = parentDirectory(entry.path);
     setCurrentPath(parentPath);
     setQuery('');
+    setFileQuery('');
+    setPageOffset(0);
   }, []);
 
   const openFolder = useCallback((path: string) => {
     setCurrentPath(path);
     setSelectedFile(undefined);
     setQuery('');
+    setFileQuery('');
+    setPageOffset(0);
   }, []);
 
   const shareFile = useCallback(async (path: string) => {
@@ -192,13 +269,13 @@ export default function Index() {
               />
             </div>
             <VisibleMetric
-              value={String(visibleEntries.length)}
+              value={String(currentPagination?.total ?? 0)}
               detail={formatBytes(totalVisibleBytes)}
             />
             <Button
               variant="outline"
-              onClick={() => void load(currentPath, true)}
-              disabled={state.loading}
+              onClick={refresh}
+              disabled={state.loading || treeLoadingPaths.size > 0}
               title="重新整理"
               className="h-9 w-full px-3 md:w-auto"
             >
@@ -257,17 +334,9 @@ export default function Index() {
                 <TreeView
                   node={state.tree}
                   currentPath={currentPath}
-                  selectedFilePath={selectedFile?.path}
+                  loadingPaths={treeLoadingPaths}
                   onSelectPath={openFolder}
-                  onSelectFile={(node) =>
-                    selectFile({
-                      path: node.path,
-                      name: node.name,
-                      kind: 'file',
-                      size: node.size ?? 0,
-                      updatedAt: node.updatedAt ?? '',
-                    })
-                  }
+                  onLoadChildren={loadTreePath}
                 />
               )}
             </div>
@@ -301,8 +370,11 @@ export default function Index() {
               ) : (
                 <FileTable
                   entries={visibleEntries}
+                  pagination={currentPagination}
+                  visibleBytes={totalVisibleBytes}
                   sharingPath={sharingPath}
                   selectedPath={selectedFile?.path}
+                  onPageChange={setPageOffset}
                   onOpenFolder={openFolder}
                   onSelectFile={selectFile}
                   onShareFile={shareFile}
@@ -420,126 +492,170 @@ function Breadcrumbs({
 
 function FileTable({
   entries,
+  pagination,
+  visibleBytes,
   sharingPath,
   selectedPath,
+  onPageChange,
   onOpenFolder,
   onSelectFile,
   onShareFile,
 }: {
   entries: FileEntry[];
+  pagination?: Pagination;
+  visibleBytes: number;
   sharingPath?: string;
   selectedPath?: string;
+  onPageChange: (offset: number) => void;
   onOpenFolder: (path: string) => void;
   onSelectFile: (entry: FileEntry) => void;
   onShareFile: (path: string) => void;
 }) {
-  return (
-    <div className="h-full min-h-0 overflow-auto">
-      <table className="w-full min-w-[760px] border-collapse text-sm">
-        <thead>
-          <tr className="border-b border-border bg-muted/70 text-left text-xs uppercase tracking-normal text-muted-foreground">
-            <th className="px-4 py-3 font-semibold">Name</th>
-            <th className="px-4 py-3 font-semibold">Type</th>
-            <th className="px-4 py-3 text-right font-semibold">Size</th>
-            <th className="px-4 py-3 font-semibold">Modified</th>
-            <th className="px-4 py-3 text-right font-semibold">Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {entries.map((entry) => {
-            const isDirectory = entry.kind === 'directory';
-            const isSelected = entry.path === selectedPath;
+  const limit = pagination?.limit ?? FILE_PAGE_SIZE;
+  const offset = pagination?.offset ?? 0;
+  const total = pagination?.total ?? entries.length;
+  const pageStart = total === 0 ? 0 : offset + 1;
+  const pageEnd = Math.min(offset + entries.length, total);
+  const pageNumber = Math.floor(offset / limit) + 1;
+  const totalPages = Math.max(1, Math.ceil(total / limit));
 
-            return (
-              <tr
-                key={entry.path}
-                className={cn(
-                  'border-b border-border last:border-b-0',
-                  isSelected && 'bg-muted/50'
-                )}
-              >
-                <td className="px-4 py-3">
-                  <button
-                    type="button"
-                    className="flex max-w-[360px] items-center gap-2 overflow-hidden text-left font-medium hover:text-accent"
-                    onClick={() =>
-                      isDirectory
-                        ? onOpenFolder(entry.path)
-                        : onSelectFile(entry)
-                    }
-                    title={entry.path}
-                  >
-                    {isDirectory ? (
-                      <Folder
-                        aria-hidden="true"
-                        className="h-4 w-4 shrink-0 text-[#11615a]"
-                      />
-                    ) : (
-                      <File
-                        aria-hidden="true"
-                        className="h-4 w-4 shrink-0 text-[#276c93]"
-                      />
-                    )}
-                    <span className="truncate">{entry.name}</span>
-                  </button>
-                </td>
-                <td className="px-4 py-3">
-                  <Badge variant={isDirectory ? 'secondary' : 'outline'}>
-                    {entry.kind}
-                  </Badge>
-                </td>
-                <td className="px-4 py-3 text-right tabular-nums">
-                  {isDirectory ? '-' : formatBytes(entry.size)}
-                </td>
-                <td className="px-4 py-3 text-muted-foreground">
-                  {formatDate(entry.updatedAt)}
-                </td>
-                <td className="px-4 py-3 text-right">
-                  {isDirectory ? (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => onOpenFolder(entry.path)}
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="min-h-0 flex-1 overflow-auto">
+        <table className="w-full min-w-[760px] border-collapse text-sm">
+          <thead>
+            <tr className="border-b border-border bg-muted/70 text-left text-xs uppercase tracking-normal text-muted-foreground">
+              <th className="px-4 py-3 font-semibold">Name</th>
+              <th className="px-4 py-3 font-semibold">Type</th>
+              <th className="px-4 py-3 text-right font-semibold">Size</th>
+              <th className="px-4 py-3 font-semibold">Modified</th>
+              <th className="px-4 py-3 text-right font-semibold">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {entries.map((entry) => {
+              const isDirectory = entry.kind === 'directory';
+              const isSelected = entry.path === selectedPath;
+
+              return (
+                <tr
+                  key={entry.path}
+                  className={cn(
+                    'border-b border-border last:border-b-0',
+                    isSelected && 'bg-muted/50'
+                  )}
+                >
+                  <td className="px-4 py-3">
+                    <button
+                      type="button"
+                      className="flex max-w-[360px] items-center gap-2 overflow-hidden text-left font-medium hover:text-accent"
+                      onClick={() =>
+                        isDirectory
+                          ? onOpenFolder(entry.path)
+                          : onSelectFile(entry)
+                      }
+                      title={entry.path}
                     >
-                      <Folder aria-hidden="true" className="h-4 w-4" />
-                      Open
-                    </Button>
-                  ) : (
-                    <div className="flex justify-end gap-2">
+                      {isDirectory ? (
+                        <Folder
+                          aria-hidden="true"
+                          className="h-4 w-4 shrink-0 text-[#11615a]"
+                        />
+                      ) : (
+                        <File
+                          aria-hidden="true"
+                          className="h-4 w-4 shrink-0 text-[#276c93]"
+                        />
+                      )}
+                      <span className="truncate">{entry.name}</span>
+                    </button>
+                  </td>
+                  <td className="px-4 py-3">
+                    <Badge variant={isDirectory ? 'secondary' : 'outline'}>
+                      {entry.kind}
+                    </Badge>
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums">
+                    {isDirectory ? '-' : formatBytes(entry.size)}
+                  </td>
+                  <td className="px-4 py-3 text-muted-foreground">
+                    {formatDate(entry.updatedAt)}
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    {isDirectory ? (
                       <Button
                         variant="outline"
-                        size="icon"
-                        aria-label={`Share ${entry.name}`}
-                        onClick={() => onShareFile(entry.path)}
-                        disabled={sharingPath === entry.path}
-                        title={
-                          sharingPath === entry.path
-                            ? `Sharing ${entry.name}`
-                            : `Share ${entry.name}`
-                        }
-                        className="h-8 w-8"
+                        size="sm"
+                        onClick={() => onOpenFolder(entry.path)}
                       >
-                        <Share2 aria-hidden="true" className="h-4 w-4" />
+                        <Folder aria-hidden="true" className="h-4 w-4" />
+                        Open
                       </Button>
-                      <a href={getDownloadUrl(entry.path)}>
+                    ) : (
+                      <div className="flex justify-end gap-2">
                         <Button
                           variant="outline"
                           size="icon"
-                          aria-label={`Download ${entry.name}`}
-                          title={`Download ${entry.name}`}
+                          aria-label={`Share ${entry.name}`}
+                          onClick={() => onShareFile(entry.path)}
+                          disabled={sharingPath === entry.path}
+                          title={
+                            sharingPath === entry.path
+                              ? `Sharing ${entry.name}`
+                              : `Share ${entry.name}`
+                          }
                           className="h-8 w-8"
                         >
-                          <Download aria-hidden="true" className="h-4 w-4" />
+                          <Share2 aria-hidden="true" className="h-4 w-4" />
                         </Button>
-                      </a>
-                    </div>
-                  )}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+                        <a href={getDownloadUrl(entry.path)}>
+                          <Button
+                            variant="outline"
+                            size="icon"
+                            aria-label={`Download ${entry.name}`}
+                            title={`Download ${entry.name}`}
+                            className="h-8 w-8"
+                          >
+                            <Download aria-hidden="true" className="h-4 w-4" />
+                          </Button>
+                        </a>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <div className="flex flex-col gap-2 border-t border-border bg-muted/30 px-4 py-3 text-sm text-muted-foreground md:flex-row md:items-center md:justify-between">
+        <span>
+          Showing {pageStart}-{pageEnd} of {total}
+          {pagination?.query ? ` matching "${pagination.query}"` : ''} ·{' '}
+          {formatBytes(visibleBytes)}
+        </span>
+        <div className="flex items-center gap-2">
+          <span className="tabular-nums">
+            Page {pageNumber} / {totalPages}
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => onPageChange(Math.max(0, offset - limit))}
+            disabled={!pagination?.hasPrev}
+          >
+            Previous
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => onPageChange(offset + limit)}
+            disabled={!pagination?.hasNext}
+          >
+            Next
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -660,4 +776,89 @@ function parentDirectory(filePath: string) {
     return '/';
   }
   return normalized.slice(0, index);
+}
+
+function markTreeNodeLoaded(node: TreeNode): TreeNode {
+  const children = (node.children ?? []).map((child) => ({
+    ...child,
+    childrenLoaded: false,
+  }));
+
+  return {
+    ...node,
+    children,
+    childrenLoaded: true,
+    hasChildren: children.length > 0,
+  };
+}
+
+function mergeTreeNode(
+  current: TreeNode | undefined,
+  loaded: TreeNode
+): TreeNode {
+  if (!current || normalizePath(loaded.path) === '/') {
+    return loaded;
+  }
+
+  const loadedPath = normalizePath(loaded.path);
+  const currentPath = normalizePath(current.path);
+  if (currentPath === loadedPath) {
+    return {
+      ...current,
+      ...loaded,
+    };
+  }
+
+  if (!current.children?.length) {
+    return current;
+  }
+
+  return {
+    ...current,
+    children: current.children.map((child) => mergeTreeNode(child, loaded)),
+  };
+}
+
+function firstMissingTreeParentPath(
+  tree: TreeNode | undefined,
+  currentPath: string
+) {
+  return parentDirectoryPaths(currentPath).find(
+    (path) => !isTreeNodeChildrenLoaded(tree, path)
+  );
+}
+
+function parentDirectoryPaths(value: string) {
+  const normalizedPath = normalizePath(value);
+  if (normalizedPath === '/') {
+    return [];
+  }
+
+  const parts = normalizedPath.slice(1).split('/').filter(Boolean);
+  const parents: string[] = [];
+  let current = '';
+
+  for (let index = 0; index < parts.length - 1; index += 1) {
+    current += `/${parts[index]}`;
+    parents.push(current);
+  }
+
+  return parents;
+}
+
+function isTreeNodeChildrenLoaded(
+  node: TreeNode | undefined,
+  path: string
+): boolean {
+  if (!node) {
+    return false;
+  }
+  if (normalizePath(node.path) === normalizePath(path)) {
+    return node.childrenLoaded === true;
+  }
+
+  return (
+    node.children?.some((child) => isTreeNodeChildrenLoaded(child, path)) ??
+    false
+  );
 }

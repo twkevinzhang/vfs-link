@@ -54,13 +54,30 @@ export function getStatus() {
   return requestJson<StatusResponse>('/api/status');
 }
 
-export function getFiles(path: string) {
+export type GetFilesOptions = {
+  query?: string;
+  limit?: number;
+  offset?: number;
+};
+
+export function getFiles(path: string, options: GetFilesOptions = {}) {
   const query = new URLSearchParams({ path });
+  const normalizedQuery = options.query?.trim();
+  if (normalizedQuery) {
+    query.set('q', normalizedQuery);
+  }
+  if (options.limit !== undefined) {
+    query.set('limit', String(options.limit));
+  }
+  if (options.offset !== undefined) {
+    query.set('offset', String(options.offset));
+  }
   return requestJson<FilesResponse>(`/api/files?${query.toString()}`);
 }
 
-export function getTree() {
-  return requestJson<TreeNode>('/api/tree');
+export function getTree(path = '/') {
+  const query = new URLSearchParams({ path });
+  return requestJson<TreeNode>(`/api/tree?${query.toString()}`);
 }
 
 export function getDownloadUrl(path: string) {
