@@ -1,4 +1,4 @@
-import { FilesResponse, StatusResponse, TreeNode } from '../types/files';
+import { FilesResponse, StatusResponse } from '../types/files';
 import { ShareRecord } from '../types/share';
 
 const API_BASE_URL = (
@@ -75,13 +75,13 @@ export function getFiles(path: string, options: GetFilesOptions = {}) {
   return requestJson<FilesResponse>(`/api/files?${query.toString()}`);
 }
 
-export function getTree(path = '/') {
-  const query = new URLSearchParams({ path });
-  return requestJson<TreeNode>(`/api/tree?${query.toString()}`);
-}
-
 export function getDownloadUrl(path: string) {
   const query = new URLSearchParams({ path });
+  return `${API_BASE_URL}/api/download?${query.toString()}`;
+}
+
+export function getPreviewUrl(path: string) {
+  const query = new URLSearchParams({ path, disposition: 'inline' });
   return `${API_BASE_URL}/api/download?${query.toString()}`;
 }
 

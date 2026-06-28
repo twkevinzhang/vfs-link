@@ -56,7 +56,7 @@ CREATE INDEX IF NOT EXISTS "File_logicPath_idx" ON "File" ("logicPath");
 
 - `GET /api/status`: storage driver, storage root, and aggregate file stats.
 - `GET /api/files?path=/&limit=100&offset=0&q=term`: paginated direct children for a logical directory; `q` filters within the current directory.
-- `GET /api/tree?path=/`: direct child folders for one logical directory, used by the lazy-loaded folder tree.
+- `GET /api/tree?path=/`: direct child folders for one logical directory.
 - `GET /api/download?path=/docs/a.pdf`: downloads a logical file.
 - `POST /api/shares/drafts`: creates a GCS share draft for a logical file.
 - `GET /api/shares/{id}`: reads a share job.

@@ -14,7 +14,6 @@ import {
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { MetaFunction } from 'react-router';
 
-import { TreeView } from '../components/tree-view';
 import { Alert } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -25,8 +24,8 @@ import {
   createShareDraft,
   getDownloadUrl,
   getFiles,
+  getPreviewUrl,
   getStatus,
-  getTree,
 } from '../lib/api';
 import {
   formatBytes,
@@ -40,7 +39,6 @@ import {
   FilesResponse,
   Pagination,
   StatusResponse,
-  TreeNode,
 } from '../types/files';
 
 export const meta: MetaFunction = () => [
@@ -54,13 +52,18 @@ export const meta: MetaFunction = () => [
 type LoadState = {
   status?: StatusResponse;
   files?: FilesResponse;
-  tree?: TreeNode;
   loading: boolean;
   error?: string;
 };
 
 const FILE_PAGE_SIZE = 100;
 const SEARCH_DEBOUNCE_MS = 250;
+const TEXT_PREVIEW_LIMIT = 200_000;
+
+type TextPreviewState =
+  | { status: 'idle' | 'loading' }
+  | { status: 'ready'; content: string; truncated: boolean }
+  | { status: 'error'; message: string };
 
 export default function Index() {
   const [currentPath, setCurrentPath] = useState('/');
@@ -71,9 +74,6 @@ export default function Index() {
   const [shareError, setShareError] = useState<string>();
   const [sharingPath, setSharingPath] = useState<string>();
   const [selectedFile, setSelectedFile] = useState<FileEntry>();
-  const [treeLoadingPaths, setTreeLoadingPaths] = useState<Set<string>>(
-    () => new Set()
-  );
   const filesRequestRef = useRef(0);
 
   const loadStatus = useCallback(async () => {
@@ -85,29 +85,6 @@ export default function Index() {
         ...previous,
         error: error instanceof Error ? error.message : 'Unable to load status',
       }));
-    }
-  }, []);
-
-  const loadTreePath = useCallback(async (path: string) => {
-    const normalizedPath = normalizePath(path);
-    setTreeLoadingPaths((previous) => new Set(previous).add(normalizedPath));
-    try {
-      const tree = markTreeNodeLoaded(await getTree(normalizedPath));
-      setState((previous) => ({
-        ...previous,
-        tree: mergeTreeNode(previous.tree, tree),
-      }));
-    } catch (error) {
-      setState((previous) => ({
-        ...previous,
-        error: error instanceof Error ? error.message : 'Unable to load tree',
-      }));
-    } finally {
-      setTreeLoadingPaths((previous) => {
-        const next = new Set(previous);
-        next.delete(normalizedPath);
-        return next;
-      });
     }
   }, []);
 
@@ -150,14 +127,13 @@ export default function Index() {
     setPageOffset(nextOffset);
     void Promise.all([
       loadStatus(),
-      loadTreePath('/'),
       loadFiles(currentPath, fileQuery, nextOffset),
     ]);
-  }, [currentPath, fileQuery, loadFiles, loadStatus, loadTreePath]);
+  }, [currentPath, fileQuery, loadFiles, loadStatus]);
 
   useEffect(() => {
-    void Promise.all([loadStatus(), loadTreePath('/')]);
-  }, [loadStatus, loadTreePath]);
+    void loadStatus();
+  }, [loadStatus]);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
@@ -171,16 +147,6 @@ export default function Index() {
     void loadFiles(currentPath, fileQuery, pageOffset);
   }, [currentPath, fileQuery, pageOffset, loadFiles]);
 
-  useEffect(() => {
-    const missingParentPath = firstMissingTreeParentPath(
-      state.tree,
-      currentPath
-    );
-    if (missingParentPath && !treeLoadingPaths.has(missingParentPath)) {
-      void loadTreePath(missingParentPath);
-    }
-  }, [currentPath, loadTreePath, state.tree, treeLoadingPaths]);
-
   const visibleEntries = state.files?.entries ?? [];
   const currentPagination = state.files?.pagination;
   const totalVisibleBytes = state.files?.visibleBytes ?? 0;
@@ -188,11 +154,6 @@ export default function Index() {
   const selectFile = useCallback((entry: FileEntry) => {
     setSelectedFile(entry);
     setShareError(undefined);
-    const parentPath = parentDirectory(entry.path);
-    setCurrentPath(parentPath);
-    setQuery('');
-    setFileQuery('');
-    setPageOffset(0);
   }, []);
 
   const openFolder = useCallback((path: string) => {
@@ -275,7 +236,7 @@ export default function Index() {
             <Button
               variant="outline"
               onClick={refresh}
-              disabled={state.loading || treeLoadingPaths.size > 0}
+              disabled={state.loading}
               title="重新整理"
               className="h-9 w-full px-3 md:w-auto"
             >
@@ -315,53 +276,18 @@ export default function Index() {
           </Alert>
         )}
 
-        <section className="grid gap-4 lg:min-h-0 lg:flex-1 lg:grid-cols-[320px_minmax(0,1fr)]">
-          <aside className="min-h-0 overflow-auto rounded-lg border border-border bg-white p-4">
-            <div className="mb-4 grid min-w-max gap-1">
-              <h2 className="text-sm font-semibold">Folders</h2>
-              <p className="text-xs text-muted-foreground">
-                {state.status?.storageRoot ?? 'LOCAL_STORAGE_ROOT'}
-              </p>
-            </div>
-            <div className="min-w-max pr-1">
-              {state.loading && !state.tree ? (
-                <div className="grid gap-2">
-                  <Skeleton className="h-8" />
-                  <Skeleton className="h-8 w-4/5" />
-                  <Skeleton className="h-8 w-3/5" />
-                </div>
-              ) : (
-                <TreeView
-                  node={state.tree}
-                  currentPath={currentPath}
-                  loadingPaths={treeLoadingPaths}
-                  onSelectPath={openFolder}
-                  onLoadChildren={loadTreePath}
-                />
-              )}
-            </div>
-          </aside>
-
-          <section className="flex min-w-0 flex-col gap-4 lg:min-h-0">
-            <div className="overflow-x-auto rounded-lg border border-border bg-white p-4">
-              <div className="min-w-max">
-                <Breadcrumbs
-                  entries={state.files?.breadcrumbs ?? []}
-                  currentPath={currentPath}
-                  onSelectPath={openFolder}
-                />
-              </div>
-            </div>
-
-            {selectedFile && (
-              <SelectedFilePanel
-                file={selectedFile}
-                sharingPath={sharingPath}
-                onClear={() => setSelectedFile(undefined)}
-                onShareFile={shareFile}
+        <section className="flex min-w-0 flex-col gap-4 lg:min-h-0 lg:flex-1">
+          <div className="overflow-x-auto rounded-lg border border-border bg-white p-4">
+            <div className="min-w-max">
+              <Breadcrumbs
+                entries={state.files?.breadcrumbs ?? []}
+                currentPath={currentPath}
+                onSelectPath={openFolder}
               />
-            )}
+            </div>
+          </div>
 
+          <section className="grid gap-4 lg:min-h-0 lg:flex-1 xl:grid-cols-[minmax(0,1fr)_360px] 2xl:grid-cols-[minmax(0,1fr)_420px]">
             <div className="min-h-0 overflow-hidden rounded-lg border border-border bg-white lg:flex-1">
               {state.loading && !state.files ? (
                 <LoadingTable />
@@ -381,6 +307,12 @@ export default function Index() {
                 />
               )}
             </div>
+            <FileInspector
+              file={selectedFile}
+              sharingPath={sharingPath}
+              onClear={() => setSelectedFile(undefined)}
+              onShareFile={shareFile}
+            />
           </section>
         </section>
       </div>
@@ -660,75 +592,296 @@ function FileTable({
   );
 }
 
-function SelectedFilePanel({
+function FileInspector({
   file,
   sharingPath,
   onClear,
   onShareFile,
 }: {
-  file: FileEntry;
+  file?: FileEntry;
   sharingPath?: string;
   onClear: () => void;
   onShareFile: (path: string) => void;
 }) {
-  return (
-    <section className="rounded-lg border border-border bg-white p-4">
-      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-        <div className="min-w-0">
-          <div className="mb-2 flex flex-wrap items-center gap-2">
-            <Badge variant="outline">selected file</Badge>
-            <Badge variant="secondary">{formatBytes(file.size)}</Badge>
+  if (!file) {
+    return (
+      <aside className="min-h-[360px] overflow-hidden rounded-lg border border-border bg-white lg:min-h-0">
+        <div className="grid h-full min-h-[360px] place-items-center p-6 text-center">
+          <div className="grid max-w-xs gap-3">
+            <File
+              aria-hidden="true"
+              className="mx-auto h-10 w-10 text-muted-foreground"
+            />
+            <div className="grid gap-1">
+              <h2 className="text-base font-semibold">No active file</h2>
+            </div>
           </div>
-          <h2 className="truncate text-base font-semibold" title={file.path}>
-            {file.name}
-          </h2>
-          <p className="mt-1 break-all text-xs text-muted-foreground">
-            {file.path}
-          </p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Modified {formatDate(file.updatedAt)}
-          </p>
         </div>
-        <div className="flex shrink-0 flex-wrap gap-2">
-          <a href={getDownloadUrl(file.path)} target="_blank" rel="noreferrer">
-            <Button variant="outline" size="sm">
-              <Play aria-hidden="true" className="h-4 w-4" />
-              Open
-            </Button>
-          </a>
-          <Button
-            variant="outline"
-            size="icon"
-            aria-label={`Share ${file.name}`}
-            onClick={() => onShareFile(file.path)}
-            disabled={sharingPath === file.path}
-            title={
-              sharingPath === file.path
-                ? `Sharing ${file.name}`
-                : `Share ${file.name}`
-            }
-            className="h-8 w-8"
-          >
-            <Share2 aria-hidden="true" className="h-4 w-4" />
-          </Button>
-          <a href={getDownloadUrl(file.path)}>
+      </aside>
+    );
+  }
+
+  return (
+    <aside className="min-h-[480px] overflow-hidden rounded-lg border border-border bg-white lg:min-h-0">
+      <div className="flex h-full min-h-0 flex-col">
+        <div className="grid gap-4 border-b border-border p-4">
+          <div className="min-w-0">
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <Badge variant="outline">active file</Badge>
+              <Badge variant="secondary">{formatBytes(file.size)}</Badge>
+            </div>
+            <h2 className="truncate text-base font-semibold" title={file.path}>
+              {file.name}
+            </h2>
+            <p className="mt-1 break-all text-xs text-muted-foreground">
+              {file.path}
+            </p>
+          </div>
+          <dl className="grid grid-cols-[88px_minmax(0,1fr)] gap-x-3 gap-y-2 text-sm">
+            <dt className="text-muted-foreground">Type</dt>
+            <dd>file</dd>
+            <dt className="text-muted-foreground">Size</dt>
+            <dd>{formatBytes(file.size)}</dd>
+            <dt className="text-muted-foreground">Modified</dt>
+            <dd>{formatDate(file.updatedAt)}</dd>
+          </dl>
+          <div className="flex flex-wrap gap-2">
+            <a href={getPreviewUrl(file.path)} target="_blank" rel="noreferrer">
+              <Button variant="outline" size="sm">
+                <Play aria-hidden="true" className="h-4 w-4" />
+                Open
+              </Button>
+            </a>
             <Button
               variant="outline"
               size="icon"
-              aria-label={`Download ${file.name}`}
-              title={`Download ${file.name}`}
+              aria-label={`Share ${file.name}`}
+              onClick={() => onShareFile(file.path)}
+              disabled={sharingPath === file.path}
+              title={
+                sharingPath === file.path
+                  ? `Sharing ${file.name}`
+                  : `Share ${file.name}`
+              }
               className="h-8 w-8"
             >
-              <Download aria-hidden="true" className="h-4 w-4" />
+              <Share2 aria-hidden="true" className="h-4 w-4" />
             </Button>
-          </a>
-          <Button variant="ghost" size="sm" onClick={onClear}>
-            Clear
-          </Button>
+            <a href={getDownloadUrl(file.path)}>
+              <Button
+                variant="outline"
+                size="icon"
+                aria-label={`Download ${file.name}`}
+                title={`Download ${file.name}`}
+                className="h-8 w-8"
+              >
+                <Download aria-hidden="true" className="h-4 w-4" />
+              </Button>
+            </a>
+            <Button variant="ghost" size="sm" onClick={onClear}>
+              Clear
+            </Button>
+          </div>
+        </div>
+        <div className="flex min-h-0 flex-1 flex-col">
+          <div className="border-b border-border px-4 py-3">
+            <h3 className="text-sm font-semibold">Preview</h3>
+          </div>
+          <FilePreview file={file} />
         </div>
       </div>
-    </section>
+    </aside>
   );
+}
+
+function FilePreview({ file }: { file: FileEntry }) {
+  const previewUrl = getPreviewUrl(file.path);
+  const previewKind = getPreviewKind(file);
+  const [textPreview, setTextPreview] = useState<TextPreviewState>({
+    status: 'idle',
+  });
+
+  useEffect(() => {
+    if (previewKind !== 'text') {
+      setTextPreview({ status: 'idle' });
+      return;
+    }
+
+    const controller = new AbortController();
+    setTextPreview({ status: 'loading' });
+
+    fetch(previewUrl, { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(`${response.status} ${response.statusText}`);
+        }
+        return response.text();
+      })
+      .then((content) => {
+        const formatted = formatTextPreview(file, content);
+        setTextPreview({
+          status: 'ready',
+          content: formatted.slice(0, TEXT_PREVIEW_LIMIT),
+          truncated: formatted.length > TEXT_PREVIEW_LIMIT,
+        });
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) {
+          return;
+        }
+        setTextPreview({
+          status: 'error',
+          message:
+            error instanceof Error ? error.message : 'Unable to load preview',
+        });
+      });
+
+    return () => controller.abort();
+  }, [file, previewKind, previewUrl]);
+
+  if (previewKind === 'image') {
+    return (
+      <div className="grid min-h-0 flex-1 place-items-center overflow-auto bg-muted/20 p-4">
+        <img
+          src={previewUrl}
+          alt={file.name}
+          className="max-h-full max-w-full rounded-md object-contain"
+        />
+      </div>
+    );
+  }
+
+  if (previewKind === 'video') {
+    return (
+      <div className="grid min-h-0 flex-1 place-items-center overflow-auto bg-muted/20 p-4">
+        <video
+          src={previewUrl}
+          controls
+          preload="metadata"
+          className="max-h-full max-w-full rounded-md bg-black"
+        />
+      </div>
+    );
+  }
+
+  if (previewKind === 'text') {
+    if (textPreview.status === 'loading') {
+      return (
+        <div className="grid gap-3 p-4">
+          <Skeleton className="h-5 w-2/3" />
+          <Skeleton className="h-5" />
+          <Skeleton className="h-5 w-5/6" />
+        </div>
+      );
+    }
+
+    if (textPreview.status === 'error') {
+      return (
+        <div className="grid min-h-0 flex-1 place-items-center p-6 text-center text-sm text-muted-foreground">
+          Preview unavailable: {textPreview.message}
+        </div>
+      );
+    }
+
+    if (textPreview.status === 'ready') {
+      return (
+        <div className="min-h-0 flex-1 overflow-auto bg-[#111827] p-4 text-xs leading-5 text-[#e5e7eb]">
+          <pre className="whitespace-pre-wrap break-words font-mono">
+            {textPreview.content}
+          </pre>
+          {textPreview.truncated && (
+            <p className="mt-4 border-t border-white/15 pt-3 text-[#cbd5e1]">
+              Preview truncated at {formatBytes(TEXT_PREVIEW_LIMIT)}.
+            </p>
+          )}
+        </div>
+      );
+    }
+  }
+
+  return (
+    <div className="grid min-h-0 flex-1 place-items-center p-6 text-center">
+      <div className="grid max-w-xs gap-3">
+        <File
+          aria-hidden="true"
+          className="mx-auto h-10 w-10 text-muted-foreground"
+        />
+        <div className="grid gap-1">
+          <h3 className="text-sm font-semibold">No preview available</h3>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function getPreviewKind(file: FileEntry) {
+  const extension = fileExtension(file.name);
+  if (
+    ['avif', 'bmp', 'gif', 'jpeg', 'jpg', 'png', 'svg', 'webp'].includes(
+      extension
+    )
+  ) {
+    return 'image';
+  }
+
+  if (['m4v', 'mov', 'mp4', 'ogg', 'ogv', 'webm'].includes(extension)) {
+    return 'video';
+  }
+
+  if (
+    [
+      'c',
+      'conf',
+      'cpp',
+      'cs',
+      'css',
+      'csv',
+      'go',
+      'h',
+      'html',
+      'java',
+      'js',
+      'json',
+      'jsx',
+      'log',
+      'md',
+      'py',
+      'rs',
+      'sh',
+      'sql',
+      'toml',
+      'ts',
+      'tsx',
+      'txt',
+      'xml',
+      'yaml',
+      'yml',
+    ].includes(extension)
+  ) {
+    return 'text';
+  }
+
+  return 'unsupported';
+}
+
+function formatTextPreview(file: FileEntry, content: string) {
+  if (fileExtension(file.name) !== 'json') {
+    return content;
+  }
+
+  try {
+    return JSON.stringify(JSON.parse(content), null, 2);
+  } catch {
+    return content;
+  }
+}
+
+function fileExtension(name: string) {
+  const index = name.lastIndexOf('.');
+  if (index < 0 || index === name.length - 1) {
+    return '';
+  }
+  return name.slice(index + 1).toLowerCase();
 }
 
 function EmptyState({ query }: { query: string }) {
@@ -766,99 +919,5 @@ function LoadingTable() {
         </div>
       ))}
     </div>
-  );
-}
-
-function parentDirectory(filePath: string) {
-  const normalized = normalizePath(filePath);
-  const index = normalized.lastIndexOf('/');
-  if (index <= 0) {
-    return '/';
-  }
-  return normalized.slice(0, index);
-}
-
-function markTreeNodeLoaded(node: TreeNode): TreeNode {
-  const children = (node.children ?? []).map((child) => ({
-    ...child,
-    childrenLoaded: false,
-  }));
-
-  return {
-    ...node,
-    children,
-    childrenLoaded: true,
-    hasChildren: children.length > 0,
-  };
-}
-
-function mergeTreeNode(
-  current: TreeNode | undefined,
-  loaded: TreeNode
-): TreeNode {
-  if (!current || normalizePath(loaded.path) === '/') {
-    return loaded;
-  }
-
-  const loadedPath = normalizePath(loaded.path);
-  const currentPath = normalizePath(current.path);
-  if (currentPath === loadedPath) {
-    return {
-      ...current,
-      ...loaded,
-    };
-  }
-
-  if (!current.children?.length) {
-    return current;
-  }
-
-  return {
-    ...current,
-    children: current.children.map((child) => mergeTreeNode(child, loaded)),
-  };
-}
-
-function firstMissingTreeParentPath(
-  tree: TreeNode | undefined,
-  currentPath: string
-) {
-  return parentDirectoryPaths(currentPath).find(
-    (path) => !isTreeNodeChildrenLoaded(tree, path)
-  );
-}
-
-function parentDirectoryPaths(value: string) {
-  const normalizedPath = normalizePath(value);
-  if (normalizedPath === '/') {
-    return [];
-  }
-
-  const parts = normalizedPath.slice(1).split('/').filter(Boolean);
-  const parents: string[] = [];
-  let current = '';
-
-  for (let index = 0; index < parts.length - 1; index += 1) {
-    current += `/${parts[index]}`;
-    parents.push(current);
-  }
-
-  return parents;
-}
-
-function isTreeNodeChildrenLoaded(
-  node: TreeNode | undefined,
-  path: string
-): boolean {
-  if (!node) {
-    return false;
-  }
-  if (normalizePath(node.path) === normalizePath(path)) {
-    return node.childrenLoaded === true;
-  }
-
-  return (
-    node.children?.some((child) => isTreeNodeChildrenLoaded(child, path)) ??
-    false
   );
 }

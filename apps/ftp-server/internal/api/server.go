@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"path"
 	"strconv"
@@ -257,8 +258,16 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer reader.Close()
 
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", path.Base(record.LogicPath)))
-	w.Header().Set("Content-Type", "application/octet-stream")
+	disposition := "attachment"
+	if r.URL.Query().Get("disposition") == "inline" {
+		disposition = "inline"
+	}
+	contentType := mime.TypeByExtension(path.Ext(record.LogicPath))
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	w.Header().Set("Content-Disposition", fmt.Sprintf("%s; filename=%q", disposition, path.Base(record.LogicPath)))
+	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", record.Size))
 	if _, err := io.Copy(w, reader); err != nil {
 		return

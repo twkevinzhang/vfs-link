@@ -28,17 +28,6 @@ export type Pagination = {
   hasPrev: boolean;
 };
 
-export type TreeNode = {
-  path: string;
-  name: string;
-  kind: EntryKind;
-  size?: number;
-  updatedAt?: string;
-  hasChildren?: boolean;
-  childrenLoaded?: boolean;
-  children?: TreeNode[];
-};
-
 export type Stats = {
   fileCount: number;
   directoryCount: number;
