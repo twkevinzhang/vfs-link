@@ -10,6 +10,7 @@ import {
   Search,
   Server,
   Share2,
+  X,
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { MetaFunction } from 'react-router';
@@ -453,7 +454,17 @@ function FileTable({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div className="md:hidden">
+        <MobileFileList
+          entries={entries}
+          sharingPath={sharingPath}
+          selectedPath={selectedPath}
+          onOpenFolder={onOpenFolder}
+          onSelectFile={onSelectFile}
+          onShareFile={onShareFile}
+        />
+      </div>
+      <div className="hidden min-h-0 flex-1 overflow-auto md:block">
         <table className="w-full min-w-[760px] border-collapse text-sm">
           <thead>
             <tr className="border-b border-border bg-muted/70 text-left text-xs uppercase tracking-normal text-muted-foreground">
@@ -592,6 +603,114 @@ function FileTable({
   );
 }
 
+function MobileFileList({
+  entries,
+  sharingPath,
+  selectedPath,
+  onOpenFolder,
+  onSelectFile,
+  onShareFile,
+}: {
+  entries: FileEntry[];
+  sharingPath?: string;
+  selectedPath?: string;
+  onOpenFolder: (path: string) => void;
+  onSelectFile: (entry: FileEntry) => void;
+  onShareFile: (path: string) => void;
+}) {
+  return (
+    <div className="divide-y divide-border">
+      {entries.map((entry) => {
+        const isDirectory = entry.kind === 'directory';
+        const isSelected = entry.path === selectedPath;
+
+        return (
+          <div
+            key={entry.path}
+            className={cn('grid gap-3 p-4', isSelected && 'bg-muted/50')}
+          >
+            <button
+              type="button"
+              className="flex min-w-0 items-start gap-3 text-left"
+              onClick={() =>
+                isDirectory ? onOpenFolder(entry.path) : onSelectFile(entry)
+              }
+              title={entry.path}
+            >
+              {isDirectory ? (
+                <Folder
+                  aria-hidden="true"
+                  className="mt-0.5 h-5 w-5 shrink-0 text-[#11615a]"
+                />
+              ) : (
+                <File
+                  aria-hidden="true"
+                  className="mt-0.5 h-5 w-5 shrink-0 text-[#276c93]"
+                />
+              )}
+              <span className="min-w-0 flex-1 break-words font-medium leading-6">
+                {entry.name}
+              </span>
+            </button>
+
+            <div className="ml-8 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <Badge variant={isDirectory ? 'secondary' : 'outline'}>
+                {entry.kind}
+              </Badge>
+              {!isDirectory && (
+                <span className="tabular-nums">{formatBytes(entry.size)}</span>
+              )}
+              <span>{formatDate(entry.updatedAt)}</span>
+            </div>
+
+            <div className="ml-8 flex flex-wrap gap-2">
+              {isDirectory ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => onOpenFolder(entry.path)}
+                >
+                  <Folder aria-hidden="true" className="h-4 w-4" />
+                  Open
+                </Button>
+              ) : (
+                <>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    aria-label={`Share ${entry.name}`}
+                    onClick={() => onShareFile(entry.path)}
+                    disabled={sharingPath === entry.path}
+                    title={
+                      sharingPath === entry.path
+                        ? `Sharing ${entry.name}`
+                        : `Share ${entry.name}`
+                    }
+                    className="h-9 w-9"
+                  >
+                    <Share2 aria-hidden="true" className="h-4 w-4" />
+                  </Button>
+                  <a href={getDownloadUrl(entry.path)}>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      aria-label={`Download ${entry.name}`}
+                      title={`Download ${entry.name}`}
+                      className="h-9 w-9"
+                    >
+                      <Download aria-hidden="true" className="h-4 w-4" />
+                    </Button>
+                  </a>
+                </>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function FileInspector({
   file,
   sharingPath,
@@ -605,7 +724,7 @@ function FileInspector({
 }) {
   if (!file) {
     return (
-      <aside className="min-h-[360px] overflow-hidden rounded-lg border border-border bg-white lg:min-h-0">
+      <aside className="hidden min-h-[360px] overflow-hidden rounded-lg border border-border bg-white xl:block xl:min-h-0">
         <div className="grid h-full min-h-[360px] place-items-center p-6 text-center">
           <div className="grid max-w-xs gap-3">
             <File
@@ -622,75 +741,182 @@ function FileInspector({
   }
 
   return (
-    <aside className="min-h-[480px] overflow-hidden rounded-lg border border-border bg-white lg:min-h-0">
-      <div className="flex h-full min-h-0 flex-col">
-        <div className="grid gap-4 border-b border-border p-4">
-          <div className="min-w-0">
-            <div className="mb-2 flex flex-wrap items-center gap-2">
-              <Badge variant="outline">active file</Badge>
-              <Badge variant="secondary">{formatBytes(file.size)}</Badge>
+    <>
+      <aside className="hidden min-h-[480px] overflow-hidden rounded-lg border border-border bg-white xl:block xl:min-h-0">
+        <div className="flex h-full min-h-0 flex-col">
+          <div className="grid gap-4 border-b border-border p-4">
+            <div className="min-w-0">
+              <div className="mb-2 flex flex-wrap items-center gap-2">
+                <Badge variant="outline">active file</Badge>
+                <Badge variant="secondary">{formatBytes(file.size)}</Badge>
+              </div>
+              <h2
+                className="truncate text-base font-semibold"
+                title={file.path}
+              >
+                {file.name}
+              </h2>
+              <p className="mt-1 break-all text-xs text-muted-foreground">
+                {file.path}
+              </p>
             </div>
-            <h2 className="truncate text-base font-semibold" title={file.path}>
-              {file.name}
-            </h2>
-            <p className="mt-1 break-all text-xs text-muted-foreground">
-              {file.path}
-            </p>
-          </div>
-          <dl className="grid grid-cols-[88px_minmax(0,1fr)] gap-x-3 gap-y-2 text-sm">
-            <dt className="text-muted-foreground">Type</dt>
-            <dd>file</dd>
-            <dt className="text-muted-foreground">Size</dt>
-            <dd>{formatBytes(file.size)}</dd>
-            <dt className="text-muted-foreground">Modified</dt>
-            <dd>{formatDate(file.updatedAt)}</dd>
-          </dl>
-          <div className="flex flex-wrap gap-2">
-            <a href={getPreviewUrl(file.path)} target="_blank" rel="noreferrer">
-              <Button variant="outline" size="sm">
-                <Play aria-hidden="true" className="h-4 w-4" />
-                Open
-              </Button>
-            </a>
-            <Button
-              variant="outline"
-              size="icon"
-              aria-label={`Share ${file.name}`}
-              onClick={() => onShareFile(file.path)}
-              disabled={sharingPath === file.path}
-              title={
-                sharingPath === file.path
-                  ? `Sharing ${file.name}`
-                  : `Share ${file.name}`
-              }
-              className="h-8 w-8"
-            >
-              <Share2 aria-hidden="true" className="h-4 w-4" />
-            </Button>
-            <a href={getDownloadUrl(file.path)}>
+            <dl className="grid grid-cols-[88px_minmax(0,1fr)] gap-x-3 gap-y-2 text-sm">
+              <dt className="text-muted-foreground">Type</dt>
+              <dd>file</dd>
+              <dt className="text-muted-foreground">Size</dt>
+              <dd>{formatBytes(file.size)}</dd>
+              <dt className="text-muted-foreground">Modified</dt>
+              <dd>{formatDate(file.updatedAt)}</dd>
+            </dl>
+            <div className="flex flex-wrap gap-2">
+              <a
+                href={getPreviewUrl(file.path)}
+                target="_blank"
+                rel="noreferrer"
+              >
+                <Button variant="outline" size="sm">
+                  <Play aria-hidden="true" className="h-4 w-4" />
+                  Open
+                </Button>
+              </a>
               <Button
                 variant="outline"
                 size="icon"
-                aria-label={`Download ${file.name}`}
-                title={`Download ${file.name}`}
+                aria-label={`Share ${file.name}`}
+                onClick={() => onShareFile(file.path)}
+                disabled={sharingPath === file.path}
+                title={
+                  sharingPath === file.path
+                    ? `Sharing ${file.name}`
+                    : `Share ${file.name}`
+                }
                 className="h-8 w-8"
               >
-                <Download aria-hidden="true" className="h-4 w-4" />
+                <Share2 aria-hidden="true" className="h-4 w-4" />
               </Button>
-            </a>
-            <Button variant="ghost" size="sm" onClick={onClear}>
-              Clear
-            </Button>
+              <a href={getDownloadUrl(file.path)}>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  aria-label={`Download ${file.name}`}
+                  title={`Download ${file.name}`}
+                  className="h-8 w-8"
+                >
+                  <Download aria-hidden="true" className="h-4 w-4" />
+                </Button>
+              </a>
+              <Button variant="ghost" size="sm" onClick={onClear}>
+                Clear
+              </Button>
+            </div>
+          </div>
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div className="border-b border-border px-4 py-3">
+              <h3 className="text-sm font-semibold">Preview</h3>
+            </div>
+            <FilePreview file={file} />
           </div>
         </div>
-        <div className="flex min-h-0 flex-1 flex-col">
-          <div className="border-b border-border px-4 py-3">
-            <h3 className="text-sm font-semibold">Preview</h3>
+      </aside>
+
+      <button
+        type="button"
+        aria-label="Close file preview"
+        className="fixed inset-0 z-40 bg-black/25 xl:hidden"
+        onClick={onClear}
+      />
+      <aside
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Preview ${file.name}`}
+        className="fixed inset-x-0 bottom-0 z-50 max-h-[86dvh] overflow-hidden rounded-t-2xl border border-border bg-white shadow-2xl xl:hidden"
+      >
+        <div className="flex max-h-[86dvh] flex-col">
+          <div className="grid gap-4 border-b border-border p-4">
+            <div className="flex items-start gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="mb-2 flex flex-wrap items-center gap-2">
+                  <Badge variant="outline">active file</Badge>
+                  <Badge variant="secondary">{formatBytes(file.size)}</Badge>
+                </div>
+                <h2
+                  className="break-words text-base font-semibold"
+                  title={file.path}
+                >
+                  {file.name}
+                </h2>
+                <p className="mt-1 break-all text-xs text-muted-foreground">
+                  {file.path}
+                </p>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="Close file preview"
+                onClick={onClear}
+                className="h-9 w-9 shrink-0"
+              >
+                <X aria-hidden="true" className="h-4 w-4" />
+              </Button>
+            </div>
+            <dl className="grid grid-cols-[76px_minmax(0,1fr)] gap-x-3 gap-y-2 text-sm">
+              <dt className="text-muted-foreground">Type</dt>
+              <dd>file</dd>
+              <dt className="text-muted-foreground">Size</dt>
+              <dd>{formatBytes(file.size)}</dd>
+              <dt className="text-muted-foreground">Modified</dt>
+              <dd>{formatDate(file.updatedAt)}</dd>
+            </dl>
+            <div className="flex flex-wrap gap-2">
+              <a
+                href={getPreviewUrl(file.path)}
+                target="_blank"
+                rel="noreferrer"
+              >
+                <Button variant="outline" size="sm">
+                  <Play aria-hidden="true" className="h-4 w-4" />
+                  Open
+                </Button>
+              </a>
+              <Button
+                variant="outline"
+                size="icon"
+                aria-label={`Share ${file.name}`}
+                onClick={() => onShareFile(file.path)}
+                disabled={sharingPath === file.path}
+                title={
+                  sharingPath === file.path
+                    ? `Sharing ${file.name}`
+                    : `Share ${file.name}`
+                }
+                className="h-9 w-9"
+              >
+                <Share2 aria-hidden="true" className="h-4 w-4" />
+              </Button>
+              <a href={getDownloadUrl(file.path)}>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  aria-label={`Download ${file.name}`}
+                  title={`Download ${file.name}`}
+                  className="h-9 w-9"
+                >
+                  <Download aria-hidden="true" className="h-4 w-4" />
+                </Button>
+              </a>
+            </div>
           </div>
-          <FilePreview file={file} />
+          <div className="flex min-h-0 flex-1 flex-col">
+            <div className="border-b border-border px-4 py-3">
+              <h3 className="text-sm font-semibold">Preview</h3>
+            </div>
+            <div className="flex min-h-[260px] flex-1 flex-col overflow-hidden">
+              <FilePreview file={file} />
+            </div>
+          </div>
         </div>
-      </div>
-    </aside>
+      </aside>
+    </>
   );
 }
 
