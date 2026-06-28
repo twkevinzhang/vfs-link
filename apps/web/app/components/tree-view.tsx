@@ -50,20 +50,25 @@ export function TreeView({
     return null;
   }
 
-  const expandPath = (path: string) => {
+  const togglePath = (path: string) => {
     setExpandedPaths((previous) => {
-      if (previous.has(path)) {
+      const next = new Set(previous);
+      if (next.has(path)) {
+        next.delete(path);
+      } else {
+        next.add(path);
+      }
+
+      if (setsEqual(previous, next)) {
         return previous;
       }
 
-      const next = new Set(previous);
-      next.add(path);
       return next;
     });
   };
 
   const selectPath = (path: string) => {
-    expandPath(path);
+    togglePath(path);
     onSelectPath(path);
   };
 
@@ -223,4 +228,18 @@ function ancestorDirectoryPaths(value: string) {
   }
 
   return ancestors;
+}
+
+function setsEqual(left: Set<string>, right: Set<string>) {
+  if (left.size !== right.size) {
+    return false;
+  }
+
+  for (const value of left) {
+    if (!right.has(value)) {
+      return false;
+    }
+  }
+
+  return true;
 }

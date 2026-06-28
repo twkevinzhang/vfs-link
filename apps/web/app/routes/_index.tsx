@@ -11,7 +11,7 @@ import {
   Server,
   Share2,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { MetaFunction } from 'react-router';
 
 import { TreeView } from '../components/tree-view';
@@ -60,16 +60,24 @@ export default function Index() {
   const [shareError, setShareError] = useState<string>();
   const [sharingPath, setSharingPath] = useState<string>();
   const [selectedFile, setSelectedFile] = useState<FileEntry>();
+  const loadedTreeRef = useRef(false);
 
-  const load = useCallback(async (path: string) => {
+  const load = useCallback(async (path: string, refreshTree = false) => {
     setState((previous) => ({ ...previous, loading: true, error: undefined }));
     try {
-      const [status, files, tree] = await Promise.all([
-        getStatus(),
-        getFiles(path),
-        getTree(),
-      ]);
-      setState({ status, files, tree, loading: false });
+      if (refreshTree || !loadedTreeRef.current) {
+        const [status, files, tree] = await Promise.all([
+          getStatus(),
+          getFiles(path),
+          getTree(),
+        ]);
+        loadedTreeRef.current = true;
+        setState({ status, files, tree, loading: false });
+        return;
+      }
+
+      const files = await getFiles(path);
+      setState((previous) => ({ ...previous, files, loading: false }));
     } catch (error) {
       setState((previous) => ({
         ...previous,
@@ -184,7 +192,7 @@ export default function Index() {
             />
             <Button
               variant="outline"
-              onClick={() => void load(currentPath)}
+              onClick={() => void load(currentPath, true)}
               disabled={state.loading}
               title="重新整理"
               className="h-9 w-full px-3 md:w-auto"
