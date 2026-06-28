@@ -2,7 +2,7 @@ import { ChevronRight, File, Folder, FolderOpen } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 import { Button } from './ui/button';
-import { normalizePath } from '../lib/format';
+import { formatPathDisplayName, normalizePath } from '../lib/format';
 import { cn } from '../lib/utils';
 import { TreeNode } from '../types/files';
 
@@ -107,6 +107,7 @@ function TreeItem({
   const path = normalizePath(node.path);
   const children = node.children ?? [];
   const isDirectory = node.kind === 'directory';
+  const label = formatPathDisplayName(path, node.name);
   const isSelected = isDirectory
     ? path === currentPath
     : path === selectedFilePath;
@@ -126,7 +127,7 @@ function TreeItem({
         )}
         style={{ paddingLeft: `${Math.min(depth * 14 + 8, 56)}px` }}
         onClick={() => (isDirectory ? onSelectPath(path) : onSelectFile(node))}
-        title={path}
+        title={path === '/' ? label : path}
       >
         {isDirectory ? (
           <ChevronRight
@@ -141,7 +142,7 @@ function TreeItem({
           <span className="w-3.5 shrink-0" />
         )}
         <Icon aria-hidden="true" className="h-4 w-4 shrink-0" />
-        <span className="whitespace-nowrap">{node.name || '/'}</span>
+        <span className="whitespace-nowrap">{label}</span>
       </Button>
       {hasChildren && isExpanded && (
         <TreeChildren

@@ -28,7 +28,12 @@ import {
   getStatus,
   getTree,
 } from '../lib/api';
-import { formatBytes, formatDate, normalizePath } from '../lib/format';
+import {
+  formatBytes,
+  formatDate,
+  formatPathDisplayName,
+  normalizePath,
+} from '../lib/format';
 import { cn } from '../lib/utils';
 import {
   FileEntry,
@@ -377,7 +382,7 @@ function Breadcrumbs({
       : [
           {
             path: '/',
-            name: '/',
+            name: formatPathDisplayName('/'),
             kind: 'directory' as const,
             size: 0,
             updatedAt: '',
@@ -388,6 +393,7 @@ function Breadcrumbs({
     <div className="flex min-w-max flex-nowrap items-center gap-1 text-sm">
       {crumbs.map((entry, index) => {
         const path = normalizePath(entry.path);
+        const label = formatPathDisplayName(path, entry.name);
         const isLast =
           path === normalizePath(currentPath) || index === crumbs.length - 1;
         return (
@@ -400,9 +406,9 @@ function Breadcrumbs({
               size="sm"
               className="max-w-none shrink-0 whitespace-nowrap"
               onClick={() => onSelectPath(path)}
-              title={path}
+              title={path === '/' ? label : path}
             >
-              {entry.name || '/'}
+              {label}
             </Button>
             {!isLast && <span className="text-muted-foreground">/</span>}
           </div>
@@ -502,22 +508,28 @@ function FileTable({
                     <div className="flex justify-end gap-2">
                       <Button
                         variant="outline"
-                        size="sm"
+                        size="icon"
+                        aria-label={`Share ${entry.name}`}
                         onClick={() => onShareFile(entry.path)}
                         disabled={sharingPath === entry.path}
-                        title={`Share ${entry.name}`}
+                        title={
+                          sharingPath === entry.path
+                            ? `Sharing ${entry.name}`
+                            : `Share ${entry.name}`
+                        }
+                        className="h-8 w-8"
                       >
                         <Share2 aria-hidden="true" className="h-4 w-4" />
-                        {sharingPath === entry.path ? 'Sharing' : 'Share'}
                       </Button>
                       <a href={getDownloadUrl(entry.path)}>
                         <Button
                           variant="outline"
-                          size="sm"
+                          size="icon"
+                          aria-label={`Download ${entry.name}`}
                           title={`Download ${entry.name}`}
+                          className="h-8 w-8"
                         >
                           <Download aria-hidden="true" className="h-4 w-4" />
-                          Download
                         </Button>
                       </a>
                     </div>
@@ -570,17 +582,28 @@ function SelectedFilePanel({
           </a>
           <Button
             variant="outline"
-            size="sm"
+            size="icon"
+            aria-label={`Share ${file.name}`}
             onClick={() => onShareFile(file.path)}
             disabled={sharingPath === file.path}
+            title={
+              sharingPath === file.path
+                ? `Sharing ${file.name}`
+                : `Share ${file.name}`
+            }
+            className="h-8 w-8"
           >
             <Share2 aria-hidden="true" className="h-4 w-4" />
-            {sharingPath === file.path ? 'Sharing' : 'Share'}
           </Button>
           <a href={getDownloadUrl(file.path)}>
-            <Button variant="outline" size="sm">
+            <Button
+              variant="outline"
+              size="icon"
+              aria-label={`Download ${file.name}`}
+              title={`Download ${file.name}`}
+              className="h-8 w-8"
+            >
               <Download aria-hidden="true" className="h-4 w-4" />
-              Download
             </Button>
           </a>
           <Button variant="ghost" size="sm" onClick={onClear}>
