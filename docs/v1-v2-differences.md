@@ -94,9 +94,9 @@ Docker image name、compose service 與 Nx targets 都保留下來。`npx nx up 
 
 影響：
 
-- 既有 deployment scripts 可繼續 build `apps/ftp-server/Dockerfile`。
+- CI 仍以 `apps/ftp-server/Dockerfile` 建置 image，並發佈不可變的 commit SHA tag 到 GHCR。
 - Compose networking、ports、env vars 與 GCS credential mounting 維持不變。
-- `deploy.sh` 仍會 build `vfs-link/ftp-server` 並 recreate `ftp-server` service。
+- CD runner 只 pull 已發佈的 image 並 recreate `ftp-server` service，不在 production host fetch Git 或 build source。
 
 ## 操作注意事項
 

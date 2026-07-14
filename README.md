@@ -177,24 +177,36 @@ docker compose up -d
 
 Docker Compose exposes the read-only API on `${HTTP_PORT:-8080}` and persists local object bytes in the `objectdata` named volume.
 
-For self-hosted deployment, use `docker-compose.self-hosted.yml`. It keeps the server on host networking, reads the existing external `DATABASE_URL`, mounts the existing `./.auth/gcp-key.json` into `/app/gcp-key.json`, and stores local-first object bytes under `${LOCAL_STORAGE_HOST_PATH:-./data/objects}`. If the existing `.env` still has `GCS_BUCKET`, the compose file passes it through so legacy v2 objects can be lazily backfilled into the local store. `deploy.sh` uses this compose file by default.
-The self-hosted deploy build also includes the React browser in the Go image and
-defaults it to `/vfs-link/index`, with API requests routed through
-`/vfs-link/api`.
+For self-hosted deployment, use `docker-compose.self-hosted.yml`. It keeps the server on host networking, reads the existing external `DATABASE_URL`, mounts `${SELF_HOSTED_RUNTIME_DIR}/.auth/gcp-key.json` into `/app/gcp-key.json`, and stores local-first object bytes at `LOCAL_STORAGE_HOST_PATH`. If the existing `.env` still has `GCS_BUCKET`, the compose file passes it through so legacy v2 objects can be lazily backfilled into the local store. The production runtime directory defaults to `~/vfs-link` in CD, and is not a Git checkout.
 
-### GitHub Actions deployment
+The CI image includes the React browser and defaults it to `/vfs-link/index`, with API requests routed through `/vfs-link/api`.
 
-Pushes to `main` run `.github/workflows/deploy-self-hosted.yml`. The workflow runs Go tests, builds the FTP server image as a CI check, then SSHes into self-hosted and runs `deploy.sh`.
+### GitHub Actions CI/CD
 
-Configure these repository or environment secrets before enabling the deployment job:
+The pipeline keeps CI and production deployment separate:
 
-- `SELF_HOSTED_HOST`: self-hosted SSH host or IP address.
-- `SELF_HOSTED_SSH_PRIVATE_KEY`: private key allowed to SSH into self-hosted.
-- `SELF_HOSTED_USER`: SSH user. Defaults to `self-hosted` when omitted.
-- `SELF_HOSTED_SSH_PORT`: SSH port. Defaults to `22` when omitted.
-- `SELF_HOSTED_DEPLOY_DIR`: remote checkout directory. Defaults to `~/vfs-link` when omitted.
-- `SELF_HOSTED_KNOWN_HOSTS`: optional pinned known_hosts entry. When omitted, the workflow uses `ssh-keyscan`.
-- `SELF_HOSTED_HEALTHCHECK_URL`: optional healthcheck URL. When omitted, `deploy.sh` checks `http://127.0.0.1:${HTTP_PORT:-8080}/api/status` on self-hosted.
+```text
+main push
+  -> CI (GitHub-hosted): test, build, push GHCR image tagged with the commit SHA
+  -> CD (self-hosted self-hosted-deploy): pull that immutable image and recreate ftp-server
+```
+
+`ci.yml` runs on GitHub-hosted runners and publishes:
+
+```text
+ghcr.io/twkevinzhang/vfs-link/ftp-server:<commit-sha>
+ghcr.io/twkevinzhang/vfs-link/ftp-server:latest
+```
+
+`deploy-self-hosted.yml` starts only after a successful CI run on `main`, or can be manually dispatched with an already-published commit SHA. It must run only on the dedicated runner labelled `self-hosted-deploy`; CI never targets a self-hosted runner.
+
+The CD runner needs Docker access and these production files on self-hosted:
+
+- `~/vfs-link/.env`: runtime settings, including `DATABASE_URL`.
+- `~/vfs-link/.auth/gcp-key.json`: GCP credential mounted read-only into the container.
+- `~/vfs-link/data/objects`: local object store. Set repository variable `SELF_HOSTED_VFS_LINK_RUNTIME_DIR` when this directory is elsewhere.
+
+Configure `SELF_HOSTED_HEALTHCHECK_URL` as an environment secret only when the default `http://127.0.0.1:${HTTP_PORT:-8080}/api/status` is unsuitable. The workflow uses its ephemeral Actions checkout for the compose definition, so deployment never fetches Git or builds an image in the self-hosted runtime directory.
 
 ## Rebuild Mapping Table
 
