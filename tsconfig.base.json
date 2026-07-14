@@ -18,7 +18,7 @@
     "customConditions": ["development"],
     "baseUrl": ".",
     "paths": {
-      "@ftp-server/*": ["apps/ftp-server/src/*"],
+      "@file-server/*": ["apps/file-server/src/*"],
       "~/*": ["apps/web/app/*"]
     }
   }

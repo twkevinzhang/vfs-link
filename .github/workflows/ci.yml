@@ -25,17 +25,17 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: 1.23.x
-          cache-dependency-path: apps/ftp-server/go.sum
+          cache-dependency-path: apps/file-server/go.sum
           cache: false
 
-      - name: Test FTP server
-        working-directory: apps/ftp-server
+      - name: Test file server
+        working-directory: apps/file-server
         run: ./scripts/go.sh test ./...
 
-      - name: Build FTP server image
+      - name: Build file server image
         run: |
           set -euo pipefail
           docker build \
-            -f apps/ftp-server/Dockerfile \
-            -t vfs-link/ftp-server:test \
+            -f apps/file-server/Dockerfile \
+            -t vfs-link/file-server:test \
             .

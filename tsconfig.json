@@ -4,7 +4,7 @@
   "files": [],
   "references": [
     {
-      "path": "./apps/ftp-server"
+      "path": "./apps/file-server"
     },
     {
       "path": "./apps/web"

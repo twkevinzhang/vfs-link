@@ -1,0 +1,232 @@
+package webdav
+
+import (
+	"context"
+	"errors"
+	"io"
+	"os"
+	"sync"
+	"time"
+
+	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/blob"
+	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/db"
+)
+
+var errUnsupported = errors.New("operation is not supported by the WebDAV filesystem")
+
+type directoryFile struct {
+	name    string
+	info    fileInfo
+	entries []os.FileInfo
+	offset  int
+}
+
+func (f *directoryFile) Close() error                   { return nil }
+func (f *directoryFile) Read([]byte) (int, error)       { return 0, errUnsupported }
+func (f *directoryFile) Seek(int64, int) (int64, error) { return 0, errUnsupported }
+func (f *directoryFile) Write([]byte) (int, error)      { return 0, errUnsupported }
+func (f *directoryFile) Stat() (os.FileInfo, error)     { return f.info, nil }
+func (f *directoryFile) Readdir(count int) ([]os.FileInfo, error) {
+	if count <= 0 {
+		remaining := f.entries[f.offset:]
+		f.offset = len(f.entries)
+		return remaining, nil
+	}
+	if f.offset >= len(f.entries) {
+		return nil, io.EOF
+	}
+	end := f.offset + count
+	if end > len(f.entries) {
+		end = len(f.entries)
+	}
+	result := f.entries[f.offset:end]
+	f.offset = end
+	return result, nil
+}
+
+type readFile struct {
+	ctx     context.Context
+	objects blob.Store
+	record  db.FileRecord
+	info    fileInfo
+	reader  io.ReadCloser
+	offset  int64
+	closed  bool
+}
+
+func (f *readFile) Read(p []byte) (int, error) {
+	if f.closed {
+		return 0, os.ErrClosed
+	}
+	if f.reader == nil {
+		reader, err := f.objects.NewRangeReader(f.ctx, f.record.PhysicalHash, f.offset, -1)
+		if err != nil {
+			return 0, err
+		}
+		f.reader = reader
+	}
+	n, err := f.reader.Read(p)
+	f.offset += int64(n)
+	return n, err
+}
+
+func (f *readFile) Seek(offset int64, whence int) (int64, error) {
+	if f.closed {
+		return 0, os.ErrClosed
+	}
+	var next int64
+	switch whence {
+	case io.SeekStart:
+		next = offset
+	case io.SeekCurrent:
+		next = f.offset + offset
+	case io.SeekEnd:
+		next = f.record.Size + offset
+	default:
+		return 0, errors.New("invalid seek origin")
+	}
+	if next < 0 {
+		return 0, errors.New("negative seek offset")
+	}
+	if f.reader != nil {
+		if err := f.reader.Close(); err != nil {
+			return 0, err
+		}
+		f.reader = nil
+	}
+	f.offset = next
+	return next, nil
+}
+
+func (f *readFile) Close() error {
+	if f.closed {
+		return nil
+	}
+	f.closed = true
+	if f.reader != nil {
+		return f.reader.Close()
+	}
+	return nil
+}
+
+func (f *readFile) Write([]byte) (int, error)          { return 0, errUnsupported }
+func (f *readFile) Readdir(int) ([]os.FileInfo, error) { return nil, errUnsupported }
+func (f *readFile) Stat() (os.FileInfo, error)         { return f.info, nil }
+
+type uploadFile struct {
+	ctx          context.Context
+	store        filePublisher
+	objects      blob.Store
+	logicPath    string
+	physicalHash string
+	writer       io.WriteCloser
+	size         int64
+	writeErr     error
+	mu           sync.Mutex
+	closed       bool
+}
+
+type filePublisher interface {
+	ReplaceFile(context.Context, string, string, int64) (string, error)
+	ReplaceFileConditional(context.Context, string, string, int64, *string, bool) (string, bool, error)
+}
+
+func newUploadFile(ctx context.Context, store filePublisher, objects blob.Store, logicPath string) (*uploadFile, error) {
+	physicalHash := blob.GeneratePhysicalHash(logicPath)
+	writer, err := objects.NewWriter(ctx, physicalHash)
+	if err != nil {
+		return nil, err
+	}
+	return &uploadFile{
+		ctx: ctx, store: store, objects: objects, logicPath: logicPath,
+		physicalHash: physicalHash, writer: writer,
+	}, nil
+}
+
+func (f *uploadFile) Write(p []byte) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closed {
+		return 0, os.ErrClosed
+	}
+	n, err := f.writer.Write(p)
+	f.size += int64(n)
+	if err != nil {
+		f.writeErr = err
+	}
+	return n, err
+}
+
+func (f *uploadFile) Close() error {
+	f.mu.Lock()
+	if f.closed {
+		f.mu.Unlock()
+		return nil
+	}
+	f.closed = true
+	writeErr := f.writeErr
+	f.mu.Unlock()
+
+	closeErr := f.writer.Close()
+	if writeErr != nil || closeErr != nil || f.ctx.Err() != nil {
+		_ = f.objects.Delete(context.Background(), f.physicalHash)
+		return errors.Join(writeErr, closeErr, f.ctx.Err())
+	}
+	if session := uploadSessionFromContext(f.ctx); session != nil {
+		session.add(f)
+		return nil
+	}
+	return f.commit()
+}
+
+func (f *uploadFile) commit() error {
+	var previous string
+	var err error
+	if condition := writeConditionFromContext(f.ctx); condition != nil && condition.path == f.logicPath {
+		var matched bool
+		previous, matched, err = f.store.ReplaceFileConditional(
+			f.ctx, f.logicPath, f.physicalHash, f.size,
+			condition.expectedPhysicalHash, condition.requireAbsent,
+		)
+		if err == nil && !matched {
+			err = errPreconditionFailed
+		}
+	} else {
+		previous, err = f.store.ReplaceFile(f.ctx, f.logicPath, f.physicalHash, f.size)
+	}
+	if err != nil {
+		_ = f.objects.Delete(context.Background(), f.physicalHash)
+		return err
+	}
+	if previous != "" {
+		_ = f.objects.Delete(context.Background(), previous)
+	}
+	return nil
+}
+
+func (f *uploadFile) abort() {
+	_ = f.objects.Delete(context.Background(), f.physicalHash)
+}
+
+func (f *uploadFile) Read([]byte) (int, error)           { return 0, errUnsupported }
+func (f *uploadFile) Seek(int64, int) (int64, error)     { return 0, errUnsupported }
+func (f *uploadFile) Readdir(int) ([]os.FileInfo, error) { return nil, errUnsupported }
+func (f *uploadFile) Stat() (os.FileInfo, error) {
+	return fileInfo{
+		name: pathBase(f.logicPath), size: f.size, updatedAt: nowUTC(), physicalHash: f.physicalHash,
+	}, nil
+}
+
+func pathBase(value string) string {
+	for len(value) > 1 && value[len(value)-1] == '/' {
+		value = value[:len(value)-1]
+	}
+	for i := len(value) - 1; i >= 0; i-- {
+		if value[i] == '/' {
+			return value[i+1:]
+		}
+	}
+	return value
+}
+
+func nowUTC() time.Time { return time.Now().UTC() }

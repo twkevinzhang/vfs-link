@@ -259,7 +259,7 @@ importers:
         specifier: ^2.2.8
         version: 2.2.12(typescript@5.8.3)
 
-  apps/ftp-server: {}
+  apps/file-server: {}
 
   apps/web:
     dependencies:

@@ -1,7 +1,7 @@
 # Optional overlay for GCS primary storage and/or file sharing.
 # Usage: docker compose -f docker-compose.yml -f docker-compose.gcs.yml up -d --build
 services:
-  ftp-server:
+  file-server:
     environment:
       - GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/gcp-credentials.json
     volumes:

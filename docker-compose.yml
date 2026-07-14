@@ -1,9 +1,9 @@
 services:
-  ftp-server:
-    image: ${VFS_LINK_IMAGE:-vfs-link/ftp-server:local}
+  file-server:
+    image: ${VFS_LINK_IMAGE:-vfs-link/file-server:local}
     build:
       context: .
-      dockerfile: apps/ftp-server/Dockerfile
+      dockerfile: apps/file-server/Dockerfile
     restart: unless-stopped
     ports:
       - '21:21'
@@ -14,6 +14,7 @@ services:
       - STORAGE_DRIVER=${STORAGE_DRIVER:-local}
       - LOCAL_STORAGE_ROOT=/data/objects
       - GCS_BUCKET=${GCS_BUCKET:-}
+      - FTP_ENABLED=${FTP_ENABLED:-true}
       - FTP_USER=${FTP_USER:?Set FTP_USER}
       - FTP_PASS=${FTP_PASS:?Set FTP_PASS}
       - FTP_PORT=${FTP_PORT:-21}
@@ -21,6 +22,12 @@ services:
       - FTP_PASV_URL=${FTP_PASV_URL:?Set FTP_PASV_URL}
       - FTP_PASV_MIN=${FTP_PASV_MIN:-30000}
       - FTP_PASV_MAX=${FTP_PASV_MAX:-30100}
+      - WEBDAV_ENABLED=${WEBDAV_ENABLED:-false}
+      - WEBDAV_PATH=${WEBDAV_PATH:-/dav/}
+      - WEBDAV_USER=${WEBDAV_USER:-}
+      - WEBDAV_PASS=${WEBDAV_PASS:-}
+      - WEBDAV_LOCK_TIMEOUT=${WEBDAV_LOCK_TIMEOUT:-30m}
+      - WEBDAV_TRUST_FORWARDED_HEADERS=${WEBDAV_TRUST_FORWARDED_HEADERS:-false}
       - SHARE_GCS_BUCKET=${SHARE_GCS_BUCKET:-}
       - SHARE_GCS_PREFIX=${SHARE_GCS_PREFIX:-shares}
       - SHARE_PUBLIC_BASE_URL=${SHARE_PUBLIC_BASE_URL:-}

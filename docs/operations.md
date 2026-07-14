@@ -4,14 +4,14 @@
 
 ```bash
 docker compose ps
-docker compose logs --tail=100 ftp-server db
+docker compose logs --tail=100 file-server db
 curl -fsS http://localhost:8080/api/status
 ```
 
 ## Backup and restore
 
 Back up the PostgreSQL mapping and object storage as one consistent unit. For a
-small maintenance window, stop FTP writes before taking the backup.
+small maintenance window, stop WebDAV and FTP writes before taking the backup.
 
 ```bash
 set -a; . ./.env; set +a
@@ -20,7 +20,7 @@ docker run --rm -v vfs-link_objectdata:/data -v "$PWD":/backup alpine \
   tar czf /backup/vfs-link-objects.tar.gz -C /data .
 ```
 
-Restore the database before bringing the FTP server online, then restore the
+Restore the database before bringing the file server online, then restore the
 matching object volume. Adjust the volume name if you use a custom Compose
 project name.
 
@@ -30,10 +30,10 @@ The image includes two tools:
 
 ```bash
 # Rebuild mappings from objects in the active store. Review the warning first.
-docker compose exec ftp-server ./ftp-server rebuild-mapping --yes
+docker compose exec file-server ./file-server rebuild-mapping --yes
 
 # Compare database mappings with objects without changing data.
-docker compose exec ftp-server ./physical-health --fail-on-unhealthy
+docker compose exec file-server ./physical-health --fail-on-unhealthy
 ```
 
 `rebuild-mapping` is destructive to existing mapping assumptions; use it only

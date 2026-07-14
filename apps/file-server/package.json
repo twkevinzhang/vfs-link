@@ -1,0 +1,46 @@
+{
+  "name": "@vfs-link/file-server",
+  "version": "0.0.1",
+  "private": true,
+  "nx": {
+    "name": "file-server",
+    "targets": {
+      "build": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "cd apps/file-server && ./scripts/go.sh build ./cmd/file-server"
+        }
+      },
+      "docker": {
+        "executor": "nx:run-commands",
+        "dependsOn": [
+          "build"
+        ],
+        "options": {
+          "commands": [
+            "docker build -t vfs-link/file-server:latest -f apps/file-server/Dockerfile ."
+          ],
+          "parallel": false
+        }
+      },
+      "up": {
+        "executor": "nx:run-commands",
+        "dependsOn": [
+          "docker"
+        ],
+        "options": {
+          "commands": [
+            "docker-compose up -d"
+          ],
+          "parallel": false
+        }
+      },
+      "rebuild-mapping": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "docker compose exec file-server ./file-server rebuild-mapping"
+        }
+      }
+    }
+  }
+}
