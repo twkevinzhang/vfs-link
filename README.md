@@ -177,7 +177,7 @@ docker compose up -d
 
 Docker Compose exposes the read-only API on `${HTTP_PORT:-8080}` and persists local object bytes in the `objectdata` named volume.
 
-For self-hosted deployment, use `docker-compose.self-hosted.yml`. It keeps the server on host networking, reads the existing external `DATABASE_URL`, mounts `${SELF_HOSTED_RUNTIME_DIR}/.auth/gcp-key.json` into `/app/gcp-key.json`, and stores local-first object bytes at `LOCAL_STORAGE_HOST_PATH`. If the existing `.env` still has `GCS_BUCKET`, the compose file passes it through so legacy v2 objects can be lazily backfilled into the local store. The production runtime directory defaults to `~/vfs-link` in CD, and is not a Git checkout.
+For self-hosted deployment, use `docker-compose.self-hosted.yml`. It keeps the server on host networking, reads the existing external `DATABASE_URL`, mounts `${SELF_HOSTED_RUNTIME_DIR}/.auth/gcp-key.json` into `/app/gcp-key.json`, and stores local-first object bytes at `LOCAL_STORAGE_HOST_PATH`. If the existing `.env` still has `GCS_BUCKET`, the compose file passes it through so legacy v2 objects can be lazily backfilled into the local store. The production runtime directory defaults to `~/vfs-link`; CD treats it only as runtime state and never fetches Git or builds source there.
 
 The CI image includes the React browser and defaults it to `/vfs-link/index`, with API requests routed through `/vfs-link/api`.
 
