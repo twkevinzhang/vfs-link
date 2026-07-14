@@ -20,7 +20,7 @@ type Config struct {
 	DatabaseURL      string
 	StorageDriver    string
 	LocalStorageRoot string
-	LegacyGCSBucket  string
+	GCSBucket        string
 	ShareGCSBucket   string
 	ShareGCSPrefix   string
 	SharePublicURL   string
@@ -46,7 +46,7 @@ func Load(args []string) (Config, error) {
 		DatabaseURL:      strings.TrimSpace(os.Getenv("DATABASE_URL")),
 		StorageDriver:    envString("STORAGE_DRIVER", "local"),
 		LocalStorageRoot: envString("LOCAL_STORAGE_ROOT", "./data/objects"),
-		LegacyGCSBucket:  envString("LEGACY_GCS_BUCKET", envString("GCS_BUCKET", "")),
+		GCSBucket:        envString("GCS_BUCKET", ""),
 		ShareGCSBucket:   envString("SHARE_GCS_BUCKET", ""),
 		ShareGCSPrefix:   envString("SHARE_GCS_PREFIX", "shares"),
 		SharePublicURL:   envString("SHARE_PUBLIC_BASE_URL", ""),
@@ -71,11 +71,17 @@ func Load(args []string) (Config, error) {
 	if cfg.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("DATABASE_URL is required")
 	}
-	if cfg.StorageDriver != "local" {
+	switch cfg.StorageDriver {
+	case "local":
+		if cfg.LocalStorageRoot == "" {
+			return Config{}, fmt.Errorf("LOCAL_STORAGE_ROOT is required when STORAGE_DRIVER=local")
+		}
+	case "gcs":
+		if cfg.GCSBucket == "" {
+			return Config{}, fmt.Errorf("GCS_BUCKET is required when STORAGE_DRIVER=gcs")
+		}
+	default:
 		return Config{}, fmt.Errorf("unsupported STORAGE_DRIVER %q", cfg.StorageDriver)
-	}
-	if cfg.LocalStorageRoot == "" {
-		return Config{}, fmt.Errorf("LOCAL_STORAGE_ROOT is required")
 	}
 	if cfg.FTPPasvMax < cfg.FTPPasvMin {
 		return Config{}, fmt.Errorf("FTP_PASV_MAX must be >= FTP_PASV_MIN")
@@ -123,15 +129,11 @@ func applyOverride(cfg *Config, key, value string) {
 	case "DATABASE_URL":
 		cfg.DatabaseURL = value
 	case "STORAGE_DRIVER":
-		cfg.StorageDriver = value
+		cfg.StorageDriver = strings.TrimSpace(value)
 	case "LOCAL_STORAGE_ROOT":
-		cfg.LocalStorageRoot = value
-	case "LEGACY_GCS_BUCKET":
-		cfg.LegacyGCSBucket = value
+		cfg.LocalStorageRoot = strings.TrimSpace(value)
 	case "GCS_BUCKET":
-		if cfg.LegacyGCSBucket == "" {
-			cfg.LegacyGCSBucket = value
-		}
+		cfg.GCSBucket = strings.TrimSpace(value)
 	case "SHARE_GCS_BUCKET":
 		cfg.ShareGCSBucket = value
 	case "SHARE_GCS_PREFIX":

@@ -32,8 +32,8 @@ export type Stats = {
   fileCount: number;
   directoryCount: number;
   totalBytes: number;
-  localObjectCount: number;
-  localObjectBytes: number;
+  objectCount: number;
+  objectBytes: number;
 };
 
 export type StatusResponse = {

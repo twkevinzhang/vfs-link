@@ -59,11 +59,11 @@ type Pagination struct {
 }
 
 type Stats struct {
-	FileCount        int   `json:"fileCount"`
-	DirectoryCount   int   `json:"directoryCount"`
-	TotalBytes       int64 `json:"totalBytes"`
-	LocalObjectCount int   `json:"localObjectCount"`
-	LocalObjectBytes int64 `json:"localObjectBytes"`
+	FileCount      int   `json:"fileCount"`
+	DirectoryCount int   `json:"directoryCount"`
+	TotalBytes     int64 `json:"totalBytes"`
+	ObjectCount    int   `json:"objectCount"`
+	ObjectBytes    int64 `json:"objectBytes"`
 }
 
 type StatusResponse struct {
@@ -354,9 +354,9 @@ func (s *Server) stats(ctx context.Context) (Stats, error) {
 	if err != nil {
 		return Stats{}, err
 	}
-	stats.LocalObjectCount = len(objects)
+	stats.ObjectCount = len(objects)
 	for _, object := range objects {
-		stats.LocalObjectBytes += object.Size
+		stats.ObjectBytes += object.Size
 	}
 	return stats, nil
 }

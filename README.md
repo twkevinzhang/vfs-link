@@ -1,27 +1,27 @@
-# vfs-link (local-first Go FTP Server)
+# vfs-link (Go FTP Server)
 
-`vfs-link` is a PostgreSQL-backed FTP server that stores physical file bytes in a local object store while exposing a virtual FTP path tree from the database.
+`vfs-link` is a PostgreSQL-backed FTP server that stores physical file bytes in a selectable local or Google Cloud Storage object store while exposing a virtual FTP path tree from the database.
 
 The key design goal is fast logical movement: FTP `RNFR` / `RNTO` operations update database `logicPath` values only. Physical files are not copied or renamed during logical moves.
 
 ## Version Notes
 
-This branch is **v3**, a local-first evolution of the v2 Go rewrite.
+This branch is **v3**, an evolution of the v2 Go rewrite with a storage adapter boundary and a React browser.
 
 - v1: Node.js / TypeScript + `ftp-srv` + Prisma + GCS.
 - v2: Go FTP server + PostgreSQL mapping + GCS object storage.
-- v3: Go FTP server + PostgreSQL mapping + local object storage + local React browser.
+- v3: Go FTP server + PostgreSQL mapping + selectable local/GCS object storage + React browser.
 
-See [docs/v1-v2-differences.md](docs/v1-v2-differences.md) for the v1/v2 comparison. v3 keeps the v2 Go runtime shape and replaces GCS with local storage by default.
+See [docs/v1-v2-differences.md](docs/v1-v2-differences.md) for the v1/v2 comparison. v3 keeps the v2 Go runtime shape, defaults to local storage, and can use GCS as the active primary store.
 
 ## Architecture
 
 - **Runtime**: Go 1.23+
 - **FTP engine**: `github.com/fclairamb/ftpserverlib`
 - **Database**: PostgreSQL
-- **Storage**: local object store under `LOCAL_STORAGE_ROOT`
+- **Storage**: `local` under `LOCAL_STORAGE_ROOT`, or `gcs` in `GCS_BUCKET`
 - **HTTP API**: read-only file browsing API on `HTTP_PORT`
-- **Web UI**: React local file browser under `apps/web`
+- **Web UI**: React file browser under `apps/web`
 - **Deployment**: Docker Compose
 
 ## Data Model
@@ -40,17 +40,17 @@ CREATE TABLE IF NOT EXISTS "File" (
 CREATE INDEX IF NOT EXISTS "File_logicPath_idx" ON "File" ("logicPath");
 ```
 
-`logicPath` is the user-facing FTP path. `physicalHash` is the local object key stored under `LOCAL_STORAGE_ROOT`.
+`logicPath` is the user-facing FTP path. `physicalHash` is the object key in the active primary store.
 
 ## Core Behavior
 
 - `LIST` / `MLSD`: reads children from PostgreSQL and returns only the direct entries for the requested directory.
-- `RETR`: resolves `logicPath` to `physicalHash` and streams the local object file to the FTP data connection.
-- `STOR`: streams upload data into a local object file, upserts the mapping after the upload closes cleanly, and removes the replaced object after a successful overwrite.
-- `RNFR` / `RNTO`: updates database paths only; local object names stay unchanged.
-- `DELE` / `RMD`: deletes local object files for files and removes their database mappings.
+- `RETR`: resolves `logicPath` to `physicalHash` and streams the object from the active store to the FTP data connection.
+- `STOR`: streams upload data into the active store, upserts the mapping after the upload closes cleanly, and removes the replaced object after a successful overwrite.
+- `RNFR` / `RNTO`: updates database paths only; physical object names stay unchanged.
+- `DELE` / `RMD`: deletes physical objects for files and removes their database mappings.
 - `MKD`: creates directory mappings in PostgreSQL.
-- HTTP API: exposes read-only browsing endpoints for the local React UI.
+- HTTP API: exposes read-only browsing endpoints for the React UI.
 
 ## HTTP API
 
@@ -62,9 +62,9 @@ CREATE INDEX IF NOT EXISTS "File_logicPath_idx" ON "File" ("logicPath");
 - `GET /api/shares/{id}`: reads a share job.
 - `POST /api/shares/{id}/start`: uploads the file to GCS and sends a Telegram notification when configured.
 
-## Local React Browser
+## React Browser
 
-The browser app lives in `apps/web` and reads the Go server's HTTP API. It does not connect to PostgreSQL or `LOCAL_STORAGE_ROOT` directly.
+The browser app lives in `apps/web` and reads the Go server's HTTP API. It does not connect to PostgreSQL or the active object store directly.
 
 Start the API/FTP server locally:
 
@@ -73,6 +73,7 @@ docker compose up -d db
 
 cd apps/ftp-server
 DATABASE_URL='postgresql://postgres:postgres@localhost:5434/vfs_link?sslmode=disable' \
+STORAGE_DRIVER='local' \
 LOCAL_STORAGE_ROOT='../../data/objects' \
 FTP_PORT=2121 \
 HTTP_PORT=8080 \
@@ -106,14 +107,7 @@ VITE_BASE_PATH='/vfs-link/index' VITE_API_BASE_URL='/vfs-link' pnpm --dir apps/w
 
 ## File Sharing
 
-v3 remains local-first for FTP storage. File sharing is an export workflow: the Go server reads the local object, uploads it to the configured GCS bucket, then sends the share link through Telegram when configured.
-
-For deployments migrated from the v2 GCS-backed store, set `LEGACY_GCS_BUCKET`
-or keep the old `GCS_BUCKET`. When a local object is missing, the server reads
-that physical object from the legacy bucket, writes it back into
-`LOCAL_STORAGE_ROOT`, then retries from local storage. This is a lazy backfill:
-new FTP uploads still write to local storage first, and GCS is only used as a
-compatibility source for old records.
+File sharing is an export workflow independent from the primary storage driver. The Go server reads the object from the active local or GCS store, uploads it to `SHARE_GCS_BUCKET`, then sends the share link through Telegram when configured. `GCS_BUCKET` and `SHARE_GCS_BUCKET` may point to different buckets.
 
 Required for sharing:
 
@@ -122,7 +116,6 @@ Required for sharing:
 
 Optional:
 
-- `LEGACY_GCS_BUCKET`: legacy source bucket for lazy local backfill
 - `SHARE_GCS_PREFIX`: object prefix, defaults to `shares`
 - `SHARE_PUBLIC_BASE_URL`: public base URL for generated links; defaults to `https://storage.googleapis.com/{bucket}`
 - `TELEGRAM_BOT_TOKEN`: Telegram bot token for share notifications
@@ -135,12 +128,12 @@ When `TELEGRAM_BOT_TOKEN` or `TELEGRAM_CHAT_ID` is missing, uploads still comple
 Required:
 
 - `DATABASE_URL`: PostgreSQL connection string
-- `LOCAL_STORAGE_ROOT`: local object storage root
+- `LOCAL_STORAGE_ROOT`: local object storage root when `STORAGE_DRIVER=local`
+- `GCS_BUCKET`: primary GCS bucket when `STORAGE_DRIVER=gcs`
 
 Optional:
 
-- `STORAGE_DRIVER`: storage driver, currently only `local`, defaults to `local`
-- `LEGACY_GCS_BUCKET`: optional legacy GCS source for lazy backfill; falls back to `GCS_BUCKET` when unset
+- `STORAGE_DRIVER`: `local` or `gcs`, defaults to `local`
 - `FTP_USER`: FTP username, defaults to `admin`
 - `FTP_PASS`: FTP password, defaults to `admin123`
 - `FTP_PORT`: FTP control port, defaults to `21`
@@ -175,9 +168,9 @@ docker build -t vfs-link/ftp-server:latest -f apps/ftp-server/Dockerfile .
 docker compose up -d
 ```
 
-Docker Compose exposes the read-only API on `${HTTP_PORT:-8080}` and persists local object bytes in the `objectdata` named volume.
+Docker Compose exposes the read-only API on `${HTTP_PORT:-8080}`. It defaults to local storage and persists object bytes in the `objectdata` named volume; set `STORAGE_DRIVER=gcs` and `GCS_BUCKET` to select GCS, with Application Default Credentials available to the container.
 
-For self-hosted deployment, use `docker-compose.self-hosted.yml`. It keeps the server on host networking, reads the existing external `DATABASE_URL`, mounts `${SELF_HOSTED_RUNTIME_DIR}/.auth/gcp-key.json` into `/app/gcp-key.json`, and stores local-first object bytes at `LOCAL_STORAGE_HOST_PATH`. If the existing `.env` still has `GCS_BUCKET`, the compose file passes it through so legacy v2 objects can be lazily backfilled into the local store. The production runtime directory defaults to `~/vfs-link`; CD treats it only as runtime state and never fetches Git or builds source there.
+For self-hosted deployment, use `docker-compose.self-hosted.yml`. It intentionally remains on `STORAGE_DRIVER=local`, keeps the server on host networking, reads the existing external `DATABASE_URL`, mounts `${SELF_HOSTED_RUNTIME_DIR}/.auth/gcp-key.json` into `/app/gcp-key.json`, and stores object bytes at `LOCAL_STORAGE_HOST_PATH`. The production runtime directory defaults to `~/vfs-link`; CD treats it only as runtime state and never fetches Git or builds source there.
 
 The CI image includes the React browser and defaults it to `/vfs-link/index`, with API requests routed through `/vfs-link/api`.
 
@@ -210,7 +203,7 @@ Configure `SELF_HOSTED_HEALTHCHECK_URL` as an environment secret only when the d
 
 ## Rebuild Mapping Table
 
-To rebuild logical mappings from object files currently present in `LOCAL_STORAGE_ROOT`:
+To rebuild logical mappings from objects currently present in the active primary store:
 
 ```bash
 docker exec -it vfs-link ./ftp-server rebuild-mapping
@@ -221,3 +214,28 @@ Pass `--yes` to skip the 5-second countdown:
 ```bash
 docker exec -it vfs-link ./ftp-server rebuild-mapping --yes
 ```
+
+## Physical Hash Health Check
+
+Use this read-only check to compare PostgreSQL `File` mappings against the
+active local or GCS primary store. GCS mode checks object metadata without
+downloading object bytes.
+
+```bash
+cd apps/ftp-server
+./scripts/check-physical-health.sh \
+  --env-file ../../.env \
+  --prefix /浦城街招租 \
+  --csv /tmp/vfs-link-physical-health.csv
+```
+
+Useful options:
+
+- `--prefix /path`: limit the scan to one logical directory.
+- `--storage-driver local|gcs`: override `STORAGE_DRIVER`.
+- `--local-root PATH`: override `LOCAL_STORAGE_ROOT` in local mode.
+- `--gcs-bucket BUCKET`: override `GCS_BUCKET` in GCS mode.
+- `--google-credentials PATH`: override `GOOGLE_APPLICATION_CREDENTIALS`.
+- `--fail-on-unhealthy`: exit with status `2` when any file is unhealthy.
+
+See [`apps/ftp-server/cmd/physical-health/README.md`](apps/ftp-server/cmd/physical-health/README.md) for the complete command reference.

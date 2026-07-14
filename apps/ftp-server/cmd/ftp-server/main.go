@@ -48,21 +48,16 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("ensure schema: %w", err)
 	}
 
-	localObjects, err := blob.NewLocal(cfg.LocalStorageRoot)
+	objects, err := blob.NewStore(ctx, blob.StoreConfig{
+		Driver:    cfg.StorageDriver,
+		LocalRoot: cfg.LocalStorageRoot,
+		GCSBucket: cfg.GCSBucket,
+	})
 	if err != nil {
-		return err
-	}
-	var objects blob.Store = localObjects
-	if cfg.LegacyGCSBucket != "" {
-		legacyObjects, err := blob.NewGCS(ctx, cfg.LegacyGCSBucket)
-		if err != nil {
-			_ = localObjects.Close()
-			return err
-		}
-		objects = blob.NewFallback(localObjects, legacyObjects, logger)
-		logger.Info("enabled legacy GCS fallback", "bucket", cfg.LegacyGCSBucket)
+		return fmt.Errorf("initialize object storage: %w", err)
 	}
 	defer objects.Close()
+	logger.Info("initialized object storage", "driver", objects.Driver(), "root", objects.Root())
 
 	if len(cfg.CommandArgs) > 0 && cfg.CommandArgs[0] == "rebuild-mapping" {
 		return rebuildMapping(ctx, cfg, store, objects, logger)
@@ -121,7 +116,7 @@ func run(logger *slog.Logger) error {
 
 func rebuildMapping(ctx context.Context, cfg config.Config, store *db.Store, objects blob.Store, logger *slog.Logger) error {
 	if !cfg.AssumeYes {
-		logger.Warn("rebuilding mapping table from local object store", "root", objects.Root())
+		logger.Warn("rebuilding mapping table from active object store", "driver", objects.Driver(), "root", objects.Root())
 		for i := 5; i > 0; i-- {
 			logger.Info("starting soon", "seconds", i)
 			select {
@@ -134,10 +129,10 @@ func rebuildMapping(ctx context.Context, cfg config.Config, store *db.Store, obj
 
 	objectList, err := objects.List(ctx)
 	if err != nil {
-		return fmt.Errorf("list local objects: %w", err)
+		return fmt.Errorf("list objects: %w", err)
 	}
 
-	logger.Info("processing local objects", "count", len(objectList))
+	logger.Info("processing objects", "count", len(objectList))
 	for idx, object := range objectList {
 		isDir := strings.HasSuffix(object.Name, "/")
 		logicPath := "/" + strings.TrimPrefix(strings.TrimSuffix(object.Name, "/"), "/")

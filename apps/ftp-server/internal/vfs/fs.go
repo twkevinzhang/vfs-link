@@ -26,7 +26,7 @@ func New(store *db.Store, objects blob.Store) *FS {
 }
 
 func (fs *FS) Name() string {
-	return "vfs-link-db-gcs"
+	return "vfs-link"
 }
 
 func (fs *FS) Create(name string) (afero.File, error) {

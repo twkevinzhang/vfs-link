@@ -8,8 +8,9 @@ services:
       - '${FTP_PASV_MIN:-30000}-${FTP_PASV_MAX:-30100}:${FTP_PASV_MIN:-30000}-${FTP_PASV_MAX:-30100}'
     environment:
       - DATABASE_URL=postgresql://postgres:postgres@db:5432/vfs_link?sslmode=disable
-      - STORAGE_DRIVER=local
+      - STORAGE_DRIVER=${STORAGE_DRIVER:-local}
       - LOCAL_STORAGE_ROOT=/data/objects
+      - GCS_BUCKET=${GCS_BUCKET:-}
       - FTP_USER=${FTP_USER:-admin}
       - FTP_PASS=${FTP_PASS:-admin123}
       - FTP_PORT=${FTP_PORT:-21}

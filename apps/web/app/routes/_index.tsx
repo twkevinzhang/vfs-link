@@ -43,10 +43,10 @@ import {
 } from '../types/files';
 
 export const meta: MetaFunction = () => [
-  { title: 'vfs-link local browser' },
+  { title: 'vfs-link browser' },
   {
     name: 'description',
-    content: 'Local-first file browser for vfs-link FTP storage.',
+    content: 'File browser for vfs-link FTP storage.',
   },
 ];
 
@@ -211,10 +211,10 @@ export default function Index() {
             />
             <HeaderMetricBadge
               icon={<Server aria-hidden="true" className="h-3.5 w-3.5" />}
-              label="Local objects"
+              label="Stored objects"
               shortLabel="Objects"
-              value={String(state.status?.stats.localObjectCount ?? 0)}
-              detail={formatBytes(state.status?.stats.localObjectBytes ?? 0)}
+              value={String(state.status?.stats.objectCount ?? 0)}
+              detail={formatBytes(state.status?.stats.objectBytes ?? 0)}
             />
           </div>
           <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-end xl:shrink-0">
