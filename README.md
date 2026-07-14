@@ -187,18 +187,18 @@ The pipeline keeps CI and production deployment separate:
 
 ```text
 main push
-  -> CI (GitHub-hosted): test, build, push GHCR image tagged with the commit SHA
-  -> CD (self-hosted self-hosted-deploy): pull that immutable image and recreate ftp-server
+  -> CI (organization self-hosted runner): test, build, push GHCR image tagged with the commit SHA
+  -> CD (organization runner labelled self-hosted): pull that immutable image and recreate ftp-server
 ```
 
-`ci.yml` runs on GitHub-hosted runners and publishes:
+`ci.yml` uses only the standard `self-hosted`, `linux`, and `x64` labels. GitHub can assign it to any eligible organization runner; it has no vfs-link-specific runner dependency. It publishes:
 
 ```text
 ghcr.io/twkevinzhang/vfs-link/ftp-server:<commit-sha>
 ghcr.io/twkevinzhang/vfs-link/ftp-server:latest
 ```
 
-`deploy-self-hosted.yml` starts only after a successful CI run on `main`, or can be manually dispatched with an already-published commit SHA. It must run only on the dedicated runner labelled `self-hosted-deploy`; CI never targets a self-hosted runner.
+`deploy-self-hosted.yml` starts only after a successful CI run on `main`, or can be manually dispatched with an already-published commit SHA. It targets the organization runner labelled `self-hosted`, which identifies the deployment node rather than a project-specific runner. The runner must be registered at the twkevinzhang organization level and its runner group must allow this repository.
 
 The CD runner needs Docker access and these production files on self-hosted:
 
