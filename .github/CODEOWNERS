@@ -1,0 +1,4 @@
+# Supply-chain configuration requires review by the repository owner.
+/.github/ @twkevinzhang
+/apps/file-server/Dockerfile @twkevinzhang
+/apps/file-server/docker-entrypoint.sh @twkevinzhang
