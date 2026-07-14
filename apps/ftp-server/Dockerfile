@@ -24,7 +24,8 @@ COPY apps/ftp-server/go.mod apps/ftp-server/go.sum* ./
 RUN go mod download
 
 COPY apps/ftp-server ./
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/ftp-server ./cmd/ftp-server
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/ftp-server ./cmd/ftp-server \
+    && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/physical-health ./cmd/physical-health
 
 FROM alpine:3.20
 
@@ -33,6 +34,7 @@ RUN apk add --no-cache ca-certificates tzdata
 WORKDIR /app
 
 COPY --from=builder /out/ftp-server ./ftp-server
+COPY --from=builder /out/physical-health ./physical-health
 COPY --from=web-builder /src/apps/web/build/client ./web
 COPY apps/ftp-server/docker-entrypoint.sh ./docker-entrypoint.sh
 RUN chmod +x ./docker-entrypoint.sh

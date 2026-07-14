@@ -1,21 +1,24 @@
 services:
   ftp-server:
-    image: vfs-link/ftp-server:latest
-    container_name: vfs-link
+    image: ${VFS_LINK_IMAGE:-vfs-link/ftp-server:local}
+    build:
+      context: .
+      dockerfile: apps/ftp-server/Dockerfile
+    restart: unless-stopped
     ports:
       - '21:21'
       - '${HTTP_PORT:-8080}:8080'
       - '${FTP_PASV_MIN:-30000}-${FTP_PASV_MAX:-30100}:${FTP_PASV_MIN:-30000}-${FTP_PASV_MAX:-30100}'
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/vfs_link?sslmode=disable
+      - DATABASE_URL=postgresql://${POSTGRES_USER:?Set POSTGRES_USER}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:?Set POSTGRES_DB}?sslmode=disable
       - STORAGE_DRIVER=${STORAGE_DRIVER:-local}
       - LOCAL_STORAGE_ROOT=/data/objects
       - GCS_BUCKET=${GCS_BUCKET:-}
-      - FTP_USER=${FTP_USER:-admin}
-      - FTP_PASS=${FTP_PASS:-admin123}
+      - FTP_USER=${FTP_USER:?Set FTP_USER}
+      - FTP_PASS=${FTP_PASS:?Set FTP_PASS}
       - FTP_PORT=${FTP_PORT:-21}
       - HTTP_PORT=${HTTP_PORT:-8080}
-      - FTP_PASV_URL=${FTP_PASV_URL:-127.0.0.1}
+      - FTP_PASV_URL=${FTP_PASV_URL:?Set FTP_PASV_URL}
       - FTP_PASV_MIN=${FTP_PASV_MIN:-30000}
       - FTP_PASV_MAX=${FTP_PASV_MAX:-30100}
       - SHARE_GCS_BUCKET=${SHARE_GCS_BUCKET:-}
@@ -33,13 +36,11 @@ services:
 
   db:
     image: postgres:15-alpine
-    container_name: vfs-db
-    ports:
-      - '5434:5432'
+    restart: unless-stopped
     environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
-      - POSTGRES_DB=vfs_link
+      - POSTGRES_USER=${POSTGRES_USER:?Set POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB:?Set POSTGRES_DB}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:

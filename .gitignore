@@ -54,5 +54,13 @@ apps/ftp-server/ftp-server
 mount/db
 /data
 .env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.pfx
+*.key
+credentials*.json
+gcp-key.json
 apps/web/build
 apps/web/.react-router

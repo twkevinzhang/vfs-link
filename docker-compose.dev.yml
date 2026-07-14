@@ -1,0 +1,5 @@
+# Development-only overlay: exposes PostgreSQL to the host on port 5434.
+services:
+  db:
+    ports:
+      - '5434:5432'
