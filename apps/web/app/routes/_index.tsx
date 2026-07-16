@@ -4,12 +4,15 @@ import {
   Download,
   File,
   Folder,
+  FolderInput,
   HardDrive,
   Play,
   RefreshCcw,
+  RotateCcw,
   Search,
   Server,
   Share2,
+  Trash2,
   Upload,
   X,
 } from 'lucide-react';
@@ -22,13 +25,27 @@ import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Skeleton } from '../components/ui/skeleton';
 import { UploadPanel } from '../components/upload-panel';
+import {
+  ConfirmPermanentDelete,
+  ConfirmTrashDialog,
+  FileActionMenu,
+  MoveDialog,
+} from '../components/file-actions';
+import { Checkbox } from '../components/ui/checkbox';
+import { useFileSelection } from '../hooks/use-file-selection';
 import { appPath } from '../lib/base-path';
 import {
   createShareDraft,
+  deleteTrash,
+  emptyTrash,
   getDownloadUrl,
   getFiles,
   getPreviewUrl,
   getStatus,
+  getTrash,
+  moveFiles,
+  moveFilesToTrash,
+  restoreTrash,
 } from '../lib/api';
 import {
   formatBytes,
@@ -42,6 +59,7 @@ import {
   FilesResponse,
   Pagination,
   StatusResponse,
+  TrashEntry,
 } from '../types/files';
 
 export const meta: MetaFunction = () => [
@@ -78,6 +96,16 @@ export default function Index() {
   const [sharingPath, setSharingPath] = useState<string>();
   const [selectedFile, setSelectedFile] = useState<FileEntry>();
   const [showUpload, setShowUpload] = useState(false);
+  const [view, setView] = useState<'files' | 'trash'>('files');
+  const [trashEntries, setTrashEntries] = useState<TrashEntry[]>([]);
+  const [trashLoading, setTrashLoading] = useState(false);
+  const [actionError, setActionError] = useState<string>();
+  const [actionPaths, setActionPaths] = useState<string[]>([]);
+  const [actionTrashIds, setActionTrashIds] = useState<string[]>([]);
+  const [showMove, setShowMove] = useState(false);
+  const [showTrashConfirm, setShowTrashConfirm] = useState(false);
+  const [showPermanentConfirm, setShowPermanentConfirm] = useState(false);
+  const [showEmptyConfirm, setShowEmptyConfirm] = useState(false);
   const filesRequestRef = useRef(0);
 
   const loadStatus = useCallback(async () => {
@@ -135,6 +163,21 @@ export default function Index() {
     ]);
   }, [currentPath, fileQuery, loadFiles, loadStatus]);
 
+  const loadTrash = useCallback(async () => {
+    setTrashLoading(true);
+    setActionError(undefined);
+    try {
+      const response = await getTrash();
+      setTrashEntries(response.entries);
+    } catch (error) {
+      setActionError(
+        error instanceof Error ? error.message : 'Unable to load trash'
+      );
+    } finally {
+      setTrashLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     void loadStatus();
   }, [loadStatus]);
@@ -152,6 +195,20 @@ export default function Index() {
   }, [currentPath, fileQuery, pageOffset, loadFiles]);
 
   const visibleEntries = state.files?.entries ?? [];
+  const currentEntries: FileEntry[] =
+    view === 'trash' ? trashEntries : visibleEntries;
+  const entryKey = useCallback(
+    (entry: FileEntry) =>
+      view === 'trash' ? entry.trashId ?? entry.path : entry.path,
+    [view]
+  );
+  const selection = useFileSelection(currentEntries.map(entryKey));
+  const selectedEntries = currentEntries.filter((entry) =>
+    selection.selected.has(entryKey(entry))
+  );
+  const selectedTrashIds = selectedEntries
+    .map((entry) => entry.trashId)
+    .filter((id): id is string => Boolean(id));
   const existingNames = useMemo(
     () => new Set(visibleEntries.map((entry) => entry.name)),
     [visibleEntries]
@@ -171,6 +228,133 @@ export default function Index() {
     setFileQuery('');
     setPageOffset(0);
   }, []);
+
+  useEffect(() => {
+    selection.clear();
+    setSelectedFile(undefined);
+    if (view === 'trash') void loadTrash();
+  }, [view]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const input = target?.closest('input');
+      const isTextInput =
+        input instanceof HTMLInputElement &&
+        !['checkbox', 'radio', 'button'].includes(input.type);
+      if (
+        isTextInput ||
+        target?.closest(
+          'textarea, select, [contenteditable="true"], [role="dialog"], [role="menu"]'
+        )
+      )
+        return;
+      const modifier = event.metaKey || event.ctrlKey;
+      if (modifier && event.key.toLowerCase() === 'a') {
+        event.preventDefault();
+        selection.selectAll();
+      } else if (event.key === 'Escape') {
+        selection.clear();
+        setSelectedFile(undefined);
+      } else if (
+        event.key === 'Enter' &&
+        selectedEntries.length === 1 &&
+        view === 'files'
+      ) {
+        event.preventDefault();
+        const entry = selectedEntries[0];
+        if (entry.kind === 'directory') openFolder(entry.path);
+        else
+          window.open(
+            getPreviewUrl(entry.path),
+            '_blank',
+            'noopener,noreferrer'
+          );
+      } else if (
+        view === 'files' &&
+        selectedEntries.length > 0 &&
+        (event.key === 'Delete' || (event.metaKey && event.key === 'Backspace'))
+      ) {
+        event.preventDefault();
+        setActionPaths(selectedEntries.map((entry) => entry.path));
+        setShowTrashConfirm(true);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [openFolder, selectedEntries, selection, view]);
+
+  const beginMove = (paths: string[]) => {
+    setActionPaths(paths);
+    setShowMove(true);
+  };
+  const beginTrash = (paths: string[]) => {
+    setActionPaths(paths);
+    setShowTrashConfirm(true);
+  };
+  const runMove = async (destination: string) => {
+    try {
+      await moveFiles(actionPaths, destination);
+      setShowMove(false);
+      selection.clear();
+      refresh();
+    } catch (error) {
+      setActionError(
+        error instanceof Error ? error.message : 'Unable to move items'
+      );
+    }
+  };
+  const runTrash = async () => {
+    try {
+      await moveFilesToTrash(actionPaths);
+      setShowTrashConfirm(false);
+      selection.clear();
+      setSelectedFile(undefined);
+      refresh();
+    } catch (error) {
+      setActionError(
+        error instanceof Error ? error.message : 'Unable to move items to trash'
+      );
+    }
+  };
+  const runRestore = async () => {
+    const trashIds = selectedTrashIds;
+    try {
+      await restoreTrash(trashIds);
+      selection.clear();
+      await Promise.all([loadTrash(), loadStatus()]);
+    } catch (error) {
+      setActionError(
+        error instanceof Error ? error.message : 'Unable to restore items'
+      );
+    }
+  };
+  const runPermanentDelete = async () => {
+    const trashIds =
+      actionTrashIds.length > 0 ? actionTrashIds : selectedTrashIds;
+    try {
+      await deleteTrash(trashIds);
+      setShowPermanentConfirm(false);
+      selection.clear();
+      await Promise.all([loadTrash(), loadStatus()]);
+    } catch (error) {
+      setActionError(
+        error instanceof Error ? error.message : 'Unable to delete items'
+      );
+    }
+  };
+  const runEmptyTrash = async () => {
+    try {
+      await emptyTrash();
+      setShowEmptyConfirm(false);
+      selection.clear();
+      await Promise.all([loadTrash(), loadStatus()]);
+    } catch (error) {
+      setActionError(
+        error instanceof Error ? error.message : 'Unable to empty trash'
+      );
+    }
+  };
 
   const shareFile = useCallback(async (path: string) => {
     setShareError(undefined);
@@ -214,7 +398,7 @@ export default function Index() {
               label="Logical bytes"
               shortLabel="Bytes"
               value={formatBytes(state.status?.stats.totalBytes ?? 0)}
-              detail="Postgres file records"
+              detail="Logical file records"
             />
             <HeaderMetricBadge
               icon={<Server aria-hidden="true" className="h-3.5 w-3.5" />}
@@ -225,35 +409,49 @@ export default function Index() {
             />
           </div>
           <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-end xl:shrink-0">
-            <div className="relative w-full md:w-[320px]">
-              <Search
-                aria-hidden="true"
-                className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
+            {view === 'files' && (
+              <div className="relative w-full md:w-[260px]">
+                <Search
+                  aria-hidden="true"
+                  className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
+                />
+                <Input
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder="Search current folder"
+                  className="h-9 pl-8"
+                />
+              </div>
+            )}
+            {view === 'files' && (
+              <VisibleMetric
+                value={String(currentPagination?.total ?? 0)}
+                detail={formatBytes(totalVisibleBytes)}
               />
-              <Input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search current folder"
-                className="h-9 pl-8"
-              />
-            </div>
-            <VisibleMetric
-              value={String(currentPagination?.total ?? 0)}
-              detail={formatBytes(totalVisibleBytes)}
-            />
+            )}
+            {view === 'files' && (
+              <Button
+                variant="outline"
+                onClick={() => setShowUpload((visible) => !visible)}
+                className="h-9 w-full px-3 md:w-auto"
+                aria-expanded={showUpload}
+              >
+                <Upload aria-hidden="true" className="h-4 w-4" />
+                Upload
+              </Button>
+            )}
             <Button
-              variant="outline"
-              onClick={() => setShowUpload((visible) => !visible)}
+              variant={view === 'trash' ? 'secondary' : 'outline'}
+              onClick={() => setView(view === 'files' ? 'trash' : 'files')}
               className="h-9 w-full px-3 md:w-auto"
-              aria-expanded={showUpload}
             >
-              <Upload aria-hidden="true" className="h-4 w-4" />
-              Upload
+              <Trash2 aria-hidden="true" className="h-4 w-4" />
+              {view === 'files' ? 'Trash' : 'Back to files'}
             </Button>
             <Button
               variant="outline"
-              onClick={refresh}
-              disabled={state.loading}
+              onClick={() => (view === 'files' ? refresh() : void loadTrash())}
+              disabled={view === 'files' ? state.loading : trashLoading}
               title="重新整理"
               className="h-9 w-full px-3 md:w-auto"
             >
@@ -293,7 +491,19 @@ export default function Index() {
           </Alert>
         )}
 
-        {showUpload && (
+        {actionError && (
+          <Alert className="border-destructive/35 bg-white text-destructive">
+            <div className="flex items-start gap-3">
+              <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
+              <div className="grid gap-1">
+                <p className="font-semibold">Action unavailable</p>
+                <p className="text-sm text-foreground">{actionError}</p>
+              </div>
+            </div>
+          </Alert>
+        )}
+
+        {view === 'files' && showUpload && (
           <UploadPanel
             currentPath={currentPath}
             existingNames={existingNames}
@@ -305,42 +515,213 @@ export default function Index() {
         <section className="flex min-w-0 flex-col gap-4 lg:min-h-0 lg:flex-1">
           <div className="overflow-x-auto rounded-lg border border-border bg-white p-4">
             <div className="min-w-max">
-              <Breadcrumbs
-                entries={state.files?.breadcrumbs ?? []}
-                currentPath={currentPath}
-                onSelectPath={openFolder}
-              />
+              {view === 'files' ? (
+                <Breadcrumbs
+                  entries={state.files?.breadcrumbs ?? []}
+                  currentPath={currentPath}
+                  onSelectPath={openFolder}
+                />
+              ) : (
+                <div className="flex items-center gap-2 font-semibold">
+                  <Trash2 className="h-4 w-4" />
+                  Trash <Badge variant="secondary">{trashEntries.length}</Badge>
+                </div>
+              )}
             </div>
           </div>
 
-          <section className="grid gap-4 lg:min-h-0 lg:flex-1 xl:grid-cols-[minmax(0,1fr)_360px] 2xl:grid-cols-[minmax(0,1fr)_420px]">
+          {selection.selected.size > 0 && (
+            <div
+              className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-white p-3"
+              role="toolbar"
+              aria-label="Selected item actions"
+            >
+              <Badge variant="secondary">
+                {selection.selected.size} selected
+              </Badge>
+              {view === 'files' ? (
+                <>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => beginMove(selection.selectedPaths)}
+                  >
+                    <FolderInput className="h-4 w-4" />
+                    Move
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    onClick={() => beginTrash(selection.selectedPaths)}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    Move to trash
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void runRestore()}
+                  >
+                    <RotateCcw className="h-4 w-4" />
+                    Restore
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    onClick={() => {
+                      setActionTrashIds(selectedTrashIds);
+                      setShowPermanentConfirm(true);
+                    }}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    Delete permanently
+                  </Button>
+                </>
+              )}
+              <Button size="sm" variant="ghost" onClick={selection.clear}>
+                Clear
+              </Button>
+            </div>
+          )}
+
+          {view === 'trash' &&
+            trashEntries.length > 0 &&
+            selection.selected.size === 0 && (
+              <div className="flex justify-end">
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => setShowEmptyConfirm(true)}
+                >
+                  <Trash2 className="h-4 w-4" />
+                  Empty trash
+                </Button>
+              </div>
+            )}
+
+          <section
+            className={cn(
+              'grid gap-4 lg:min-h-0 lg:flex-1',
+              view === 'files' &&
+                'xl:grid-cols-[minmax(0,1fr)_360px] 2xl:grid-cols-[minmax(0,1fr)_420px]'
+            )}
+          >
             <div className="min-h-0 overflow-hidden rounded-lg border border-border bg-white lg:flex-1">
-              {state.loading && !state.files ? (
+              {(
+                view === 'files' ? state.loading && !state.files : trashLoading
+              ) ? (
                 <LoadingTable />
-              ) : visibleEntries.length === 0 ? (
-                <EmptyState query={query} />
+              ) : currentEntries.length === 0 ? (
+                view === 'files' ? (
+                  <EmptyState query={query} />
+                ) : (
+                  <TrashEmptyState />
+                )
               ) : (
                 <FileTable
-                  entries={visibleEntries}
-                  pagination={currentPagination}
-                  visibleBytes={totalVisibleBytes}
+                  entries={currentEntries}
+                  pagination={view === 'files' ? currentPagination : undefined}
+                  visibleBytes={
+                    view === 'files'
+                      ? totalVisibleBytes
+                      : currentEntries.reduce(
+                          (sum, entry) => sum + entry.size,
+                          0
+                        )
+                  }
                   sharingPath={sharingPath}
-                  selectedPath={selectedFile?.path}
+                  selectedPaths={selection.selected}
+                  trashView={view === 'trash'}
+                  entryKey={entryKey}
                   onPageChange={setPageOffset}
                   onOpenFolder={openFolder}
                   onSelectFile={selectFile}
+                  onSelect={(entry, options) => {
+                    selection.select(entryKey(entry), options);
+                    setSelectedFile(
+                      entry.kind === 'file' && !options.toggle && !options.range
+                        ? entry
+                        : undefined
+                    );
+                  }}
+                  onMove={(entry) => beginMove([entry.path])}
+                  onTrash={(entry) => beginTrash([entry.path])}
+                  onRestore={(entry) => {
+                    if (entry.trashId)
+                      void restoreTrash([entry.trashId])
+                        .then(() => {
+                          selection.clear();
+                          void loadTrash();
+                          void loadStatus();
+                        })
+                        .catch((error) =>
+                          setActionError(
+                            error instanceof Error
+                              ? error.message
+                              : 'Unable to restore item'
+                          )
+                        );
+                  }}
+                  onPermanentDelete={(entry) => {
+                    if (entry.trashId) {
+                      setActionTrashIds([entry.trashId]);
+                      setShowPermanentConfirm(true);
+                    }
+                  }}
                   onShareFile={shareFile}
                 />
               )}
             </div>
-            <FileInspector
-              file={selectedFile}
-              sharingPath={sharingPath}
-              onClear={() => setSelectedFile(undefined)}
-              onShareFile={shareFile}
-            />
+            {view === 'files' && (
+              <FileInspector
+                file={selectedFile}
+                sharingPath={sharingPath}
+                onClear={() => setSelectedFile(undefined)}
+                onShareFile={shareFile}
+                onMove={(file) => beginMove([file.path])}
+                onTrash={(file) => beginTrash([file.path])}
+              />
+            )}
           </section>
         </section>
+        <MoveDialog
+          open={showMove}
+          count={actionPaths.length}
+          initialPath={currentPath}
+          onOpenChange={setShowMove}
+          onMove={runMove}
+        />
+        <ConfirmTrashDialog
+          open={showTrashConfirm}
+          count={actionPaths.length}
+          onOpenChange={setShowTrashConfirm}
+          onConfirm={runTrash}
+        />
+        <ConfirmPermanentDelete
+          open={showPermanentConfirm}
+          title="Delete permanently?"
+          description={`${
+            actionTrashIds.length || selection.selected.size
+          } selected item${
+            (actionTrashIds.length || selection.selected.size) === 1 ? '' : 's'
+          } will be removed from storage. This cannot be undone.`}
+          onOpenChange={(open) => {
+            setShowPermanentConfirm(open);
+            if (!open) setActionTrashIds([]);
+          }}
+          onConfirm={runPermanentDelete}
+        />
+        <ConfirmPermanentDelete
+          open={showEmptyConfirm}
+          title="Empty trash?"
+          description={`All ${trashEntries.length} trashed items will be removed from storage. This cannot be undone.`}
+          action="Empty trash"
+          onOpenChange={setShowEmptyConfirm}
+          onConfirm={runEmptyTrash}
+        />
       </div>
     </main>
   );
@@ -394,6 +775,24 @@ function VisibleMetric({ value, detail }: { value: string; detail: string }) {
         {detail}
       </span>
     </Badge>
+  );
+}
+
+function TrashEmptyState() {
+  return (
+    <div className="grid min-h-72 place-items-center p-8 text-center">
+      <div className="grid max-w-sm gap-2">
+        <Trash2
+          aria-hidden="true"
+          className="mx-auto h-10 w-10 text-muted-foreground"
+        />
+        <h2 className="font-semibold">Trash is empty</h2>
+        <p className="text-sm text-muted-foreground">
+          Items moved to trash stay recoverable until you permanently delete
+          them.
+        </p>
+      </div>
+    </div>
   );
 }
 
@@ -453,20 +852,37 @@ function FileTable({
   pagination,
   visibleBytes,
   sharingPath,
-  selectedPath,
+  selectedPaths,
+  trashView,
+  entryKey,
   onPageChange,
   onOpenFolder,
   onSelectFile,
+  onSelect,
+  onMove,
+  onTrash,
+  onRestore,
+  onPermanentDelete,
   onShareFile,
 }: {
   entries: FileEntry[];
   pagination?: Pagination;
   visibleBytes: number;
   sharingPath?: string;
-  selectedPath?: string;
+  selectedPaths: Set<string>;
+  trashView: boolean;
+  entryKey: (entry: FileEntry) => string;
   onPageChange: (offset: number) => void;
   onOpenFolder: (path: string) => void;
   onSelectFile: (entry: FileEntry) => void;
+  onSelect: (
+    entry: FileEntry,
+    options: { toggle?: boolean; range?: boolean }
+  ) => void;
+  onMove: (entry: FileEntry) => void;
+  onTrash: (entry: FileEntry) => void;
+  onRestore: (entry: FileEntry) => void;
+  onPermanentDelete: (entry: FileEntry) => void;
   onShareFile: (path: string) => void;
 }) {
   const limit = pagination?.limit ?? FILE_PAGE_SIZE;
@@ -483,45 +899,79 @@ function FileTable({
         <MobileFileList
           entries={entries}
           sharingPath={sharingPath}
-          selectedPath={selectedPath}
+          trashView={trashView}
+          entryKey={entryKey}
           onOpenFolder={onOpenFolder}
           onSelectFile={onSelectFile}
+          onMove={onMove}
+          onTrash={onTrash}
+          onRestore={onRestore}
+          onPermanentDelete={onPermanentDelete}
           onShareFile={onShareFile}
         />
       </div>
       <div className="hidden min-h-0 flex-1 overflow-auto md:block">
-        <table className="w-full min-w-[760px] border-collapse text-sm">
+        <table className="w-full min-w-[820px] border-collapse text-sm">
           <thead>
             <tr className="border-b border-border bg-muted/70 text-left text-xs uppercase tracking-normal text-muted-foreground">
+              <th className="w-12 px-4 py-3">
+                <span className="sr-only">Select</span>
+              </th>
               <th className="px-4 py-3 font-semibold">Name</th>
               <th className="px-4 py-3 font-semibold">Type</th>
               <th className="px-4 py-3 text-right font-semibold">Size</th>
-              <th className="px-4 py-3 font-semibold">Modified</th>
+              <th className="px-4 py-3 font-semibold">
+                {trashView ? 'Trashed' : 'Modified'}
+              </th>
               <th className="px-4 py-3 text-right font-semibold">Actions</th>
             </tr>
           </thead>
           <tbody>
             {entries.map((entry) => {
               const isDirectory = entry.kind === 'directory';
-              const isSelected = entry.path === selectedPath;
+              const selectionKey = entryKey(entry);
+              const isSelected = selectedPaths.has(selectionKey);
 
               return (
                 <tr
-                  key={entry.path}
+                  key={selectionKey}
                   className={cn(
-                    'border-b border-border last:border-b-0',
+                    'border-b border-border last:border-b-0 hover:bg-muted/30',
                     isSelected && 'bg-muted/50'
                   )}
+                  onClick={(event) =>
+                    onSelect(entry, {
+                      toggle: event.metaKey || event.ctrlKey,
+                      range: event.shiftKey,
+                    })
+                  }
+                  onDoubleClick={() => {
+                    if (!trashView) {
+                      if (isDirectory) onOpenFolder(entry.path);
+                      else onSelectFile(entry);
+                    }
+                  }}
                 >
-                  <td className="px-4 py-3">
-                    <button
-                      type="button"
-                      className="flex max-w-[360px] items-center gap-2 overflow-hidden text-left font-medium hover:text-accent"
-                      onClick={() =>
-                        isDirectory
-                          ? onOpenFolder(entry.path)
-                          : onSelectFile(entry)
+                  <td
+                    className="px-4 py-3"
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    <Checkbox
+                      checked={isSelected}
+                      onChange={(event) =>
+                        onSelect(entry, {
+                          toggle: true,
+                          range:
+                            event.nativeEvent instanceof MouseEvent &&
+                            event.nativeEvent.shiftKey,
+                        })
                       }
+                      aria-label={`Select ${entry.name}`}
+                    />
+                  </td>
+                  <td className="px-4 py-3">
+                    <div
+                      className="flex max-w-[360px] items-center gap-2 overflow-hidden text-left font-medium"
                       title={entry.path}
                     >
                       {isDirectory ? (
@@ -536,7 +986,7 @@ function FileTable({
                         />
                       )}
                       <span className="truncate">{entry.name}</span>
-                    </button>
+                    </div>
                   </td>
                   <td className="px-4 py-3">
                     <Badge variant={isDirectory ? 'secondary' : 'outline'}>
@@ -547,47 +997,49 @@ function FileTable({
                     {isDirectory ? '-' : formatBytes(entry.size)}
                   </td>
                   <td className="px-4 py-3 text-muted-foreground">
-                    {formatDate(entry.updatedAt)}
+                    {formatDate(
+                      trashView
+                        ? entry.trashedAt ?? entry.updatedAt
+                        : entry.updatedAt
+                    )}
                   </td>
-                  <td className="px-4 py-3 text-right">
-                    {isDirectory ? (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => onOpenFolder(entry.path)}
-                      >
-                        <Folder aria-hidden="true" className="h-4 w-4" />
-                        Open
-                      </Button>
-                    ) : (
-                      <div className="flex justify-end gap-2">
+                  <td
+                    className="px-4 py-3 text-right"
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    {trashView ? (
+                      <div className="flex justify-end gap-1">
                         <Button
-                          variant="outline"
-                          size="icon"
-                          aria-label={`Share ${entry.name}`}
-                          onClick={() => onShareFile(entry.path)}
-                          disabled={sharingPath === entry.path}
-                          title={
-                            sharingPath === entry.path
-                              ? `Sharing ${entry.name}`
-                              : `Share ${entry.name}`
-                          }
-                          className="h-8 w-8"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => onRestore(entry)}
                         >
-                          <Share2 aria-hidden="true" className="h-4 w-4" />
+                          <RotateCcw className="h-4 w-4" />
+                          Restore
                         </Button>
-                        <a href={getDownloadUrl(entry.path)}>
-                          <Button
-                            variant="outline"
-                            size="icon"
-                            aria-label={`Download ${entry.name}`}
-                            title={`Download ${entry.name}`}
-                            className="h-8 w-8"
-                          >
-                            <Download aria-hidden="true" className="h-4 w-4" />
-                          </Button>
-                        </a>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 text-destructive"
+                          aria-label={`Delete ${entry.name} permanently`}
+                          onClick={() => onPermanentDelete(entry)}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
                       </div>
+                    ) : (
+                      <FileActionMenu
+                        entry={entry}
+                        sharing={sharingPath === entry.path}
+                        onOpen={() =>
+                          isDirectory
+                            ? onOpenFolder(entry.path)
+                            : onSelectFile(entry)
+                        }
+                        onShare={() => onShareFile(entry.path)}
+                        onMove={() => onMove(entry)}
+                        onTrash={() => onTrash(entry)}
+                      />
                     )}
                   </td>
                 </tr>
@@ -602,27 +1054,29 @@ function FileTable({
           {pagination?.query ? ` matching "${pagination.query}"` : ''} ·{' '}
           {formatBytes(visibleBytes)}
         </span>
-        <div className="flex items-center gap-2">
-          <span className="tabular-nums">
-            Page {pageNumber} / {totalPages}
-          </span>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => onPageChange(Math.max(0, offset - limit))}
-            disabled={!pagination?.hasPrev}
-          >
-            Previous
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => onPageChange(offset + limit)}
-            disabled={!pagination?.hasNext}
-          >
-            Next
-          </Button>
-        </div>
+        {pagination && (
+          <div className="flex items-center gap-2">
+            <span className="tabular-nums">
+              Page {pageNumber} / {totalPages}
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onPageChange(Math.max(0, offset - limit))}
+              disabled={!pagination?.hasPrev}
+            >
+              Previous
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onPageChange(offset + limit)}
+              disabled={!pagination?.hasNext}
+            >
+              Next
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -631,34 +1085,41 @@ function FileTable({
 function MobileFileList({
   entries,
   sharingPath,
-  selectedPath,
+  trashView,
+  entryKey,
   onOpenFolder,
   onSelectFile,
+  onMove,
+  onTrash,
+  onRestore,
+  onPermanentDelete,
   onShareFile,
 }: {
   entries: FileEntry[];
   sharingPath?: string;
-  selectedPath?: string;
+  trashView: boolean;
+  entryKey: (entry: FileEntry) => string;
   onOpenFolder: (path: string) => void;
   onSelectFile: (entry: FileEntry) => void;
+  onMove: (entry: FileEntry) => void;
+  onTrash: (entry: FileEntry) => void;
+  onRestore: (entry: FileEntry) => void;
+  onPermanentDelete: (entry: FileEntry) => void;
   onShareFile: (path: string) => void;
 }) {
   return (
     <div className="divide-y divide-border">
       {entries.map((entry) => {
         const isDirectory = entry.kind === 'directory';
-        const isSelected = entry.path === selectedPath;
 
         return (
-          <div
-            key={entry.path}
-            className={cn('grid gap-3 p-4', isSelected && 'bg-muted/50')}
-          >
+          <div key={entryKey(entry)} className="grid gap-3 p-4">
             <button
               type="button"
               className="flex min-w-0 items-start gap-3 text-left"
               onClick={() =>
-                isDirectory ? onOpenFolder(entry.path) : onSelectFile(entry)
+                !trashView &&
+                (isDirectory ? onOpenFolder(entry.path) : onSelectFile(entry))
               }
               title={entry.path}
             >
@@ -685,48 +1146,45 @@ function MobileFileList({
               {!isDirectory && (
                 <span className="tabular-nums">{formatBytes(entry.size)}</span>
               )}
-              <span>{formatDate(entry.updatedAt)}</span>
+              <span>
+                {formatDate(
+                  trashView
+                    ? entry.trashedAt ?? entry.updatedAt
+                    : entry.updatedAt
+                )}
+              </span>
             </div>
 
             <div className="ml-8 flex flex-wrap gap-2">
-              {isDirectory ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => onOpenFolder(entry.path)}
-                >
-                  <Folder aria-hidden="true" className="h-4 w-4" />
-                  Open
-                </Button>
-              ) : (
+              {trashView ? (
                 <>
                   <Button
                     variant="outline"
-                    size="icon"
-                    aria-label={`Share ${entry.name}`}
-                    onClick={() => onShareFile(entry.path)}
-                    disabled={sharingPath === entry.path}
-                    title={
-                      sharingPath === entry.path
-                        ? `Sharing ${entry.name}`
-                        : `Share ${entry.name}`
-                    }
-                    className="h-9 w-9"
+                    size="sm"
+                    onClick={() => onRestore(entry)}
                   >
-                    <Share2 aria-hidden="true" className="h-4 w-4" />
+                    <RotateCcw className="h-4 w-4" />
+                    Restore
                   </Button>
-                  <a href={getDownloadUrl(entry.path)}>
-                    <Button
-                      variant="outline"
-                      size="icon"
-                      aria-label={`Download ${entry.name}`}
-                      title={`Download ${entry.name}`}
-                      className="h-9 w-9"
-                    >
-                      <Download aria-hidden="true" className="h-4 w-4" />
-                    </Button>
-                  </a>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={() => onPermanentDelete(entry)}
+                  >
+                    Delete permanently
+                  </Button>
                 </>
+              ) : (
+                <FileActionMenu
+                  entry={entry}
+                  sharing={sharingPath === entry.path}
+                  onOpen={() =>
+                    isDirectory ? onOpenFolder(entry.path) : onSelectFile(entry)
+                  }
+                  onShare={() => onShareFile(entry.path)}
+                  onMove={() => onMove(entry)}
+                  onTrash={() => onTrash(entry)}
+                />
               )}
             </div>
           </div>
@@ -741,11 +1199,15 @@ function FileInspector({
   sharingPath,
   onClear,
   onShareFile,
+  onMove,
+  onTrash,
 }: {
   file?: FileEntry;
   sharingPath?: string;
   onClear: () => void;
   onShareFile: (path: string) => void;
+  onMove: (file: FileEntry) => void;
+  onTrash: (file: FileEntry) => void;
 }) {
   if (!file) {
     return (
@@ -830,6 +1292,18 @@ function FileInspector({
                   <Download aria-hidden="true" className="h-4 w-4" />
                 </Button>
               </a>
+              <Button variant="outline" size="sm" onClick={() => onMove(file)}>
+                <FolderInput className="h-4 w-4" />
+                Move
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => onTrash(file)}
+              >
+                <Trash2 className="h-4 w-4" />
+                Trash
+              </Button>
               <Button variant="ghost" size="sm" onClick={onClear}>
                 Clear
               </Button>
@@ -929,6 +1403,18 @@ function FileInspector({
                   <Download aria-hidden="true" className="h-4 w-4" />
                 </Button>
               </a>
+              <Button variant="outline" size="sm" onClick={() => onMove(file)}>
+                <FolderInput className="h-4 w-4" />
+                Move
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => onTrash(file)}
+              >
+                <Trash2 className="h-4 w-4" />
+                Trash
+              </Button>
             </div>
           </div>
           <div className="flex min-h-0 flex-1 flex-col">

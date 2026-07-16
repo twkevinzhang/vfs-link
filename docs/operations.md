@@ -29,6 +29,24 @@ For `DB_DRIVER=json`, the metadata snapshot lives under the reserved
 with file objects. On versioned GCS buckets, retain noncurrent metadata
 generations long enough to recover from an accidental logical mutation.
 
+## Move and trash API
+
+The browser uses the same batch endpoints for JSON and PostgreSQL metadata:
+
+| Endpoint | Body | Behavior |
+| --- | --- | --- |
+| `POST /api/files/move` | `{"paths":["/a"],"destination":"/archive"}` | Moves all selected roots atomically; conflicts reject the whole batch. |
+| `POST /api/files/trash` | `{"paths":["/a"]}` | Hides active mappings while retaining physical objects. |
+| `GET /api/trash` | none | Lists top-level trash groups. |
+| `POST /api/trash/restore` | `{"trashIds":["..."]}` | Restores whole groups atomically; active-path conflicts reject the batch. |
+| `POST /api/trash/delete` | `{"trashIds":["..."]}` | Permanently deletes the selected physical objects and metadata. |
+| `POST /api/trash/empty` | `{}` | Permanently deletes every trash group. |
+
+Moving an item to trash does not move or copy its bytes. Storage usage drops
+only after permanent deletion. A permanent-delete claim prevents another
+Cloud Run instance from restoring a mapping while its local or GCS object is
+being deleted; a failed object deletion can be retried safely.
+
 ## Maintenance tools
 
 The image includes two tools:

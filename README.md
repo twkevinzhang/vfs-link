@@ -67,6 +67,7 @@ uploads for custom clients are outside the current protocol endpoint.
 - [Networking and exposure](docs/networking.md)
 - [WebDAV and serverless deployment](docs/webdav.md)
 - [Browser upload API](docs/uploads.md)
+- [Operations, move, and trash API](docs/operations.md)
 - [Cloud Run HTTP file-server](docs/cloud-run.md)
 - [Operations](docs/operations.md)
 - [Development](docs/development.md)

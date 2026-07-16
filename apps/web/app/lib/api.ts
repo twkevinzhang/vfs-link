@@ -1,10 +1,20 @@
-import { FilesResponse, StatusResponse } from '../types/files';
+import {
+  DeleteResponse,
+  FileMutationResponse,
+  FilesResponse,
+  StatusResponse,
+  TrashResponse,
+  TreeNode,
+} from '../types/files';
 import { ShareRecord } from '../types/share';
 import { CreateUploadInput, UploadSession } from '../types/upload';
 
 // An empty base keeps browser requests on the same origin as the Web UI.
 // Set VITE_API_BASE_URL only for an intentionally separate API deployment.
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(
+  /\/$/,
+  ''
+);
 
 async function requestJson<T>(path: string): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -81,6 +91,38 @@ export function getFiles(path: string, options: GetFilesOptions = {}) {
     query.set('offset', String(options.offset));
   }
   return requestJson<FilesResponse>(`/api/files?${query.toString()}`);
+}
+
+export function getTree(path = '/') {
+  const query = new URLSearchParams({ path });
+  return requestJson<TreeNode>(`/api/tree?${query.toString()}`);
+}
+
+export function moveFiles(paths: string[], destination: string) {
+  return postJson<FileMutationResponse>('/api/files/move', {
+    paths,
+    destination,
+  });
+}
+
+export function moveFilesToTrash(paths: string[]) {
+  return postJson<FileMutationResponse>('/api/files/trash', { paths });
+}
+
+export function getTrash() {
+  return requestJson<TrashResponse>('/api/trash');
+}
+
+export function restoreTrash(trashIds: string[]) {
+  return postJson<FileMutationResponse>('/api/trash/restore', { trashIds });
+}
+
+export function deleteTrash(trashIds: string[]) {
+  return postJson<DeleteResponse>('/api/trash/delete', { trashIds });
+}
+
+export function emptyTrash() {
+  return postJson<DeleteResponse>('/api/trash/empty', {});
 }
 
 export function getDownloadUrl(path: string) {

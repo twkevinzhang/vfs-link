@@ -7,6 +7,26 @@ export type FileEntry = {
   size: number;
   physicalHash?: string;
   updatedAt: string;
+  trashId?: string;
+  trashedAt?: string;
+};
+
+export type TrashEntry = FileEntry & {
+  trashId: string;
+  trashedAt: string;
+};
+
+export type TrashResponse = {
+  entries: TrashEntry[];
+  generatedAt: string;
+};
+
+export type FileMutationResponse = { entries: FileEntry[] };
+export type DeleteResponse = { deleted: number };
+
+export type TreeNode = FileEntry & {
+  children?: TreeNode[];
+  hasChildren?: boolean;
 };
 
 export type FilesResponse = {

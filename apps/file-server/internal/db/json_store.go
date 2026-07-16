@@ -292,7 +292,7 @@ func (s *JSONStore) Find(ctx context.Context, logicPath string) (FileRecord, boo
 		return FileRecord{}, false, err
 	}
 	for _, r := range st.Files {
-		if r.LogicPath == logicPath {
+		if r.TrashedAt == nil && r.LogicPath == logicPath {
 			return r, true, nil
 		}
 	}
@@ -303,7 +303,12 @@ func (s *JSONStore) ListAll(ctx context.Context) ([]FileRecord, error) {
 	if err != nil {
 		return nil, err
 	}
-	result := append([]FileRecord(nil), st.Files...)
+	result := make([]FileRecord, 0, len(st.Files))
+	for _, record := range st.Files {
+		if record.TrashedAt == nil {
+			result = append(result, record)
+		}
+	}
 	sort.Slice(result, func(i, j int) bool { return result[i].LogicPath < result[j].LogicPath })
 	return result, nil
 }
@@ -367,7 +372,7 @@ func (s *JSONStore) ListDirectChildren(ctx context.Context, dirPath string, o Di
 
 func findFileIndex(st *jsonState, path string) int {
 	for i := range st.Files {
-		if st.Files[i].LogicPath == path {
+		if st.Files[i].TrashedAt == nil && st.Files[i].LogicPath == path {
 			return i
 		}
 	}
@@ -457,6 +462,9 @@ func (s *JSONStore) RenamePath(ctx context.Context, from, to string) error {
 		oldPrefix, newPrefix := withTrailingSlash(from), withTrailingSlash(to)
 		targets := map[string]bool{}
 		for _, r := range st.Files {
+			if r.TrashedAt != nil {
+				continue
+			}
 			if r.LogicPath == from {
 				targets[to] = true
 			} else if st.Files[i].IsDirectory && strings.HasPrefix(r.LogicPath, oldPrefix) {
@@ -464,16 +472,19 @@ func (s *JSONStore) RenamePath(ctx context.Context, from, to string) error {
 			}
 		}
 		for _, r := range st.Files {
+			if r.TrashedAt != nil {
+				continue
+			}
 			if !strings.HasPrefix(r.LogicPath, oldPrefix) && r.LogicPath != from && targets[r.LogicPath] {
 				return nil, false, fmt.Errorf("destination path already exists: %s", r.LogicPath)
 			}
 		}
 		now := time.Now().UTC()
 		for j := range st.Files {
-			if st.Files[j].LogicPath == from {
+			if st.Files[j].TrashedAt == nil && st.Files[j].LogicPath == from {
 				st.Files[j].LogicPath = to
 				st.Files[j].UpdatedAt = now
-			} else if st.Files[i].IsDirectory && strings.HasPrefix(st.Files[j].LogicPath, oldPrefix) {
+			} else if st.Files[j].TrashedAt == nil && st.Files[i].IsDirectory && strings.HasPrefix(st.Files[j].LogicPath, oldPrefix) {
 				st.Files[j].LogicPath = newPrefix + strings.TrimPrefix(st.Files[j].LogicPath, oldPrefix)
 				st.Files[j].UpdatedAt = now
 			}
@@ -497,7 +508,7 @@ func (s *JSONStore) DeletePrefix(ctx context.Context, prefix string) error {
 	_, err := s.mutate(ctx, func(st *jsonState) (any, bool, error) {
 		out := st.Files[:0]
 		for _, r := range st.Files {
-			if !strings.HasPrefix(r.LogicPath, prefix) {
+			if r.TrashedAt != nil || !strings.HasPrefix(r.LogicPath, prefix) {
 				out = append(out, r)
 			}
 		}

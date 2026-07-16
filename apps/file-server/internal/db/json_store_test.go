@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -176,5 +177,104 @@ func TestDecodeRejectsUnknownVersion(t *testing.T) {
 	_, err := decodeJSONState([]byte(`{"version":999}`), true)
 	if err == nil || errors.Is(err, ErrJSONConflict) {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestJSONBatchMoveAndTrashLifecycle(t *testing.T) {
+	ctx := context.Background()
+	store := newTestJSONStore(t)
+	if err := store.UpsertDirectory(ctx, "/source"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertFile(ctx, "/source/a.txt", "a", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertDirectory(ctx, "/target"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.BatchMove(ctx, []string{"/source"}, "/target"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := store.Find(ctx, "/target/source/a.txt"); !ok {
+		t.Fatal("moved child not found")
+	}
+
+	trashed, err := store.TrashPaths(ctx, []TrashPath{{Path: "/target/source", TrashID: "trash-1"}})
+	if err != nil || len(trashed) != 2 {
+		t.Fatalf("TrashPaths records=%d err=%v", len(trashed), err)
+	}
+	if _, ok, _ := store.Find(ctx, "/target/source"); ok {
+		t.Fatal("trash leaked into active Find")
+	}
+	if err := store.UpsertDirectory(ctx, "/target/source"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RenamePath(ctx, "/target/source", "/target/recreated"); err != nil {
+		t.Fatal(err)
+	}
+	trashRecords, err := store.ListTrashRecords(ctx, []string{"trash-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range trashRecords {
+		if !strings.HasPrefix(record.LogicPath, "/target/source") {
+			t.Fatalf("trashed record renamed: %s", record.LogicPath)
+		}
+	}
+	if _, err := store.RestoreTrash(ctx, []string{"trash-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := store.Find(ctx, "/target/source/a.txt"); !ok {
+		t.Fatal("restored child not found")
+	}
+}
+
+func TestJSONRestorePreflightRejectsDuplicateTrashPathsAtomically(t *testing.T) {
+	ctx := context.Background()
+	store := newTestJSONStore(t)
+	if err := store.UpsertFile(ctx, "/a", "one", 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.TrashPaths(ctx, []TrashPath{{Path: "/a", TrashID: "one"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertFile(ctx, "/a", "two", 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.TrashPaths(ctx, []TrashPath{{Path: "/a", TrashID: "two"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RestoreTrash(ctx, []string{"one", "two"}); !errors.Is(err, ErrPathConflict) {
+		t.Fatalf("RestoreTrash err=%v", err)
+	}
+	if records, _ := store.ListTrashRecords(ctx, nil); len(records) != 2 {
+		t.Fatalf("trash records=%d want 2", len(records))
+	}
+	if _, ok, _ := store.Find(ctx, "/a"); ok {
+		t.Fatal("restore partially applied")
+	}
+}
+
+func TestJSONTrashClaimIsIdempotentAndRestorationIsBlocked(t *testing.T) {
+	ctx := context.Background()
+	store := newTestJSONStore(t)
+	if err := store.UpsertFile(ctx, "/a", "one", 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.TrashPaths(ctx, []TrashPath{{Path: "/a", TrashID: "trash"}}); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := store.ClaimTrash(ctx, []string{"trash"})
+	if err != nil || len(claimed) != 1 || !claimed[0].TrashDeleting {
+		t.Fatalf("claim=%#v err=%v", claimed, err)
+	}
+	if claimedAgain, err := store.ClaimTrash(ctx, []string{"trash"}); err != nil || len(claimedAgain) != 1 {
+		t.Fatalf("second claim=%#v err=%v", claimedAgain, err)
+	}
+	if _, err := store.RestoreTrash(ctx, []string{"trash"}); !errors.Is(err, ErrTrashBusy) {
+		t.Fatalf("restore err=%v", err)
+	}
+	if deleted, err := store.DeleteTrash(ctx, []string{"trash"}); err != nil || deleted != 1 {
+		t.Fatalf("delete claimed trash=%d err=%v", deleted, err)
 	}
 }

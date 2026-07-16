@@ -15,6 +15,7 @@ import (
 
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/blob"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/db"
+	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/fileops"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/share"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/upload"
 )
@@ -29,6 +30,7 @@ type Server struct {
 	objects    blob.Store
 	shares     *share.Service
 	uploads    *upload.Service
+	files      *fileops.Service
 	webHandler http.Handler
 	cors       map[string]struct{}
 }
@@ -44,12 +46,14 @@ func (s *Server) SetCORSOrigins(origins []string) *Server {
 }
 
 type Entry struct {
-	Name         string    `json:"name"`
-	Path         string    `json:"path"`
-	Kind         string    `json:"kind"`
-	Size         int64     `json:"size"`
-	UpdatedAt    time.Time `json:"updatedAt"`
-	PhysicalHash string    `json:"physicalHash,omitempty"`
+	Name         string     `json:"name"`
+	Path         string     `json:"path"`
+	Kind         string     `json:"kind"`
+	Size         int64      `json:"size"`
+	UpdatedAt    time.Time  `json:"updatedAt"`
+	PhysicalHash string     `json:"physicalHash,omitempty"`
+	TrashID      string     `json:"trashId,omitempty"`
+	TrashedAt    *time.Time `json:"trashedAt,omitempty"`
 }
 
 type FilesResponse struct {
@@ -123,6 +127,7 @@ func New(store db.Store, objects blob.Store, shares *share.Service, webStaticRoo
 		store:      store,
 		objects:    objects,
 		shares:     shares,
+		files:      fileops.New(store, objects),
 		webHandler: newWebHandler(webStaticRoot, webBasePath),
 	}
 	if len(uploads) > 0 {
@@ -135,6 +140,12 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/files", s.handleFiles)
+	mux.HandleFunc("/api/files/move", s.handleMoveFiles)
+	mux.HandleFunc("/api/files/trash", s.handleTrashFiles)
+	mux.HandleFunc("/api/trash", s.handleTrash)
+	mux.HandleFunc("/api/trash/restore", s.handleRestoreTrash)
+	mux.HandleFunc("/api/trash/delete", s.handleDeleteTrash)
+	mux.HandleFunc("/api/trash/empty", s.handleEmptyTrash)
 	mux.HandleFunc("/api/tree", s.handleTree)
 	mux.HandleFunc("/api/download", s.handleDownload)
 	mux.HandleFunc("/api/shares/drafts", s.handleCreateShareDraft)

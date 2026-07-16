@@ -17,17 +17,23 @@ var (
 	ErrDAVLockConflict = errors.New("DAV lock conflicts with an active lock")
 	ErrInvalidMove     = errors.New("destination cannot be the source or its descendant")
 	ErrIsDirectory     = errors.New("file mapping is a directory")
+	ErrPathConflict    = errors.New("destination path already exists")
+	ErrTrashBusy       = errors.New("trash is being permanently deleted")
 )
 
 const davLockAdvisoryKey int64 = 0x564653444156
 
 type FileRecord struct {
-	ID           int       `json:"id"`
-	LogicPath    string    `json:"logicPath"`
-	PhysicalHash string    `json:"physicalHash"`
-	Size         int64     `json:"size"`
-	IsDirectory  bool      `json:"isDirectory"`
-	UpdatedAt    time.Time `json:"updatedAt"`
+	ID            int        `json:"id"`
+	LogicPath     string     `json:"logicPath"`
+	PhysicalHash  string     `json:"physicalHash"`
+	Size          int64      `json:"size"`
+	IsDirectory   bool       `json:"isDirectory"`
+	UpdatedAt     time.Time  `json:"updatedAt"`
+	TrashedAt     *time.Time `json:"trashedAt,omitempty"`
+	TrashID       string     `json:"trashId,omitempty"`
+	TrashRoot     bool       `json:"trashRoot,omitempty"`
+	TrashDeleting bool       `json:"trashDeleting,omitempty"`
 }
 
 type DirectChildrenOptions struct {
@@ -103,13 +109,20 @@ func (s *PostgresStore) EnsureSchema(ctx context.Context) error {
 	_, err := s.pool.Exec(ctx, `
 CREATE TABLE IF NOT EXISTS "File" (
   id SERIAL PRIMARY KEY,
-  "logicPath" TEXT NOT NULL UNIQUE,
+  "logicPath" TEXT NOT NULL,
   "physicalHash" TEXT NOT NULL,
   size BIGINT NOT NULL DEFAULT 0,
   "isDirectory" BOOLEAN NOT NULL DEFAULT false,
   "updatedAt" TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE "File" ADD COLUMN IF NOT EXISTS "trashedAt" TIMESTAMPTZ;
+ALTER TABLE "File" ADD COLUMN IF NOT EXISTS "trashId" TEXT;
+ALTER TABLE "File" ADD COLUMN IF NOT EXISTS "trashRoot" BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE "File" ADD COLUMN IF NOT EXISTS "trashDeleting" BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE "File" DROP CONSTRAINT IF EXISTS "File_logicPath_key";
+CREATE UNIQUE INDEX IF NOT EXISTS "File_active_logicPath_uidx" ON "File" ("logicPath") WHERE "trashedAt" IS NULL;
 CREATE INDEX IF NOT EXISTS "File_logicPath_idx" ON "File" ("logicPath");
+CREATE INDEX IF NOT EXISTS "File_trashId_idx" ON "File" ("trashId") WHERE "trashedAt" IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS "Share" (
   id TEXT PRIMARY KEY,
@@ -420,6 +433,7 @@ func (s *PostgresStore) Find(ctx context.Context, logicPath string) (FileRecord,
 SELECT id, "logicPath", "physicalHash", size, "isDirectory", "updatedAt"
 FROM "File"
 WHERE "logicPath" = $1
+  AND "trashedAt" IS NULL
 `, logicPath)
 
 	record, err := scanFile(row)
@@ -437,6 +451,7 @@ func (s *PostgresStore) ListPrefix(ctx context.Context, prefix string) ([]FileRe
 SELECT id, "logicPath", "physicalHash", size, "isDirectory", "updatedAt"
 FROM "File"
 WHERE left("logicPath", char_length($1)) = $1
+  AND "trashedAt" IS NULL
 ORDER BY "logicPath"
 `, prefix)
 	if err != nil {
@@ -459,6 +474,7 @@ func (s *PostgresStore) ListAll(ctx context.Context) ([]FileRecord, error) {
 	rows, err := s.pool.Query(ctx, `
 SELECT id, "logicPath", "physicalHash", size, "isDirectory", "updatedAt"
 FROM "File"
+WHERE "trashedAt" IS NULL
 ORDER BY "logicPath"
 `)
 	if err != nil {
@@ -501,6 +517,7 @@ WITH direct AS (
   FROM "File"
   WHERE "logicPath" <> $2
     AND left("logicPath", char_length($1)) = $1
+    AND "trashedAt" IS NULL
 )
 `
 
@@ -562,7 +579,7 @@ func (s *PostgresStore) UpsertFile(ctx context.Context, logicPath, physicalHash 
 	_, err := s.pool.Exec(ctx, `
 INSERT INTO "File" ("logicPath", "physicalHash", size, "isDirectory", "updatedAt")
 VALUES ($1, $2, $3, false, now())
-ON CONFLICT ("logicPath")
+ON CONFLICT ("logicPath") WHERE "trashedAt" IS NULL
 DO UPDATE SET
   "physicalHash" = EXCLUDED."physicalHash",
   size = EXCLUDED.size,
@@ -604,6 +621,7 @@ func (s *PostgresStore) ReplaceFileConditional(
 SELECT "physicalHash", "isDirectory"
 FROM "File"
 WHERE "logicPath" = $1
+  AND "trashedAt" IS NULL
 FOR UPDATE
 `, logicPath).Scan(&previousPhysicalHash, &previousIsDirectory)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -638,6 +656,7 @@ SET "physicalHash" = $1,
   "isDirectory" = false,
   "updatedAt" = now()
 WHERE "logicPath" = $3
+  AND "trashedAt" IS NULL
 `, physicalHash, size, logicPath); err != nil {
 		return "", false, err
 	}
@@ -654,7 +673,7 @@ func (s *PostgresStore) UpsertDirectory(ctx context.Context, logicPath string) e
 	_, err := s.pool.Exec(ctx, `
 INSERT INTO "File" ("logicPath", "physicalHash", size, "isDirectory", "updatedAt")
 VALUES ($1, '', 0, true, now())
-ON CONFLICT ("logicPath")
+ON CONFLICT ("logicPath") WHERE "trashedAt" IS NULL
 DO UPDATE SET
   "isDirectory" = true,
   "updatedAt" = now()
@@ -678,6 +697,7 @@ func (s *PostgresStore) RenamePath(ctx context.Context, fromPath, toPath string)
 SELECT id, "isDirectory"
 FROM "File"
 WHERE "logicPath" = $1
+  AND "trashedAt" IS NULL
 `, fromPath).Scan(&id, &isDirectory)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotFound
@@ -701,6 +721,7 @@ WHERE id = $2
 SELECT id, "logicPath"
 FROM "File"
 WHERE left("logicPath", char_length($1)) = $1
+  AND "trashedAt" IS NULL
 ORDER BY "logicPath"
 `, oldPrefix)
 		if err != nil {
@@ -740,12 +761,12 @@ WHERE id = $2
 }
 
 func (s *PostgresStore) DeletePath(ctx context.Context, logicPath string) error {
-	_, err := s.pool.Exec(ctx, `DELETE FROM "File" WHERE "logicPath" = $1`, logicPath)
+	_, err := s.pool.Exec(ctx, `DELETE FROM "File" WHERE "logicPath" = $1 AND "trashedAt" IS NULL`, logicPath)
 	return err
 }
 
 func (s *PostgresStore) DeletePrefix(ctx context.Context, prefix string) error {
-	_, err := s.pool.Exec(ctx, `DELETE FROM "File" WHERE left("logicPath", char_length($1)) = $1`, prefix)
+	_, err := s.pool.Exec(ctx, `DELETE FROM "File" WHERE left("logicPath", char_length($1)) = $1 AND "trashedAt" IS NULL`, prefix)
 	return err
 }
 

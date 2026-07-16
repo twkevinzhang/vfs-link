@@ -31,6 +31,13 @@ type Store interface {
 	RenamePath(context.Context, string, string) error
 	DeletePath(context.Context, string) error
 	DeletePrefix(context.Context, string) error
+	BatchMove(context.Context, []string, string) ([]FileRecord, error)
+	TrashPaths(context.Context, []TrashPath) ([]FileRecord, error)
+	ListTrash(context.Context) ([]FileRecord, error)
+	RestoreTrash(context.Context, []string) ([]FileRecord, error)
+	ListTrashRecords(context.Context, []string) ([]FileRecord, error)
+	ClaimTrash(context.Context, []string) ([]FileRecord, error)
+	DeleteTrash(context.Context, []string) (int64, error)
 
 	CreateShare(context.Context, ShareRecord) (ShareRecord, error)
 	FindShare(context.Context, string) (ShareRecord, bool, error)
@@ -45,6 +52,11 @@ type Store interface {
 	FindUpload(context.Context, string) (UploadRecord, bool, error)
 	UpdateUpload(context.Context, UploadRecord) (UploadRecord, error)
 	DeleteUpload(context.Context, string) (bool, error)
+}
+
+type TrashPath struct {
+	Path    string `json:"path"`
+	TrashID string `json:"trashId"`
 }
 
 // UploadRecord persists an upload session independently of a Cloud Run
