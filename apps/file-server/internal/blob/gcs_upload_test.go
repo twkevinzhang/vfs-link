@@ -24,12 +24,15 @@ func TestInitiateResumableUploadReturnsLocationAndMetadataHeaders(t *testing.T) 
 		if got := r.Header.Get("X-Upload-Content-Length"); got != "53687091200" {
 			t.Errorf("content length = %q", got)
 		}
+		if got := r.Header.Get("Origin"); got != "https://files.example.com" {
+			t.Errorf("origin = %q", got)
+		}
 		w.Header().Set("Location", serverURL(r)+"/session/opaque-token")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
 
-	location, err := initiateResumableUpload(context.Background(), server.Client(), server.URL, "bucket", "folder/My video.mp4", "video/mp4", 50*1024*1024*1024)
+	location, err := initiateResumableUpload(context.Background(), server.Client(), server.URL, "bucket", "folder/My video.mp4", "video/mp4", "https://files.example.com", 50*1024*1024*1024)
 	if err != nil {
 		t.Fatalf("initiateResumableUpload() error = %v", err)
 	}
@@ -48,8 +51,31 @@ func TestInitiateResumableUploadRequiresLocation(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if _, err := initiateResumableUpload(context.Background(), server.Client(), server.URL, "bucket", "file", "", 1); err == nil {
+	if _, err := initiateResumableUpload(context.Background(), server.Client(), server.URL, "bucket", "file", "", "", 1); err == nil {
 		t.Fatal("initiateResumableUpload() error = nil, want missing Location error")
+	}
+}
+
+func TestResumableUploadHeaders(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentType string
+		size        int64
+		wantRange   string
+	}{
+		{name: "regular file", contentType: "video/mp4", size: 56_600_000, wantRange: "bytes 0-56599999/56600000"},
+		{name: "empty file", size: 0, wantRange: "bytes */0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			headers := resumableUploadHeaders(tt.contentType, tt.size)
+			if got := headers["Content-Range"]; got != tt.wantRange {
+				t.Fatalf("Content-Range = %q, want %q", got, tt.wantRange)
+			}
+			if tt.contentType != "" && headers["Content-Type"] != tt.contentType {
+				t.Fatalf("Content-Type = %q, want %q", headers["Content-Type"], tt.contentType)
+			}
+		})
 	}
 }
 

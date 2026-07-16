@@ -44,6 +44,7 @@ type Session struct {
 	RequireAbsent        bool              `json:"requireAbsent"`
 	UploadURL            string            `json:"-"`
 	UploadHeaders        map[string]string `json:"-"`
+	UploadOrigin         string            `json:"-"`
 	CreatedAt            time.Time         `json:"createdAt"`
 	UpdatedAt            time.Time         `json:"updatedAt"`
 	ExpiresAt            time.Time         `json:"expiresAt"`
@@ -54,6 +55,7 @@ type CreateInput struct {
 	Size        int64
 	ContentType string
 	Overwrite   bool
+	Origin      string
 }
 
 type Repository interface {
@@ -154,6 +156,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Session, error
 		Driver:        s.storage.Driver(),
 		Size:          input.Size,
 		ContentType:   strings.TrimSpace(input.ContentType),
+		UploadOrigin:  strings.TrimSpace(input.Origin),
 		Status:        StatusPending,
 		Overwrite:     input.Overwrite,
 		RequireAbsent: !found,

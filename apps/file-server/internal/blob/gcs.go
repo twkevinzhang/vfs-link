@@ -44,16 +44,25 @@ func NewGCS(ctx context.Context, bucket string) (*GCSStore, error) {
 	}, nil
 }
 
-func (s *GCSStore) StartResumableUpload(ctx context.Context, objectName, contentType string, size int64) (string, map[string]string, error) {
-	location, err := initiateResumableUpload(ctx, s.httpClient, gcsResumableEndpoint, s.bucket, cleanObjectName(objectName), contentType, size)
+func (s *GCSStore) StartResumableUpload(ctx context.Context, objectName, contentType, origin string, size int64) (string, map[string]string, error) {
+	location, err := initiateResumableUpload(ctx, s.httpClient, gcsResumableEndpoint, s.bucket, cleanObjectName(objectName), contentType, origin, size)
 	if err != nil {
 		return "", nil, err
 	}
+	return location, resumableUploadHeaders(contentType, size), nil
+}
+
+func resumableUploadHeaders(contentType string, size int64) map[string]string {
 	headers := map[string]string{}
 	if strings.TrimSpace(contentType) != "" {
 		headers["Content-Type"] = contentType
 	}
-	return location, headers, nil
+	if size == 0 {
+		headers["Content-Range"] = "bytes */0"
+	} else {
+		headers["Content-Range"] = fmt.Sprintf("bytes 0-%d/%d", size-1, size)
+	}
+	return headers
 }
 
 func (s *GCSStore) StatObject(ctx context.Context, objectName string) (ObjectInfo, error) {
@@ -64,7 +73,7 @@ func (s *GCSStore) StatObject(ctx context.Context, objectName string) (ObjectInf
 	return ObjectInfo{Name: attrs.Name, Size: attrs.Size}, nil
 }
 
-func initiateResumableUpload(ctx context.Context, client *http.Client, endpoint, bucket, objectName, contentType string, size int64) (string, error) {
+func initiateResumableUpload(ctx context.Context, client *http.Client, endpoint, bucket, objectName, contentType, origin string, size int64) (string, error) {
 	if client == nil {
 		return "", errors.New("authenticated HTTP client is required")
 	}
@@ -80,6 +89,9 @@ func initiateResumableUpload(ctx context.Context, client *http.Client, endpoint,
 	request.Header.Set("X-Upload-Content-Length", strconv.FormatInt(size, 10))
 	if strings.TrimSpace(contentType) != "" {
 		request.Header.Set("X-Upload-Content-Type", contentType)
+	}
+	if origin = strings.TrimSpace(origin); origin != "" {
+		request.Header.Set("Origin", origin)
 	}
 	response, err := client.Do(request)
 	if err != nil {

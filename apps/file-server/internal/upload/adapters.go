@@ -127,7 +127,7 @@ type gcsDirectStorage struct{ objects blob.DirectUploadStore }
 func (s gcsDirectStorage) Driver() string { return s.objects.Driver() }
 
 func (s gcsDirectStorage) Prepare(ctx context.Context, session Session) (PreparedTarget, error) {
-	url, headers, err := s.objects.StartResumableUpload(ctx, session.PhysicalHash, session.ContentType, session.Size)
+	url, headers, err := s.objects.StartResumableUpload(ctx, session.PhysicalHash, session.ContentType, session.UploadOrigin, session.Size)
 	return PreparedTarget{URL: url, Headers: headers}, err
 }
 

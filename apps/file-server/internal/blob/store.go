@@ -48,7 +48,7 @@ type GCSObjectCopier interface {
 // the concrete Cloud Storage client private to this package.
 type DirectUploadStore interface {
 	Store
-	StartResumableUpload(ctx context.Context, objectName, contentType string, size int64) (string, map[string]string, error)
+	StartResumableUpload(ctx context.Context, objectName, contentType, origin string, size int64) (string, map[string]string, error)
 	StatObject(ctx context.Context, objectName string) (ObjectInfo, error)
 }
 

@@ -50,6 +50,7 @@ func (s *Server) handleCreateUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	session, err := s.uploads.Create(r.Context(), upload.CreateInput{
 		LogicPath: request.Path, Size: request.Size, ContentType: request.ContentType, Overwrite: request.Overwrite,
+		Origin: requestOrigin(r),
 	})
 	if err != nil {
 		writeUploadError(w, err)
@@ -58,6 +59,20 @@ func (s *Server) handleCreateUpload(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	writeJSON(w, toUploadResponse(session))
+}
+
+func requestOrigin(r *http.Request) string {
+	if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
+		return origin
+	}
+	proto := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto"))
+	if proto != "http" && proto != "https" {
+		proto = "http"
+		if r.TLS != nil {
+			proto = "https"
+		}
+	}
+	return proto + "://" + r.Host
 }
 
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
