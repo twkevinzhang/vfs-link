@@ -26,7 +26,9 @@ the file listing and download endpoints are unauthenticated. The status endpoint
 also reveals operational details and should remain private.
 
 When using a path prefix with a reverse proxy, build the web assets with matching
-`VITE_BASE_PATH` and `VITE_API_BASE_URL` build arguments. Test browser refreshes
+`VITE_BASE_PATH` and `VITE_API_BASE_URL` build arguments. The API base defaults
+to the browser's current origin; set `VITE_API_BASE_URL` only when the Web UI
+and API are intentionally hosted on different origins. Test browser refreshes
 and download URLs through the final public proxy path.
 
 An HTTP-only serverless deployment listens only on the platform-provided HTTP

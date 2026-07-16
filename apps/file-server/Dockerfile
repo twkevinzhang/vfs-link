@@ -11,7 +11,7 @@ RUN pnpm install --frozen-lockfile --filter @vfs-link/web...
 
 COPY apps/web apps/web
 ARG VITE_BASE_PATH=/
-ARG VITE_API_BASE_URL=http://localhost:8080
+ARG VITE_API_BASE_URL=
 ENV VITE_BASE_PATH=$VITE_BASE_PATH
 ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
 RUN pnpm --dir apps/web build

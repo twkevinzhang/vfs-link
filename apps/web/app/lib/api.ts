@@ -2,12 +2,9 @@ import { FilesResponse, StatusResponse } from '../types/files';
 import { ShareRecord } from '../types/share';
 import { CreateUploadInput, UploadSession } from '../types/upload';
 
-const API_BASE_URL = (
-  import.meta.env.VITE_API_BASE_URL ||
-  (typeof window === 'undefined'
-    ? 'http://localhost:8080'
-    : window.location.origin)
-).replace(/\/$/, '');
+// An empty base keeps browser requests on the same origin as the Web UI.
+// Set VITE_API_BASE_URL only for an intentionally separate API deployment.
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 
 async function requestJson<T>(path: string): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {

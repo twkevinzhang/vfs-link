@@ -72,7 +72,7 @@ v3 新增 `apps/web`，用 React Router、TypeScript、Tailwind、Radix/shadcn-s
 
 - 使用者可透過網頁瀏覽目錄、檔案、metadata 與 storage status。
 - 前端只讀取 vfs-link API，不直接存取 primary object store。
-- 預設 API endpoint 是 `http://localhost:8080`，可用 `VITE_API_BASE_URL` 覆寫。
+- 預設 API endpoint 使用瀏覽器目前 origin，可用 `VITE_API_BASE_URL` 覆寫。
 
 啟動方式：
 
