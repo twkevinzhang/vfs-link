@@ -53,6 +53,20 @@ func (a storeAdapter) FindFile(ctx context.Context, logicPath string) (File, boo
 	return File{PhysicalHash: record.PhysicalHash, IsDirectory: record.IsDirectory}, found, err
 }
 
+func (a storeAdapter) EnsureDirectory(ctx context.Context, logicPath string) error {
+	record, found, err := a.store.Find(ctx, logicPath)
+	if err != nil {
+		return err
+	}
+	if found {
+		if !record.IsDirectory {
+			return fmt.Errorf("upload parent path is a file: %s", logicPath)
+		}
+		return nil
+	}
+	return a.store.UpsertDirectory(ctx, logicPath)
+}
+
 func (a storeAdapter) ReplaceFile(ctx context.Context, logicPath, physicalHash string, size int64, expected *string, absent bool) (string, bool, error) {
 	return a.store.ReplaceFileConditional(ctx, logicPath, physicalHash, size, expected, absent)
 }

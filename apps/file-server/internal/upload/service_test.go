@@ -77,6 +77,46 @@ func TestLocalUploadCreateWriteComplete(t *testing.T) {
 	}
 }
 
+func TestLocalFolderUploadCreatesParentDirectories(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store, err := db.NewJSONLocal(filepath.Join(root, "_vfs-link", "metadata.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	objects, err := blob.NewLocal(filepath.Join(root, "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewWithBlob(store, objects)
+
+	session, err := service.Create(ctx, CreateInput{LogicPath: "/photos/trip/day-1/image.txt", Size: 4, ContentType: "text/plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Write(ctx, session.ID, strings.NewReader("data")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Complete(ctx, session.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, logicPath := range []string{"/photos", "/photos/trip", "/photos/trip/day-1"} {
+		record, found, err := store.Find(ctx, logicPath)
+		if err != nil || !found || !record.IsDirectory {
+			t.Fatalf("directory %q = %#v, %t, %v", logicPath, record, found, err)
+		}
+	}
+	record, found, err := store.Find(ctx, "/photos/trip/day-1/image.txt")
+	if err != nil || !found || record.IsDirectory || record.Size != 4 {
+		t.Fatalf("file = %#v, %t, %v", record, found, err)
+	}
+}
+
 func TestLocalUploadRejectsMoreThanDeclaredSize(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

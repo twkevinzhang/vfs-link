@@ -72,6 +72,7 @@ type File struct {
 
 type Publisher interface {
 	FindFile(context.Context, string) (File, bool, error)
+	EnsureDirectory(context.Context, string) error
 	ReplaceFile(context.Context, string, string, int64, *string, bool) (previous string, matched bool, err error)
 }
 
@@ -249,6 +250,9 @@ func (s *Service) Complete(ctx context.Context, id string) (Session, error) {
 	if size != session.Size {
 		return Session{}, fmt.Errorf("uploaded size %d does not match declared size %d", size, session.Size)
 	}
+	if err := ensureParentDirectories(ctx, s.files, session.LogicPath); err != nil {
+		return Session{}, fmt.Errorf("ensure upload directories: %w", err)
+	}
 	previous, matched, err := s.files.ReplaceFile(ctx, session.LogicPath, session.PhysicalHash, size, session.ExpectedPhysicalHash, session.RequireAbsent)
 	if err != nil {
 		return Session{}, err
@@ -267,6 +271,23 @@ func (s *Service) Complete(ctx context.Context, id string) (Session, error) {
 		_ = s.storage.Delete(ctx, previous)
 	}
 	return session, nil
+}
+
+func ensureParentDirectories(ctx context.Context, files Publisher, logicPath string) error {
+	parent := path.Dir(logicPath)
+	if parent == "." || parent == "/" {
+		return nil
+	}
+	parents := make([]string, 0, strings.Count(parent, "/"))
+	for current := parent; current != "." && current != "/"; current = path.Dir(current) {
+		parents = append(parents, current)
+	}
+	for i := len(parents) - 1; i >= 0; i-- {
+		if err := files.EnsureDirectory(ctx, parents[i]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Service) Cancel(ctx context.Context, id string) error {

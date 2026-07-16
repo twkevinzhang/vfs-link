@@ -7,6 +7,11 @@ import {
   createUpload,
   putUpload,
 } from '../lib/api';
+import {
+  collectDroppedFiles,
+  filesToUploadCandidates,
+  type UploadCandidate,
+} from '../lib/folder-upload';
 import { formatBytes, normalizePath } from '../lib/format';
 import { cn } from '../lib/utils';
 import { Button } from './ui/button';
@@ -16,6 +21,7 @@ type UploadState = 'queued' | 'uploading' | 'complete' | 'failed';
 type UploadItem = {
   key: string;
   file: File;
+  relativePath: string;
   progress: number;
   state: UploadState;
   error?: string;
@@ -35,7 +41,9 @@ export function UploadPanel({
 }) {
   const [items, setItems] = useState<UploadItem[]>([]);
   const [dragging, setDragging] = useState(false);
+  const [selectionError, setSelectionError] = useState<string>();
   const inputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
 
   const update = useCallback((key: string, patch: Partial<UploadItem>) => {
     setItems((current) =>
@@ -45,10 +53,12 @@ export function UploadPanel({
 
   const run = useCallback(
     async (item: UploadItem) => {
-      let overwrite = existingNames.has(item.file.name);
+      let overwrite =
+        !item.relativePath.includes('/') &&
+        existingNames.has(item.relativePath);
       if (
         overwrite &&
-        !window.confirm(`${item.file.name} already exists. Replace it?`)
+        !window.confirm(`${item.relativePath} already exists. Replace it?`)
       ) {
         update(item.key, {
           state: 'failed',
@@ -60,7 +70,7 @@ export function UploadPanel({
       let sessionId: string | undefined;
       try {
         const logicPath = normalizePath(
-          `${currentPath === '/' ? '' : currentPath}/${item.file.name}`
+          `${currentPath === '/' ? '' : currentPath}/${item.relativePath}`
         );
         const createInput = {
           path: logicPath,
@@ -76,7 +86,7 @@ export function UploadPanel({
           if (
             !overwrite &&
             message.toLowerCase().includes('already exists') &&
-            window.confirm(`${item.file.name} already exists. Replace it?`)
+            window.confirm(`${item.relativePath} already exists. Replace it?`)
           ) {
             overwrite = true;
             session = await createUpload({ ...createInput, overwrite: true });
@@ -108,12 +118,18 @@ export function UploadPanel({
   );
 
   const addFiles = useCallback(
-    (files: FileList | File[]) => {
-      const added = Array.from(files).map((file) => ({
-        key: `${file.name}-${file.size}-${
+    (candidates: UploadCandidate[]) => {
+      setSelectionError(undefined);
+      if (candidates.length === 0) {
+        setSelectionError('The selected folder contains no files.');
+        return;
+      }
+      const added = candidates.map(({ file, relativePath }) => ({
+        key: `${relativePath}-${file.size}-${
           file.lastModified
         }-${crypto.randomUUID()}`,
         file,
+        relativePath,
         progress: 0,
         state: 'queued' as const,
       }));
@@ -163,11 +179,21 @@ export function UploadPanel({
         onDrop={(event) => {
           event.preventDefault();
           setDragging(false);
-          addFiles(event.dataTransfer.files);
+          void collectDroppedFiles(event.dataTransfer)
+            .then(addFiles)
+            .catch((error: unknown) => {
+              setSelectionError(
+                error instanceof Error
+                  ? error.message
+                  : 'Unable to read the dropped folder.'
+              );
+            });
         }}
       >
         <Upload aria-hidden="true" className="h-6 w-6 text-accent" />
-        <span className="font-medium">Drop files here or choose files</span>
+        <span className="font-medium">
+          Drop files or folders here, or choose files
+        </span>
         <span className="text-xs text-muted-foreground">
           Files upload directly without being loaded into browser memory.
         </span>
@@ -178,10 +204,43 @@ export function UploadPanel({
         multiple
         className="sr-only"
         onChange={(event) => {
-          if (event.target.files) addFiles(event.target.files);
+          if (event.target.files) {
+            addFiles(filesToUploadCandidates(event.target.files));
+          }
           event.target.value = '';
         }}
       />
+      <input
+        ref={(node) => {
+          folderInputRef.current = node;
+          node?.setAttribute('webkitdirectory', '');
+        }}
+        type="file"
+        multiple
+        className="sr-only"
+        onChange={(event) => {
+          if (event.target.files) {
+            addFiles(filesToUploadCandidates(event.target.files));
+          }
+          event.target.value = '';
+        }}
+      />
+      <div className="mt-2 flex justify-end">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => folderInputRef.current?.click()}
+        >
+          Choose folder
+        </Button>
+      </div>
+
+      {selectionError && (
+        <p className="mt-2 text-sm text-destructive" role="alert">
+          {selectionError}
+        </p>
+      )}
 
       {items.length > 0 && (
         <ul
@@ -212,9 +271,9 @@ export function UploadPanel({
                 )}
                 <span
                   className="min-w-0 flex-1 truncate font-medium"
-                  title={item.file.name}
+                  title={item.relativePath}
                 >
-                  {item.file.name}
+                  {item.relativePath}
                 </span>
                 <span className="shrink-0 text-xs text-muted-foreground">
                   {formatBytes(item.file.size)}
