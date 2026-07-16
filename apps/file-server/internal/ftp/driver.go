@@ -14,14 +14,14 @@ import (
 
 type MainDriver struct {
 	cfg     config.Config
-	store   *db.Store
+	store   db.Store
 	objects blob.Store
 	logger  *slog.Logger
 }
 
 var errTLSNotConfigured = errors.New("TLS is not configured")
 
-func NewMainDriver(cfg config.Config, store *db.Store, objects blob.Store, logger *slog.Logger) *MainDriver {
+func NewMainDriver(cfg config.Config, store db.Store, objects blob.Store, logger *slog.Logger) *MainDriver {
 	return &MainDriver{
 		cfg:     cfg,
 		store:   store,

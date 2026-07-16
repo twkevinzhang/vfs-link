@@ -16,6 +16,7 @@ import (
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/blob"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/db"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/share"
+	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/upload"
 )
 
 const (
@@ -24,10 +25,22 @@ const (
 )
 
 type Server struct {
-	store      *db.Store
+	store      db.Store
 	objects    blob.Store
 	shares     *share.Service
+	uploads    *upload.Service
 	webHandler http.Handler
+	cors       map[string]struct{}
+}
+
+func (s *Server) SetCORSOrigins(origins []string) *Server {
+	s.cors = make(map[string]struct{}, len(origins))
+	for _, origin := range origins {
+		if origin = strings.TrimSpace(origin); origin != "" {
+			s.cors[origin] = struct{}{}
+		}
+	}
+	return s
 }
 
 type Entry struct {
@@ -105,13 +118,17 @@ type shareResponse struct {
 	NotifiedAt         *time.Time `json:"notifiedAt,omitempty"`
 }
 
-func New(store *db.Store, objects blob.Store, shares *share.Service, webStaticRoot string, webBasePath string) *Server {
-	return &Server{
+func New(store db.Store, objects blob.Store, shares *share.Service, webStaticRoot string, webBasePath string, uploads ...*upload.Service) *Server {
+	server := &Server{
 		store:      store,
 		objects:    objects,
 		shares:     shares,
 		webHandler: newWebHandler(webStaticRoot, webBasePath),
 	}
+	if len(uploads) > 0 {
+		server.uploads = uploads[0]
+	}
+	return server
 }
 
 func (s *Server) Handler() http.Handler {
@@ -122,10 +139,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/download", s.handleDownload)
 	mux.HandleFunc("/api/shares/drafts", s.handleCreateShareDraft)
 	mux.HandleFunc("/api/shares/", s.handleShare)
+	mux.HandleFunc("/api/uploads", s.handleCreateUpload)
+	mux.HandleFunc("/api/uploads/", s.handleUpload)
 	if s.webHandler != nil {
 		mux.Handle("/", s.webHandler)
 	}
-	return withCORS(mux)
+	return withCORS(mux, s.cors)
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -446,12 +465,22 @@ func parseBoundedInt(value string, fallback int, minimum int, maximum int) int {
 	return parsed
 }
 
-func withCORS(next http.Handler) http.Handler {
+func withCORS(next http.Handler, allowed map[string]struct{}) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		if r.Method == http.MethodOptions {
+		origin := strings.TrimSpace(r.Header.Get("Origin"))
+		_, wildcard := allowed["*"]
+		_, explicit := allowed[origin]
+		if origin != "" && (wildcard || explicit) {
+			if wildcard {
+				w.Header().Set("Access-Control-Allow-Origin", "*")
+			} else {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Add("Vary", "Origin")
+			}
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Authorization")
+		}
+		if r.Method == http.MethodOptions && origin != "" && (wildcard || explicit) {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}

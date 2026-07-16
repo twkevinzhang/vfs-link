@@ -27,22 +27,35 @@ const (
 	StatusFailed            = "failed"
 	StatusNotifyFailed      = "notification_failed"
 	StatusEmailFailedLegacy = "email_failed"
+	shareJobTimeout         = 55 * time.Minute
+	shareLeaseDuration      = 56 * time.Minute
 )
 
 type Service struct {
-	cfg     config.Config
-	store   *db.Store
-	objects blob.Store
-	logger  *slog.Logger
+	cfg        config.Config
+	store      db.Store
+	objects    blob.Store
+	logger     *slog.Logger
+	dispatcher Dispatcher
 }
 
-func NewService(cfg config.Config, store *db.Store, objects blob.Store, logger *slog.Logger) *Service {
-	return &Service{
+type Option func(*Service)
+
+func WithDispatcher(dispatcher Dispatcher) Option {
+	return func(service *Service) { service.dispatcher = dispatcher }
+}
+
+func NewService(cfg config.Config, store db.Store, objects blob.Store, logger *slog.Logger, options ...Option) *Service {
+	service := &Service{
 		cfg:     cfg,
 		store:   store,
 		objects: objects,
 		logger:  logger,
 	}
+	for _, option := range options {
+		option(service)
+	}
+	return service
 }
 
 func (s *Service) CreateDraft(ctx context.Context, logicPath string) (db.ShareRecord, error) {
@@ -97,47 +110,97 @@ func (s *Service) Start(ctx context.Context, id string) (db.ShareRecord, error) 
 	if err != nil {
 		return db.ShareRecord{}, err
 	}
-	go s.run(id)
+	if s.dispatcher == nil {
+		go func() {
+			if err := s.ProcessShareJob(context.Background(), Job{Version: JobVersion, ShareID: id}); err != nil {
+				s.logger.Error("process share job", "share_id", id, "error", err)
+			}
+		}()
+	} else if err := s.dispatcher.Dispatch(ctx, Job{Version: JobVersion, ShareID: id}); err != nil {
+		_, _ = s.store.MarkShareFailed(context.Background(), id, StatusFailed, err.Error())
+		return db.ShareRecord{}, fmt.Errorf("dispatch share job: %w", err)
+	}
 	return record, nil
 }
 
-func (s *Service) run(id string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+func (s *Service) ProcessShareJob(parent context.Context, job Job) error {
+	if err := job.Validate(); err != nil {
+		return Permanent(err)
+	}
+	ctx, cancel := context.WithTimeout(parent, shareJobTimeout)
 	defer cancel()
 
-	record, found, err := s.store.FindShare(ctx, id)
-	if err != nil || !found {
-		s.logger.Error("load share for upload", "share_id", id, "error", err)
-		return
-	}
-
-	if err := s.upload(ctx, record); err != nil {
-		s.logger.Error("share upload failed", "share_id", id, "error", err)
-		_, _ = s.store.MarkShareFailed(context.Background(), id, StatusFailed, err.Error())
-		return
-	}
-
-	record, err = s.store.MarkShareUploaded(context.Background(), id)
+	owner := uuid.NewString()
+	record, claimed, err := s.store.ClaimShareJob(ctx, job.ShareID, owner, time.Now().Add(shareLeaseDuration))
 	if err != nil {
-		s.logger.Error("mark share uploaded", "share_id", id, "error", err)
-		return
+		if errors.Is(err, db.ErrNotFound) {
+			return Permanent(err)
+		}
+		return fmt.Errorf("claim share job: %w", err)
+	}
+	if !claimed {
+		current, found, findErr := s.store.FindShare(ctx, job.ShareID)
+		if findErr != nil {
+			return fmt.Errorf("load unclaimed share job: %w", findErr)
+		}
+		if !found {
+			return Permanent(db.ErrNotFound)
+		}
+		if current.Status == StatusNotified {
+			return nil
+		}
+		return fmt.Errorf("share job is already leased: %s", job.ShareID)
+	}
+	defer func() {
+		if err := s.store.ReleaseShareJob(context.Background(), job.ShareID, owner); err != nil {
+			s.logger.Error("release share job lease", "share_id", job.ShareID, "error", err)
+		}
+	}()
+
+	if record.Status == StatusNotified {
+		return nil
+	}
+	if record.CompletedAt == nil {
+		if err := s.upload(ctx, record); err != nil {
+			s.logger.Error("share upload failed", "share_id", job.ShareID, "error", err)
+			_, _ = s.store.MarkShareFailed(context.Background(), job.ShareID, StatusFailed, err.Error())
+			return err
+		}
+
+		record, err = s.store.MarkShareUploaded(context.Background(), job.ShareID)
+		if err != nil {
+			return fmt.Errorf("mark share uploaded: %w", err)
+		}
 	}
 
 	if strings.TrimSpace(s.cfg.TelegramBotToken) == "" || strings.TrimSpace(s.cfg.TelegramChatID) == "" {
-		_, _ = s.store.MarkShareFailed(context.Background(), id, StatusNotifyFailed, "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are required")
-		return
+		err := errors.New("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are required")
+		_, _ = s.store.MarkShareFailed(context.Background(), job.ShareID, StatusNotifyFailed, err.Error())
+		return Permanent(err)
 	}
 	if err := s.sendNotification(ctx, record); err != nil {
-		s.logger.Error("share telegram notification failed", "share_id", id, "chat_id", s.cfg.TelegramChatID, "error", err)
-		_, _ = s.store.MarkShareFailed(context.Background(), id, StatusNotifyFailed, err.Error())
-		return
+		s.logger.Error("share telegram notification failed", "share_id", job.ShareID, "chat_id", s.cfg.TelegramChatID, "error", err)
+		_, _ = s.store.MarkShareFailed(context.Background(), job.ShareID, StatusNotifyFailed, err.Error())
+		return err
 	}
-	if _, err := s.store.MarkShareNotified(context.Background(), id); err != nil {
-		s.logger.Error("mark share notified", "share_id", id, "error", err)
+	if _, err := s.store.MarkShareNotified(context.Background(), job.ShareID); err != nil {
+		return fmt.Errorf("mark share notified: %w", err)
 	}
+	return nil
 }
 
 func (s *Service) upload(ctx context.Context, record db.ShareRecord) error {
+	metadata := map[string]string{
+		"vfs-link-logic-path": record.LogicPath,
+		"vfs-link-share-id":   record.ID,
+	}
+	if copier, ok := s.objects.(blob.GCSObjectCopier); ok {
+		if err := copier.CopyToGCS(ctx, record.PhysicalHash, s.cfg.ShareGCSBucket, record.DestinationObject, metadata); err != nil {
+			return fmt.Errorf("copy object in GCS: %w", err)
+		}
+		return nil
+	}
+
 	reader, err := s.objects.NewReader(ctx, record.PhysicalHash)
 	if err != nil {
 		return fmt.Errorf("open source object: %w", err)
@@ -152,10 +215,7 @@ func (s *Service) upload(ctx context.Context, record db.ShareRecord) error {
 
 	writer := client.Bucket(s.cfg.ShareGCSBucket).Object(record.DestinationObject).NewWriter(ctx)
 	writer.ContentType = "application/octet-stream"
-	writer.Metadata = map[string]string{
-		"vfs-link-logic-path": record.LogicPath,
-		"vfs-link-share-id":   record.ID,
-	}
+	writer.Metadata = metadata
 	if _, err := io.Copy(writer, reader); err != nil {
 		_ = writer.Close()
 		return fmt.Errorf("upload to GCS: %w", err)
@@ -201,11 +261,15 @@ func (s *Service) sendNotification(ctx context.Context, record db.ShareRecord) e
 
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-		return fmt.Errorf(
+		err := fmt.Errorf(
 			"telegram sendMessage status %d: %s",
 			response.StatusCode,
 			redactTelegramToken(strings.TrimSpace(string(body)), botToken),
 		)
+		if response.StatusCode != http.StatusTooManyRequests && response.StatusCode < 500 {
+			return Permanent(err)
+		}
+		return err
 	}
 	return nil
 }

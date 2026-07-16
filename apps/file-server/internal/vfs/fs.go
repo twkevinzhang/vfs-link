@@ -14,11 +14,11 @@ import (
 )
 
 type FS struct {
-	store   *db.Store
+	store   db.Store
 	objects blob.Store
 }
 
-func New(store *db.Store, objects blob.Store) *FS {
+func New(store db.Store, objects blob.Store) *FS {
 	return &FS{
 		store:   store,
 		objects: objects,

@@ -37,7 +37,7 @@ func writeConditionFromContext(ctx context.Context) *writeCondition {
 	return condition
 }
 
-func New(cfg Config, store *db.Store, objects blob.Store, logger *slog.Logger) http.Handler {
+func New(cfg Config, store db.Store, objects blob.Store, logger *slog.Logger) http.Handler {
 	prefix := normalizePrefix(cfg.Prefix)
 	fs := NewFileSystem(store, objects)
 	ls := NewLockSystem(store, cfg.LockTimeout)

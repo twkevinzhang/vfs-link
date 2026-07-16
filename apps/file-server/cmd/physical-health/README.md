@@ -14,10 +14,19 @@
 
 工具預設載入目前目錄的 `.env`，也可以用 `-env-file` 指定其他檔案。命令列參數的優先順序高於環境變數。
 
-所有模式都需要：
+metadata 可使用 PostgreSQL：
 
 ```dotenv
+DB_DRIVER=postgres
 DATABASE_URL=postgres://...
+STORAGE_DRIVER=local
+```
+
+或使用與 active storage 相同 backend 的 JSON DB：
+
+```dotenv
+DB_DRIVER=json
+JSON_DB_OBJECT=_vfs-link/metadata.json
 STORAGE_DRIVER=local
 ```
 
@@ -49,7 +58,9 @@ GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
 | 參數 | 預設值 | 說明 |
 | --- | --- | --- |
 | `-env-file` | `.env` | 載入環境變數的檔案；傳入空字串可停用 |
+| `-db-driver` | `DB_DRIVER`，未設定時為 `postgres` | metadata driver：`postgres` 或 `json` |
 | `-database-url` | `DATABASE_URL` | PostgreSQL connection string |
+| `-json-db-object` | `JSON_DB_OBJECT`，未設定時為 `_vfs-link/metadata.json` | JSON metadata object；儲存在 active storage |
 | `-storage-driver` | `STORAGE_DRIVER`，未設定時為 `local` | active storage driver：`local` 或 `gcs` |
 | `-local-root` | `LOCAL_STORAGE_ROOT`，未設定時為 `./data/objects` | local object root |
 | `-gcs-bucket` | `GCS_BUCKET` | active GCS bucket 名稱 |

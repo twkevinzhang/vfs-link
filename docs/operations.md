@@ -24,6 +24,11 @@ Restore the database before bringing the file server online, then restore the
 matching object volume. Adjust the volume name if you use a custom Compose
 project name.
 
+For `DB_DRIVER=json`, the metadata snapshot lives under the reserved
+`_vfs-link/` prefix of the selected storage backend. Back it up consistently
+with file objects. On versioned GCS buckets, retain noncurrent metadata
+generations long enough to recover from an accidental logical mutation.
+
 ## Maintenance tools
 
 The image includes two tools:

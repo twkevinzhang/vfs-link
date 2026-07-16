@@ -10,7 +10,9 @@ services:
       - '${HTTP_PORT:-8080}:8080'
       - '${FTP_PASV_MIN:-30000}-${FTP_PASV_MAX:-30100}:${FTP_PASV_MIN:-30000}-${FTP_PASV_MAX:-30100}'
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:?Set POSTGRES_USER}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:?Set POSTGRES_DB}?sslmode=disable
+      - DB_DRIVER=${DB_DRIVER:-postgres}
+      - DATABASE_URL=${DATABASE_URL:-postgresql://vfs_link:vfs_link@db:5432/vfs_link?sslmode=disable}
+      - JSON_DB_OBJECT=${JSON_DB_OBJECT:-_vfs-link/metadata.json}
       - STORAGE_DRIVER=${STORAGE_DRIVER:-local}
       - LOCAL_STORAGE_ROOT=/data/objects
       - GCS_BUCKET=${GCS_BUCKET:-}
@@ -33,11 +35,19 @@ services:
       - SHARE_PUBLIC_BASE_URL=${SHARE_PUBLIC_BASE_URL:-}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      - HTTP_BASIC_AUTH_ENABLED=${HTTP_BASIC_AUTH_ENABLED:-false}
+      - HTTP_BASIC_AUTH_USER=${HTTP_BASIC_AUTH_USER:-}
+      - HTTP_BASIC_AUTH_PASS=${HTTP_BASIC_AUTH_PASS:-}
+      - HTTP_CORS_ORIGINS=${HTTP_CORS_ORIGINS:-*}
+      - UPLOAD_SESSION_TTL=${UPLOAD_SESSION_TTL:-24h}
+      - UPLOAD_MAX_BYTES=${UPLOAD_MAX_BYTES:-53687091200}
+      - PUB_SUB_DRIVER=${PUB_SUB_DRIVER:-goroutine}
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID:-}
+      - PUB_SUB_TOPIC=${PUB_SUB_TOPIC:-}
+      - PUB_SUB_PUSH_AUDIENCE=${PUB_SUB_PUSH_AUDIENCE:-}
+      - PUB_SUB_PUSH_SERVICE_ACCOUNT=${PUB_SUB_PUSH_SERVICE_ACCOUNT:-}
     volumes:
       - objectdata:/data/objects
-    depends_on:
-      db:
-        condition: service_healthy
     networks:
       - vfs-net
 
@@ -45,9 +55,9 @@ services:
     image: postgres:15-alpine
     restart: unless-stopped
     environment:
-      - POSTGRES_USER=${POSTGRES_USER:?Set POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
-      - POSTGRES_DB=${POSTGRES_DB:?Set POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER:-vfs_link}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-vfs_link}
+      - POSTGRES_DB=${POSTGRES_DB:-vfs_link}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:

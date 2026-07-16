@@ -21,6 +21,8 @@ type Config struct {
 	FTPPasvMin        int
 	FTPPasvMax        int
 	DatabaseURL       string
+	DatabaseDriver    string
+	JSONDBObject      string
 	StorageDriver     string
 	LocalStorageRoot  string
 	GCSBucket         string
@@ -37,6 +39,17 @@ type Config struct {
 	WebDAVPass        string
 	WebDAVLockTimeout time.Duration
 	WebDAVTrustProxy  bool
+	HTTPBasicAuth     bool
+	HTTPBasicUser     string
+	HTTPBasicPass     string
+	HTTPCORSOrigins   string
+	UploadSessionTTL  time.Duration
+	UploadMaxBytes    int64
+	PubSubDriver      string
+	GCPProjectID      string
+	PubSubTopic       string
+	PubSubAudience    string
+	PubSubPushEmail   string
 	CommandArgs       []string
 	AssumeYes         bool
 }
@@ -54,6 +67,8 @@ func Load(args []string) (Config, error) {
 		FTPPasvMin:        envInt("FTP_PASV_MIN", 30000),
 		FTPPasvMax:        envInt("FTP_PASV_MAX", 30005),
 		DatabaseURL:       strings.TrimSpace(os.Getenv("DATABASE_URL")),
+		DatabaseDriver:    envString("DB_DRIVER", "postgres"),
+		JSONDBObject:      envString("JSON_DB_OBJECT", "_vfs-link/metadata.json"),
 		StorageDriver:     envString("STORAGE_DRIVER", "local"),
 		LocalStorageRoot:  envString("LOCAL_STORAGE_ROOT", "./data/objects"),
 		GCSBucket:         envString("GCS_BUCKET", ""),
@@ -70,6 +85,17 @@ func Load(args []string) (Config, error) {
 		WebDAVPass:        envString("WEBDAV_PASS", ""),
 		WebDAVLockTimeout: envDuration("WEBDAV_LOCK_TIMEOUT", 30*time.Minute),
 		WebDAVTrustProxy:  envBool("WEBDAV_TRUST_FORWARDED_HEADERS", false),
+		HTTPBasicAuth:     envBool("HTTP_BASIC_AUTH_ENABLED", false),
+		HTTPBasicUser:     envString("HTTP_BASIC_AUTH_USER", ""),
+		HTTPBasicPass:     envString("HTTP_BASIC_AUTH_PASS", ""),
+		HTTPCORSOrigins:   envString("HTTP_CORS_ORIGINS", ""),
+		UploadSessionTTL:  envDuration("UPLOAD_SESSION_TTL", 24*time.Hour),
+		UploadMaxBytes:    envInt64("UPLOAD_MAX_BYTES", 50*1024*1024*1024),
+		PubSubDriver:      envString("PUB_SUB_DRIVER", "goroutine"),
+		GCPProjectID:      envString("GCP_PROJECT_ID", ""),
+		PubSubTopic:       envString("PUB_SUB_TOPIC", ""),
+		PubSubAudience:    envString("PUB_SUB_PUSH_AUDIENCE", ""),
+		PubSubPushEmail:   envString("PUB_SUB_PUSH_SERVICE_ACCOUNT", ""),
 	}
 
 	for _, arg := range args {
@@ -84,8 +110,21 @@ func Load(args []string) (Config, error) {
 		}
 	}
 
-	if cfg.DatabaseURL == "" {
-		return Config{}, fmt.Errorf("DATABASE_URL is required")
+	switch cfg.DatabaseDriver {
+	case "postgres":
+		if cfg.DatabaseURL == "" {
+			return Config{}, fmt.Errorf("DATABASE_URL is required when DB_DRIVER=postgres")
+		}
+	case "json":
+		if strings.TrimSpace(cfg.JSONDBObject) == "" {
+			return Config{}, fmt.Errorf("JSON_DB_OBJECT is required when DB_DRIVER=json")
+		}
+		cfg.JSONDBObject = path.Clean(strings.TrimLeft(cfg.JSONDBObject, "/"))
+		if cfg.JSONDBObject == "." || strings.HasPrefix(cfg.JSONDBObject, "../") || !strings.HasPrefix(cfg.JSONDBObject, "_vfs-link/") {
+			return Config{}, fmt.Errorf("JSON_DB_OBJECT must be within the reserved _vfs-link/ prefix")
+		}
+	default:
+		return Config{}, fmt.Errorf("unsupported DB_DRIVER %q", cfg.DatabaseDriver)
 	}
 	switch cfg.StorageDriver {
 	case "local":
@@ -116,6 +155,38 @@ func Load(args []string) (Config, error) {
 	if cfg.WebDAVLockTimeout <= 0 {
 		return Config{}, fmt.Errorf("WEBDAV_LOCK_TIMEOUT must be positive")
 	}
+	if cfg.HTTPBasicAuth {
+		if strings.TrimSpace(cfg.HTTPBasicUser) == "" {
+			return Config{}, fmt.Errorf("HTTP_BASIC_AUTH_USER is required when HTTP_BASIC_AUTH_ENABLED=true")
+		}
+		if strings.TrimSpace(cfg.HTTPBasicPass) == "" {
+			return Config{}, fmt.Errorf("HTTP_BASIC_AUTH_PASS is required when HTTP_BASIC_AUTH_ENABLED=true")
+		}
+	}
+	if cfg.UploadSessionTTL <= 0 {
+		return Config{}, fmt.Errorf("UPLOAD_SESSION_TTL must be positive")
+	}
+	if cfg.UploadMaxBytes <= 0 {
+		return Config{}, fmt.Errorf("UPLOAD_MAX_BYTES must be positive")
+	}
+	switch cfg.PubSubDriver {
+	case "goroutine":
+	case "pubsub":
+		if strings.TrimSpace(cfg.GCPProjectID) == "" {
+			return Config{}, fmt.Errorf("GCP_PROJECT_ID is required when PUB_SUB_DRIVER=pubsub")
+		}
+		if strings.TrimSpace(cfg.PubSubTopic) == "" {
+			return Config{}, fmt.Errorf("PUB_SUB_TOPIC is required when PUB_SUB_DRIVER=pubsub")
+		}
+		if strings.TrimSpace(cfg.PubSubAudience) == "" {
+			return Config{}, fmt.Errorf("PUB_SUB_PUSH_AUDIENCE is required when PUB_SUB_DRIVER=pubsub")
+		}
+		if strings.TrimSpace(cfg.PubSubPushEmail) == "" {
+			return Config{}, fmt.Errorf("PUB_SUB_PUSH_SERVICE_ACCOUNT is required when PUB_SUB_DRIVER=pubsub")
+		}
+	default:
+		return Config{}, fmt.Errorf("unsupported PUB_SUB_DRIVER %q", cfg.PubSubDriver)
+	}
 
 	return cfg, nil
 }
@@ -138,6 +209,18 @@ func envString(key, fallback string) string {
 
 func envInt(key string, fallback int) int {
 	return parseInt(strings.TrimSpace(os.Getenv(key)), fallback)
+}
+
+func envInt64(key string, fallback int64) int64 {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }
 
 func envBool(key string, fallback bool) bool {
@@ -168,6 +251,10 @@ func applyOverride(cfg *Config, key, value string) {
 		cfg.FTPPasvMax = parseInt(value, cfg.FTPPasvMax)
 	case "DATABASE_URL":
 		cfg.DatabaseURL = value
+	case "DB_DRIVER":
+		cfg.DatabaseDriver = strings.TrimSpace(value)
+	case "JSON_DB_OBJECT":
+		cfg.JSONDBObject = strings.TrimSpace(value)
 	case "STORAGE_DRIVER":
 		cfg.StorageDriver = strings.TrimSpace(value)
 	case "LOCAL_STORAGE_ROOT":
@@ -200,6 +287,30 @@ func applyOverride(cfg *Config, key, value string) {
 		cfg.WebDAVLockTimeout = parseDuration(value, cfg.WebDAVLockTimeout)
 	case "WEBDAV_TRUST_FORWARDED_HEADERS":
 		cfg.WebDAVTrustProxy = parseBool(value, cfg.WebDAVTrustProxy)
+	case "HTTP_BASIC_AUTH_ENABLED":
+		cfg.HTTPBasicAuth = parseBool(value, cfg.HTTPBasicAuth)
+	case "HTTP_BASIC_AUTH_USER":
+		cfg.HTTPBasicUser = value
+	case "HTTP_BASIC_AUTH_PASS":
+		cfg.HTTPBasicPass = value
+	case "HTTP_CORS_ORIGINS":
+		cfg.HTTPCORSOrigins = strings.TrimSpace(value)
+	case "UPLOAD_SESSION_TTL":
+		cfg.UploadSessionTTL = parseDuration(value, cfg.UploadSessionTTL)
+	case "UPLOAD_MAX_BYTES":
+		if parsed, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64); err == nil {
+			cfg.UploadMaxBytes = parsed
+		}
+	case "PUB_SUB_DRIVER":
+		cfg.PubSubDriver = strings.TrimSpace(value)
+	case "GCP_PROJECT_ID":
+		cfg.GCPProjectID = strings.TrimSpace(value)
+	case "PUB_SUB_TOPIC":
+		cfg.PubSubTopic = strings.TrimSpace(value)
+	case "PUB_SUB_PUSH_AUDIENCE":
+		cfg.PubSubAudience = strings.TrimSpace(value)
+	case "PUB_SUB_PUSH_SERVICE_ACCOUNT":
+		cfg.PubSubPushEmail = strings.TrimSpace(value)
 	}
 }
 

@@ -58,3 +58,33 @@ func TestLocalStoreNewRangeReader(t *testing.T) {
 		t.Fatalf("negative offset error = %v, want validation error", err)
 	}
 }
+
+func TestLocalStoreListHidesReservedMetadata(t *testing.T) {
+	store, err := NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{
+		"visible.txt":                   "data",
+		"_vfs-link/metadata.json":       "{}",
+		"_vfs-link/uploads/session.tmp": "pending",
+	} {
+		writer, err := store.NewWriter(context.Background(), name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := writer.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	objects, err := store.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(objects) != 1 || objects[0].Name != "visible.txt" {
+		t.Fatalf("List() = %#v, want only visible.txt", objects)
+	}
+}

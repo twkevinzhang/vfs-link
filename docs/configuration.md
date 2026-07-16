@@ -7,10 +7,18 @@ Copy `.env.example` to `.env`. The `.env` file is deliberately ignored by Git.
 | `POSTGRES_USER` | Compose | PostgreSQL role used by the bundled database. |
 | `POSTGRES_PASSWORD` | Compose | Strong password for the bundled database. |
 | `POSTGRES_DB` | Compose | Database name. |
+| `DB_DRIVER` | No | Metadata backend: `postgres` (default) or `json`. |
+| `DATABASE_URL` | PostgreSQL backend | PostgreSQL connection URL. |
+| `JSON_DB_OBJECT` | JSON backend | Reserved metadata path on the selected storage driver; default `_vfs-link/metadata.json`. |
 | `FTP_ENABLED` | No | Enables transitional FTP service; default `true`. Set `false` for HTTP-only/serverless operation. |
 | `FTP_USER`, `FTP_PASS` | FTP enabled | FTP login credentials. Use a unique, strong password. |
 | `FTP_PORT` | No | FTP control port; default `21`. |
 | `HTTP_PORT` | No | WebDAV, browser, and HTTP API port; falls back to platform `PORT`, then `8080`. |
+| `HTTP_BASIC_AUTH_ENABLED` | No | Protects the browser and public HTTP API; default `false`. Enable for internet exposure. |
+| `HTTP_BASIC_AUTH_USER`, `HTTP_BASIC_AUTH_PASS` | HTTP auth enabled | Application Basic Auth credential. Keep the password in managed secrets. |
+| `HTTP_CORS_ORIGINS` | No | Comma-separated cross-origin API allowlist. Empty means same-origin only; `*` is intended for local development. |
+| `UPLOAD_MAX_BYTES` | No | Maximum declared upload size; default `53687091200` (50 GiB). |
+| `UPLOAD_SESSION_TTL` | No | Upload-session lifetime; default `24h`. |
 | `FTP_PASV_URL` | Yes | Public DNS name or IP advertised to passive FTP clients. |
 | `FTP_PASV_MIN`, `FTP_PASV_MAX` | No | Inclusive passive FTP port range. |
 | `WEBDAV_ENABLED` | No | Mounts the WebDAV endpoint; default `false`. |
@@ -24,19 +32,24 @@ Copy `.env.example` to `.env`. The `.env` file is deliberately ignored by Git.
 | `SHARE_GCS_PREFIX` | No | Object prefix for share exports; default `shares`. |
 | `SHARE_PUBLIC_BASE_URL` | No | Public base URL used in generated share links. |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Notification | Optional Telegram delivery settings. Uploads still finish without them. |
+| `PUB_SUB_DRIVER` | No | Share job dispatcher: `goroutine` (default) or `pubsub`. |
+| `GCP_PROJECT_ID`, `PUB_SUB_TOPIC` | Pub/Sub driver | Project and topic used to publish share jobs. |
+| `PUB_SUB_PUSH_AUDIENCE`, `PUB_SUB_PUSH_SERVICE_ACCOUNT` | Pub/Sub driver | Expected OIDC audience and push identity for `/internal/pubsub/shares`. |
 | `GOOGLE_APPLICATION_CREDENTIALS_HOST` | GCS Compose overlay | Absolute host path to a service-account credential file. |
 
 `GCS_BUCKET` and `SHARE_GCS_BUCKET` serve different purposes. Selecting GCS as
 the primary store does not automatically configure file sharing, and changing a
 storage driver does not migrate existing files.
 
-For a binary started outside Docker, set `DATABASE_URL` and `LOCAL_STORAGE_ROOT`
-when `STORAGE_DRIVER=local`; set `DATABASE_URL` and `GCS_BUCKET` when it is
-`gcs`. `WEB_STATIC_ROOT` optionally serves the built browser UI and
+For a binary started outside Docker, select the metadata and byte-storage
+drivers independently. PostgreSQL requires `DATABASE_URL`; JSON uses
+`JSON_DB_OBJECT` on either `LOCAL_STORAGE_ROOT` or `GCS_BUCKET`.
+`WEB_STATIC_ROOT` optionally serves the built browser UI and
 `WEB_BASE_PATH` sets its public path prefix.
 
-For Cloud Run or another stateless HTTP platform, set `FTP_ENABLED=false`,
-`WEBDAV_ENABLED=true`, and `STORAGE_DRIVER=gcs`; supply `DATABASE_URL`, GCS
-access, and the WebDAV app password through managed secrets. TLS normally
-terminates at the platform ingress, which must forward
-`X-Forwarded-Proto: https`.
+For the Cloud Run HTTP file-server, set `FTP_ENABLED=false`,
+`WEBDAV_ENABLED=false`, `STORAGE_DRIVER=gcs`, `DB_DRIVER=json`, and
+`PUB_SUB_DRIVER=pubsub`. Enable HTTP Basic Auth and supply its password and the
+Telegram bot token through Secret Manager. The Pub/Sub push route bypasses
+Basic Auth and instead validates Google's OIDC token, audience, and
+service-account email.

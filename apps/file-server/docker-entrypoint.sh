@@ -3,11 +3,25 @@ set -e
 
 echo "Starting vfs-link File Server..."
 
-# 檢查 DATABASE_URL
-if [ -z "$DATABASE_URL" ]; then
-  echo "Error: DATABASE_URL is not set."
-  exit 1
-fi
+db_driver="${DB_DRIVER:-postgres}"
+case "$db_driver" in
+  postgres)
+    if [ -z "$DATABASE_URL" ]; then
+      echo "Error: DATABASE_URL is not set for DB_DRIVER=postgres."
+      exit 1
+    fi
+    ;;
+  json)
+    if [ -z "$JSON_DB_OBJECT" ]; then
+      echo "Error: JSON_DB_OBJECT is not set for DB_DRIVER=json."
+      exit 1
+    fi
+    ;;
+  *)
+    echo "Error: unsupported DB_DRIVER '$db_driver'."
+    exit 1
+    ;;
+esac
 
 storage_driver="${STORAGE_DRIVER:-local}"
 case "$storage_driver" in

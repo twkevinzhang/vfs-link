@@ -116,6 +116,9 @@ func (s *LocalStore) List(ctx context.Context) ([]ObjectInfo, error) {
 		default:
 		}
 		if d.IsDir() {
+			if filePath != s.root && isReservedObject(filepath.ToSlash(strings.TrimPrefix(filePath, s.root))) {
+				return fs.SkipDir
+			}
 			return nil
 		}
 		name, err := filepath.Rel(s.root, filePath)
@@ -123,6 +126,9 @@ func (s *LocalStore) List(ctx context.Context) ([]ObjectInfo, error) {
 			return err
 		}
 		if strings.HasPrefix(filepath.Base(name), ".") {
+			return nil
+		}
+		if isReservedObject(filepath.ToSlash(name)) {
 			return nil
 		}
 		info, err := d.Info()

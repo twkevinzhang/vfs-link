@@ -40,6 +40,33 @@ func TestResolveStorageConfig(t *testing.T) {
 	}
 }
 
+func TestOpenMetadataStoreJSONLocal(t *testing.T) {
+	root := t.TempDir()
+	store, err := openMetadataStore(context.Background(), "json", "", "_vfs-link/health.json", storageConfig{
+		Driver: storageDriverLocal, LocalRoot: root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.EnsureSchema(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "_vfs-link", "health.json")); err != nil {
+		t.Fatalf("JSON metadata was not created in active local storage: %v", err)
+	}
+}
+
+func TestOpenMetadataStoreValidation(t *testing.T) {
+	storage := storageConfig{Driver: storageDriverLocal, LocalRoot: t.TempDir()}
+	if _, err := openMetadataStore(context.Background(), "postgres", "", "", storage); err == nil {
+		t.Fatal("expected missing DATABASE_URL error")
+	}
+	if _, err := openMetadataStore(context.Background(), "json", "", "../metadata.json", storage); err == nil {
+		t.Fatal("expected reserved JSON path error")
+	}
+}
+
 func TestCheckLocal(t *testing.T) {
 	root := t.TempDir()
 	objectPath := filepath.Join(root, "abc")

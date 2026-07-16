@@ -158,7 +158,7 @@ func (f *readFile) Close() error {
 
 type uploadFile struct {
 	baseFile
-	store        *db.Store
+	store        db.Store
 	objects      blob.Store
 	logicPath    string
 	physicalHash string
@@ -169,7 +169,7 @@ type uploadFile struct {
 	closed       bool
 }
 
-func newUploadFile(store *db.Store, objects blob.Store, logicPath string) afero.File {
+func newUploadFile(store db.Store, objects blob.Store, logicPath string) afero.File {
 	physicalHash := blob.GeneratePhysicalHash(logicPath)
 	writer, err := objects.NewWriter(context.Background(), physicalHash)
 	if err != nil {

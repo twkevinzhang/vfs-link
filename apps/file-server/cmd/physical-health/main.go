@@ -90,21 +90,25 @@ func main() {
 
 func run() error {
 	var (
-		envFile       string
-		databaseURL   string
-		storageDriver string
-		localRoot     string
-		gcsBucket     string
-		credentials   string
-		prefix        string
-		csvPath       string
-		failOnBad     bool
-		workers       int
-		timeout       time.Duration
+		envFile        string
+		databaseDriver string
+		databaseURL    string
+		jsonDBObject   string
+		storageDriver  string
+		localRoot      string
+		gcsBucket      string
+		credentials    string
+		prefix         string
+		csvPath        string
+		failOnBad      bool
+		workers        int
+		timeout        time.Duration
 	)
 
 	flag.StringVar(&envFile, "env-file", ".env", "env file to load before reading database and storage settings")
+	flag.StringVar(&databaseDriver, "db-driver", "", "metadata driver (postgres or json); defaults to DB_DRIVER or postgres")
 	flag.StringVar(&databaseURL, "database-url", "", "PostgreSQL connection string; defaults to DATABASE_URL")
+	flag.StringVar(&jsonDBObject, "json-db-object", "", "JSON metadata object; defaults to JSON_DB_OBJECT or _vfs-link/metadata.json")
 	flag.StringVar(&storageDriver, "storage-driver", "", "active storage driver (local or gcs); defaults to STORAGE_DRIVER or local")
 	flag.StringVar(&localRoot, "local-root", "", "local object root; defaults to LOCAL_STORAGE_ROOT or ./data/objects")
 	flag.StringVar(&gcsBucket, "gcs-bucket", "", "active GCS bucket; defaults to GCS_BUCKET")
@@ -120,10 +124,6 @@ func run() error {
 		_ = godotenv.Load(envFile)
 	}
 
-	databaseURL = firstNonEmpty(databaseURL, os.Getenv("DATABASE_URL"))
-	if databaseURL == "" {
-		return errors.New("DATABASE_URL is required")
-	}
 	config, err := resolveStorageConfig(storageDriver, localRoot, gcsBucket)
 	if err != nil {
 		return err
@@ -141,7 +141,7 @@ func run() error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	store, err := db.New(ctx, databaseURL)
+	store, err := openMetadataStore(ctx, databaseDriver, databaseURL, jsonDBObject, config)
 	if err != nil {
 		return err
 	}
@@ -209,6 +209,29 @@ func run() error {
 		return exitCodeError{code: 2}
 	}
 	return nil
+}
+
+func openMetadataStore(ctx context.Context, driver string, databaseURL string, jsonDBObject string, storage storageConfig) (db.Store, error) {
+	driver = strings.ToLower(firstNonEmpty(driver, os.Getenv("DB_DRIVER"), "postgres"))
+	switch driver {
+	case "postgres":
+		databaseURL = firstNonEmpty(databaseURL, os.Getenv("DATABASE_URL"))
+		if databaseURL == "" {
+			return nil, errors.New("DATABASE_URL is required when DB_DRIVER=postgres")
+		}
+		return db.NewPostgres(ctx, databaseURL)
+	case "json":
+		jsonDBObject = firstNonEmpty(jsonDBObject, os.Getenv("JSON_DB_OBJECT"), "_vfs-link/metadata.json")
+		if !strings.HasPrefix(jsonDBObject, "_vfs-link/") || strings.Contains(jsonDBObject, "..") {
+			return nil, errors.New("JSON_DB_OBJECT must be located under _vfs-link/")
+		}
+		if storage.Driver == storageDriverGCS {
+			return db.NewJSONGCS(ctx, storage.GCSBucket, jsonDBObject)
+		}
+		return db.NewJSONLocal(filepath.Join(storage.LocalRoot, filepath.FromSlash(jsonDBObject)))
+	default:
+		return nil, fmt.Errorf("unsupported DB_DRIVER %q: expected postgres or json", driver)
+	}
 }
 
 func resolveStorageConfig(driver string, localRoot string, gcsBucket string) (storageConfig, error) {

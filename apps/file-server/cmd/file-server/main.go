@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -18,7 +19,9 @@ import (
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/config"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/db"
 	ftpdriver "github.com/twkevinzhang/vfs-link/apps/file-server/internal/ftp"
+	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/httpauth"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/share"
+	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/upload"
 	davserver "github.com/twkevinzhang/vfs-link/apps/file-server/internal/webdav"
 )
 
@@ -39,7 +42,7 @@ func run(logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	store, err := db.New(ctx, cfg.DatabaseURL)
+	store, err := newMetadataStore(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -64,8 +67,29 @@ func run(logger *slog.Logger) error {
 		return rebuildMapping(ctx, cfg, store, objects, logger)
 	}
 
-	shareService := share.NewService(cfg, store, objects, logger)
+	var shareOptions []share.Option
+	if cfg.PubSubDriver == "pubsub" {
+		dispatcher, err := share.NewPubSubDispatcher(ctx, cfg.GCPProjectID, cfg.PubSubTopic)
+		if err != nil {
+			return fmt.Errorf("initialize Pub/Sub dispatcher: %w", err)
+		}
+		shareOptions = append(shareOptions, share.WithDispatcher(dispatcher))
+	}
+	shareService := share.NewService(cfg, store, objects, logger, shareOptions...)
+	uploadService := upload.NewWithBlob(store, objects,
+		upload.WithTTL(cfg.UploadSessionTTL),
+		upload.WithMaxBytes(cfg.UploadMaxBytes),
+	)
 	httpHandler := http.NewServeMux()
+	if cfg.PubSubDriver == "pubsub" {
+		pushHandler, err := share.NewPushHandler(share.PushHandlerConfig{
+			Audience: cfg.PubSubAudience, ServiceAccountEmail: cfg.PubSubPushEmail,
+		}, shareService, nil, logger)
+		if err != nil {
+			return fmt.Errorf("initialize Pub/Sub push handler: %w", err)
+		}
+		httpHandler.Handle("/internal/pubsub/shares", pushHandler)
+	}
 	if cfg.WebDAVEnabled {
 		httpHandler.Handle(cfg.WebDAVPath, davserver.New(davserver.Config{
 			Prefix: cfg.WebDAVPath, User: cfg.WebDAVUser, Pass: cfg.WebDAVPass,
@@ -73,7 +97,9 @@ func run(logger *slog.Logger) error {
 		}, store, objects, logger))
 		logger.Info("WebDAV enabled", "path", cfg.WebDAVPath)
 	}
-	httpHandler.Handle("/", api.New(store, objects, shareService, cfg.WebStaticRoot, cfg.WebBasePath).Handler())
+	publicHandler := api.New(store, objects, shareService, cfg.WebStaticRoot, cfg.WebBasePath, uploadService).
+		SetCORSOrigins(strings.Split(cfg.HTTPCORSOrigins, ",")).Handler()
+	httpHandler.Handle("/", httpauth.Basic(cfg.HTTPBasicAuth, cfg.HTTPBasicUser, cfg.HTTPBasicPass, publicHandler))
 	apiServer := &http.Server{
 		Addr:              cfg.HTTPListenAddr(),
 		Handler:           httpHandler,
@@ -144,7 +170,25 @@ func run(logger *slog.Logger) error {
 	}
 }
 
-func rebuildMapping(ctx context.Context, cfg config.Config, store *db.Store, objects blob.Store, logger *slog.Logger) error {
+func newMetadataStore(ctx context.Context, cfg config.Config) (db.Store, error) {
+	switch cfg.DatabaseDriver {
+	case "postgres":
+		return db.NewPostgres(ctx, cfg.DatabaseURL)
+	case "json":
+		switch cfg.StorageDriver {
+		case "local":
+			return db.NewJSONLocal(filepath.Join(cfg.LocalStorageRoot, filepath.FromSlash(cfg.JSONDBObject)))
+		case "gcs":
+			return db.NewJSONGCS(ctx, cfg.GCSBucket, cfg.JSONDBObject)
+		default:
+			return nil, fmt.Errorf("unsupported STORAGE_DRIVER %q for JSON metadata", cfg.StorageDriver)
+		}
+	default:
+		return nil, fmt.Errorf("unsupported DB_DRIVER %q", cfg.DatabaseDriver)
+	}
+}
+
+func rebuildMapping(ctx context.Context, cfg config.Config, store db.Store, objects blob.Store, logger *slog.Logger) error {
 	if !cfg.AssumeYes {
 		logger.Warn("rebuilding mapping table from active object store", "driver", objects.Driver(), "root", objects.Root())
 		for i := 5; i > 0; i-- {
@@ -164,6 +208,9 @@ func rebuildMapping(ctx context.Context, cfg config.Config, store *db.Store, obj
 
 	logger.Info("processing objects", "count", len(objectList))
 	for idx, object := range objectList {
+		if strings.HasPrefix(strings.TrimLeft(object.Name, "/"), "_vfs-link/") {
+			continue
+		}
 		isDir := strings.HasSuffix(object.Name, "/")
 		logicPath := "/" + strings.TrimPrefix(strings.TrimSuffix(object.Name, "/"), "/")
 		if logicPath == "/" {

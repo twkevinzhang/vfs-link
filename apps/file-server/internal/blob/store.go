@@ -37,6 +37,21 @@ type Store interface {
 	List(ctx context.Context) ([]ObjectInfo, error)
 }
 
+// GCSObjectCopier is implemented by a GCS-backed store so large share jobs can
+// use Cloud Storage's server-side rewrite instead of proxying bytes through the
+// file-server instance.
+type GCSObjectCopier interface {
+	CopyToGCS(ctx context.Context, physicalHash, destinationBucket, destinationObject string, metadata map[string]string) error
+}
+
+// DirectUploadStore supports browser-to-GCS resumable uploads while keeping
+// the concrete Cloud Storage client private to this package.
+type DirectUploadStore interface {
+	Store
+	StartResumableUpload(ctx context.Context, objectName, contentType string, size int64) (string, map[string]string, error)
+	StatObject(ctx context.Context, objectName string) (ObjectInfo, error)
+}
+
 func NewStore(ctx context.Context, cfg StoreConfig) (Store, error) {
 	switch strings.TrimSpace(cfg.Driver) {
 	case DriverLocal:
@@ -50,4 +65,8 @@ func NewStore(ctx context.Context, cfg StoreConfig) (Store, error) {
 
 func GeneratePhysicalHash(logicPath string) string {
 	return uuid.NewString() + path.Ext(logicPath)
+}
+
+func isReservedObject(name string) bool {
+	return strings.HasPrefix(strings.TrimLeft(strings.TrimSpace(name), "/"), "_vfs-link/")
 }

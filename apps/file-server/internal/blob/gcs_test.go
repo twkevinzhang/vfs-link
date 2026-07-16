@@ -121,3 +121,17 @@ func TestGCSStoreCRUD(t *testing.T) {
 		t.Fatalf("requests = %v, want upload/read/range/list/delete", requests)
 	}
 }
+
+func TestGCSStoreCopyToGCSValidatesNames(t *testing.T) {
+	t.Setenv("STORAGE_EMULATOR_HOST", "http://127.0.0.1:1")
+	store, err := NewGCS(context.Background(), "primary-objects")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.CopyToGCS(context.Background(), "", "shares", "copy.txt", nil); err == nil {
+		t.Fatal("CopyToGCS() error = nil, want validation error")
+	}
+}
+
+var _ GCSObjectCopier = (*GCSStore)(nil)

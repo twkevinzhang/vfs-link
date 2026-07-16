@@ -68,6 +68,81 @@ func TestLoadStorageDriverRequirements(t *testing.T) {
 	})
 }
 
+func TestLoadDatabaseDriverRequirements(t *testing.T) {
+	t.Setenv("STORAGE_DRIVER", "local")
+	t.Setenv("LOCAL_STORAGE_ROOT", t.TempDir())
+	t.Setenv("DATABASE_URL", "")
+
+	cfg, err := Load([]string{"DB_DRIVER=json", "JSON_DB_OBJECT=_vfs-link/test.json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DatabaseDriver != "json" || cfg.JSONDBObject != "_vfs-link/test.json" {
+		t.Fatalf("JSON database config = %q/%q", cfg.DatabaseDriver, cfg.JSONDBObject)
+	}
+
+	_, err = Load([]string{"DB_DRIVER=postgres", "DATABASE_URL="})
+	if err == nil || !strings.Contains(err.Error(), "DATABASE_URL is required when DB_DRIVER=postgres") {
+		t.Fatalf("postgres validation error = %v", err)
+	}
+
+	_, err = Load([]string{"DB_DRIVER=json", "JSON_DB_OBJECT="})
+	if err == nil || !strings.Contains(err.Error(), "JSON_DB_OBJECT is required when DB_DRIVER=json") {
+		t.Fatalf("JSON validation error = %v", err)
+	}
+
+	_, err = Load([]string{"DB_DRIVER=json", "JSON_DB_OBJECT=../metadata.json"})
+	if err == nil || !strings.Contains(err.Error(), "reserved _vfs-link/ prefix") {
+		t.Fatalf("JSON path validation error = %v", err)
+	}
+
+	_, err = Load([]string{"DB_DRIVER=sqlite"})
+	if err == nil || !strings.Contains(err.Error(), `unsupported DB_DRIVER "sqlite"`) {
+		t.Fatalf("unsupported database driver error = %v", err)
+	}
+}
+
+func TestLoadHTTPAuthUploadAndPubSub(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://example.test/vfs")
+	t.Setenv("STORAGE_DRIVER", "local")
+	t.Setenv("LOCAL_STORAGE_ROOT", t.TempDir())
+
+	cfg, err := Load([]string{
+		"HTTP_BASIC_AUTH_ENABLED=true",
+		"HTTP_BASIC_AUTH_USER=operator",
+		"HTTP_BASIC_AUTH_PASS=secret",
+		"UPLOAD_SESSION_TTL=48h",
+		"UPLOAD_MAX_BYTES=53687091200",
+		"PUB_SUB_DRIVER=pubsub",
+		"GCP_PROJECT_ID=example-project",
+		"PUB_SUB_TOPIC=vfs-link-share-jobs",
+		"PUB_SUB_PUSH_AUDIENCE=https://file-server.example/",
+		"PUB_SUB_PUSH_SERVICE_ACCOUNT=push@example.iam.gserviceaccount.com",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.HTTPBasicAuth || cfg.HTTPBasicUser != "operator" || cfg.HTTPBasicPass != "secret" {
+		t.Fatalf("HTTP auth config = enabled:%t user:%q", cfg.HTTPBasicAuth, cfg.HTTPBasicUser)
+	}
+	if cfg.UploadSessionTTL != 48*time.Hour || cfg.UploadMaxBytes != 50*1024*1024*1024 {
+		t.Fatalf("upload config = %s/%d", cfg.UploadSessionTTL, cfg.UploadMaxBytes)
+	}
+	if cfg.PubSubDriver != "pubsub" || cfg.PubSubTopic != "vfs-link-share-jobs" {
+		t.Fatalf("Pub/Sub config = %q/%q", cfg.PubSubDriver, cfg.PubSubTopic)
+	}
+
+	_, err = Load([]string{"HTTP_BASIC_AUTH_ENABLED=true", "HTTP_BASIC_AUTH_USER="})
+	if err == nil || !strings.Contains(err.Error(), "HTTP_BASIC_AUTH_USER is required") {
+		t.Fatalf("HTTP auth validation error = %v", err)
+	}
+
+	_, err = Load([]string{"PUB_SUB_DRIVER=pubsub", "GCP_PROJECT_ID="})
+	if err == nil || !strings.Contains(err.Error(), "GCP_PROJECT_ID is required") {
+		t.Fatalf("Pub/Sub validation error = %v", err)
+	}
+}
+
 func TestLoadProtocolDefaults(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://example.test/vfs")
 	t.Setenv("STORAGE_DRIVER", "local")

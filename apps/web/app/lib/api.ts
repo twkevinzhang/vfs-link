@@ -1,8 +1,12 @@
 import { FilesResponse, StatusResponse } from '../types/files';
 import { ShareRecord } from '../types/share';
+import { CreateUploadInput, UploadSession } from '../types/upload';
 
 const API_BASE_URL = (
-  import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080'
+  import.meta.env.VITE_API_BASE_URL ||
+  (typeof window === 'undefined'
+    ? 'http://localhost:8080'
+    : window.location.origin)
 ).replace(/\/$/, '');
 
 async function requestJson<T>(path: string): Promise<T> {
@@ -48,6 +52,13 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
   }
 
   return response.json() as Promise<T>;
+}
+
+function apiUrl(pathOrUrl: string) {
+  if (/^https?:\/\//i.test(pathOrUrl)) {
+    return pathOrUrl;
+  }
+  return `${API_BASE_URL}${pathOrUrl.startsWith('/') ? '' : '/'}${pathOrUrl}`;
 }
 
 export function getStatus() {
@@ -98,4 +109,60 @@ export function startShare(id: string) {
     `/api/shares/${encodeURIComponent(id)}/start`,
     {}
   );
+}
+
+export function createUpload(input: CreateUploadInput) {
+  return postJson<UploadSession>('/api/uploads', input);
+}
+
+export function completeUpload(session: UploadSession) {
+  return postJson<UploadSession>(session.completeUrl, {});
+}
+
+export function cancelUpload(id: string) {
+  return fetch(`${API_BASE_URL}/api/uploads/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+}
+
+// Passing the File directly to XMLHttpRequest keeps large files out of JS
+// memory while still exposing native upload progress events.
+export function putUpload(
+  session: UploadSession,
+  file: File,
+  onProgress: (uploaded: number, total: number) => void
+) {
+  return new Promise<void>((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open(session.method, apiUrl(session.uploadUrl));
+    for (const [name, value] of Object.entries(session.headers)) {
+      request.setRequestHeader(name, value);
+    }
+    if (!session.headers['Content-Type'] && file.type) {
+      request.setRequestHeader('Content-Type', file.type);
+    }
+    request.upload.addEventListener('progress', (event) => {
+      if (event.lengthComputable) {
+        onProgress(event.loaded, event.total);
+      } else {
+        onProgress(event.loaded, file.size);
+      }
+    });
+    request.addEventListener('load', () => {
+      if (request.status >= 200 && request.status < 300) {
+        resolve();
+        return;
+      }
+      reject(
+        new Error(`Upload failed: ${request.status} ${request.statusText}`)
+      );
+    });
+    request.addEventListener('error', () =>
+      reject(new Error('Upload connection failed'))
+    );
+    request.addEventListener('abort', () =>
+      reject(new Error('Upload cancelled'))
+    );
+    request.send(file);
+  });
 }

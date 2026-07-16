@@ -10,9 +10,10 @@ import {
   Search,
   Server,
   Share2,
+  Upload,
   X,
 } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { MetaFunction } from 'react-router';
 
 import { Alert } from '../components/ui/alert';
@@ -20,6 +21,7 @@ import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Skeleton } from '../components/ui/skeleton';
+import { UploadPanel } from '../components/upload-panel';
 import { appPath } from '../lib/base-path';
 import {
   createShareDraft,
@@ -75,6 +77,7 @@ export default function Index() {
   const [shareError, setShareError] = useState<string>();
   const [sharingPath, setSharingPath] = useState<string>();
   const [selectedFile, setSelectedFile] = useState<FileEntry>();
+  const [showUpload, setShowUpload] = useState(false);
   const filesRequestRef = useRef(0);
 
   const loadStatus = useCallback(async () => {
@@ -149,6 +152,10 @@ export default function Index() {
   }, [currentPath, fileQuery, pageOffset, loadFiles]);
 
   const visibleEntries = state.files?.entries ?? [];
+  const existingNames = useMemo(
+    () => new Set(visibleEntries.map((entry) => entry.name)),
+    [visibleEntries]
+  );
   const currentPagination = state.files?.pagination;
   const totalVisibleBytes = state.files?.visibleBytes ?? 0;
 
@@ -236,6 +243,15 @@ export default function Index() {
             />
             <Button
               variant="outline"
+              onClick={() => setShowUpload((visible) => !visible)}
+              className="h-9 w-full px-3 md:w-auto"
+              aria-expanded={showUpload}
+            >
+              <Upload aria-hidden="true" className="h-4 w-4" />
+              Upload
+            </Button>
+            <Button
+              variant="outline"
               onClick={refresh}
               disabled={state.loading}
               title="重新整理"
@@ -275,6 +291,15 @@ export default function Index() {
               </div>
             </div>
           </Alert>
+        )}
+
+        {showUpload && (
+          <UploadPanel
+            currentPath={currentPath}
+            existingNames={existingNames}
+            onComplete={refresh}
+            onClose={() => setShowUpload(false)}
+          />
         )}
 
         <section className="flex min-w-0 flex-col gap-4 lg:min-h-0 lg:flex-1">
