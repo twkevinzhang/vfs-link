@@ -1,6 +1,7 @@
 package db
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -250,7 +251,19 @@ func (b *gcsTreeBackend) Put(ctx context.Context, key string, data []byte, expec
 		return 0, classifyGCSSaveError(err)
 	}
 	if err := w.Close(); err != nil {
-		return 0, classifyGCSSaveError(err)
+		classified := classifyGCSSaveError(err)
+		// A conditional create can reach GCS successfully while its response is
+		// lost. A transport retry then receives 412 because the first attempt
+		// already created the object. Accept that ambiguous result only when the
+		// live object is byte-for-byte identical; a different value remains a
+		// real concurrent mutation conflict.
+		if classified == ErrMetadataConflict && expected != nil && *expected == 0 {
+			existing, found, getErr := b.Get(ctx, key)
+			if getErr == nil && found && bytes.Equal(existing.Data, data) {
+				return existing.Generation, nil
+			}
+		}
+		return 0, classified
 	}
 	return w.Attrs().Generation, nil
 }
