@@ -248,24 +248,28 @@ func (b *gcsTreeBackend) Put(ctx context.Context, key string, data []byte, expec
 	w.CacheControl = "no-store"
 	if _, err := w.Write(data); err != nil {
 		_ = w.Close()
-		return 0, classifyGCSSaveError(err)
+		return b.resolveConditionalCreate(ctx, key, data, expected, err)
 	}
 	if err := w.Close(); err != nil {
-		classified := classifyGCSSaveError(err)
-		// A conditional create can reach GCS successfully while its response is
-		// lost. A transport retry then receives 412 because the first attempt
-		// already created the object. Accept that ambiguous result only when the
-		// live object is byte-for-byte identical; a different value remains a
-		// real concurrent mutation conflict.
-		if classified == ErrMetadataConflict && expected != nil && *expected == 0 {
-			existing, found, getErr := b.Get(ctx, key)
-			if getErr == nil && found && bytes.Equal(existing.Data, data) {
-				return existing.Generation, nil
-			}
-		}
-		return 0, classified
+		return b.resolveConditionalCreate(ctx, key, data, expected, err)
 	}
 	return w.Attrs().Generation, nil
+}
+
+func (b *gcsTreeBackend) resolveConditionalCreate(ctx context.Context, key string, data []byte, expected *int64, writeErr error) (int64, error) {
+	classified := classifyGCSSaveError(writeErr)
+	// A conditional create can reach GCS successfully while its response is
+	// lost. A transport retry then receives 412 during Write or Close because
+	// the first attempt already created the object. Accept that ambiguous result
+	// only when the live object is byte-for-byte identical; a different value
+	// remains a real concurrent mutation conflict.
+	if classified == ErrMetadataConflict && expected != nil && *expected == 0 {
+		existing, found, getErr := b.Get(ctx, key)
+		if getErr == nil && found && bytes.Equal(existing.Data, data) {
+			return existing.Generation, nil
+		}
+	}
+	return 0, classified
 }
 func (b *gcsTreeBackend) Delete(ctx context.Context, key string, expected *int64) error {
 	o := b.client.Bucket(b.bucket).Object(key)

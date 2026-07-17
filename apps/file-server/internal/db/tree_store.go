@@ -1200,7 +1200,7 @@ func BulkImportTree(ctx context.Context, store Store, snapshot TreeImportSnapsho
 	// finalized child manifest, producing exact aggregates in one pass.
 	for _, dir := range directories {
 		if e := tree.writeIndex(ctx, directoryIndex{Version: 2, AggregateVersion: directoryAggregateVersion, Directory: dir, Records: byDir[dir]}, 0, false); e != nil {
-			return TreeValidation{}, e
+			return TreeValidation{}, fmt.Errorf("write directory index %q: %w", dir, e)
 		}
 	}
 	for id, root := range trashRoots {
