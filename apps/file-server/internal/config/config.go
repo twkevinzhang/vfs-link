@@ -125,8 +125,8 @@ func Load(args []string) (Config, error) {
 		}
 	case "json":
 		cfg.MetadataPrefix = path.Clean(strings.TrimLeft(cfg.MetadataPrefix, "/"))
-		if cfg.MetadataPrefix == "." || cfg.MetadataPrefix != "_vfs-link" {
-			return Config{}, fmt.Errorf("METADATA_PREFIX must be the reserved _vfs-link prefix")
+		if cfg.MetadataPrefix != "_vfs-link" && cfg.MetadataPrefix != "_vfs-link-v2" {
+			return Config{}, fmt.Errorf("METADATA_PREFIX must be one of the reserved prefixes _vfs-link or _vfs-link-v2")
 		}
 		switch cfg.MetadataStorageDriver {
 		case "local":

@@ -286,19 +286,28 @@ func decodeTreeRecord(o treeObject) (FileRecord, error) {
 const directoryIndexPageSize = 256
 
 type indexPageDescriptor struct {
-	Key   string `json:"key"`
-	Count int    `json:"count"`
-	First string `json:"first"`
-	Last  string `json:"last"`
+	Key          string `json:"key"`
+	Count        int    `json:"count"`
+	First        string `json:"first"`
+	Last         string `json:"last"`
+	DirectBytes  int64  `json:"directBytes,omitempty"`
+	SubtreeFiles int64  `json:"subtreeFiles,omitempty"`
+	SubtreeDirs  int64  `json:"subtreeDirectories,omitempty"`
+	SubtreeBytes int64  `json:"subtreeBytes,omitempty"`
 }
 type directoryIndex struct {
-	Version    int                   `json:"version"`
-	Directory  string                `json:"directory"`
-	Records    []FileRecord          `json:"-"`
-	Pages      []indexPageDescriptor `json:"pages"`
-	Total      int                   `json:"total"`
-	TotalBytes int64                 `json:"totalBytes"`
-	UpdatedAt  time.Time             `json:"updatedAt"`
+	Version          int                   `json:"version"`
+	AggregateVersion int                   `json:"aggregateVersion,omitempty"`
+	Directory        string                `json:"directory"`
+	Records          []FileRecord          `json:"-"`
+	Pages            []indexPageDescriptor `json:"pages"`
+	Total            int                   `json:"total"`
+	TotalBytes       int64                 `json:"totalBytes"`
+	DirectBytes      int64                 `json:"directBytes,omitempty"`
+	SubtreeFiles     int64                 `json:"subtreeFiles,omitempty"`
+	SubtreeDirs      int64                 `json:"subtreeDirectories,omitempty"`
+	SubtreeBytes     int64                 `json:"subtreeBytes,omitempty"`
+	UpdatedAt        time.Time             `json:"updatedAt"`
 }
 type directoryIndexPage struct {
 	Records []FileRecord `json:"records"`
@@ -332,7 +341,7 @@ func (s *TreeStore) getIndex(ctx context.Context, dir string) (directoryIndex, i
 func (s *TreeStore) getIndexManifest(ctx context.Context, dir string) (directoryIndex, int64, bool, error) {
 	o, ok, e := s.objects.Get(ctx, s.indexKey(dir))
 	if e != nil || !ok {
-		return directoryIndex{Version: 1, Directory: dir}, 0, ok, e
+		return directoryIndex{Version: 2, AggregateVersion: 2, Directory: dir}, 0, ok, e
 	}
 	var idx directoryIndex
 	e = json.Unmarshal(o.Data, &idx)
@@ -360,9 +369,22 @@ func (s *TreeStore) putIndexPage(ctx context.Context, dir string, records []File
 	if _, e := s.objects.Put(ctx, key, b, nil); e != nil {
 		return indexPageDescriptor{}, e
 	}
-	return indexPageDescriptor{Key: key, Count: len(records), First: indexSortKey(records[0]), Last: indexSortKey(records[len(records)-1])}, nil
+	d := summarizeIndexPage(records)
+	d.Key = key
+	d.Count = len(records)
+	d.First = indexSortKey(records[0])
+	d.Last = indexSortKey(records[len(records)-1])
+	return d, nil
 }
 func (s *TreeStore) updateIndexRecord(ctx context.Context, dir string, record FileRecord, remove bool) error {
+	return s.updateIndexRecordLeaseHeld(ctx, dir, record, remove, false)
+}
+
+// updateIndexRecordLeaseHeld updates one parent index. Callers that already
+// own the distributed tree mutation lease may request absolute propagation to
+// root. Bulk operations suppress it while rewriting individual nodes and call
+// propagateDirectorySummaryLeaseHeld once their tree is stable.
+func (s *TreeStore) updateIndexRecordLeaseHeld(ctx context.Context, dir string, record FileRecord, remove, propagate bool) error {
 	for attempt := 0; attempt < treeCASAttempts; attempt++ {
 		idx, g, exists, e := s.getIndexManifest(ctx, dir)
 		if e != nil {
@@ -386,23 +408,18 @@ func (s *TreeStore) updateIndexRecord(ctx context.Context, dir string, record Fi
 			}
 			records = page.Records
 		}
-		beforeBytes := int64(0)
 		beforeCount := len(records)
-		for _, r := range records {
-			if !r.IsDirectory {
-				beforeBytes += r.Size
-			}
-		}
 		if !remove {
+			if record.IsDirectory {
+				hydrated, hydrateErr := s.hydrateDirectorySummaries(ctx, []FileRecord{record})
+				if hydrateErr != nil {
+					return hydrateErr
+				}
+				record = hydrated[0]
+			}
 			records = upsertIndexRecord(records, record)
 		} else {
 			records = removeIndexRecord(records, record.LogicPath)
-		}
-		afterBytes := int64(0)
-		for _, r := range records {
-			if !r.IsDirectory {
-				afterBytes += r.Size
-			}
 		}
 		var replacements []indexPageDescriptor
 		if len(records) > 0 {
@@ -424,7 +441,7 @@ func (s *TreeStore) updateIndexRecord(ctx context.Context, dir string, record Fi
 			idx.Pages = replacements
 		}
 		idx.Total += len(records) - beforeCount
-		idx.TotalBytes += afterBytes - beforeBytes
+		summarizeIndexManifest(&idx)
 		idx.UpdatedAt = time.Now().UTC()
 		b, _ := marshalTree(idx)
 		if !exists {
@@ -433,6 +450,9 @@ func (s *TreeStore) updateIndexRecord(ctx context.Context, dir string, record Fi
 		if _, e = s.objects.Put(ctx, s.indexKey(dir), b, &g); e == nil {
 			if oldKey != "" {
 				_ = s.objects.Delete(ctx, oldKey, nil)
+			}
+			if propagate {
+				return s.propagateDirectorySummaryLeaseHeld(ctx, dir)
 			}
 			return nil
 		} else if !errorsIsConflict(e) {
@@ -449,26 +469,24 @@ func (s *TreeStore) writeIndex(ctx context.Context, idx directoryIndex, g int64,
 	old := idx.Pages
 	idx.Pages = nil
 	idx.Total = len(idx.Records)
-	idx.TotalBytes = 0
-	for _, r := range idx.Records {
-		if !r.IsDirectory {
-			idx.TotalBytes += r.Size
-		}
+	var e error
+	idx.Records, e = s.hydrateDirectorySummaries(ctx, idx.Records)
+	if e != nil {
+		return e
 	}
 	for start := 0; start < len(idx.Records); start += directoryIndexPageSize {
 		end := start + directoryIndexPageSize
 		if end > len(idx.Records) {
 			end = len(idx.Records)
 		}
-		page := directoryIndexPage{Records: idx.Records[start:end]}
-		b, _ := marshalTree(page)
-		key := s.indexPageKey(idx.Directory)
-		if _, e := s.objects.Put(ctx, key, b, nil); e != nil {
+		d, e := s.putIndexPage(ctx, idx.Directory, append([]FileRecord(nil), idx.Records[start:end]...))
+		if e != nil {
 			return e
 		}
-		idx.Pages = append(idx.Pages, indexPageDescriptor{Key: key, Count: end - start, First: indexSortKey(page.Records[0]), Last: indexSortKey(page.Records[len(page.Records)-1])})
+		idx.Pages = append(idx.Pages, d)
 	}
 	idx.Records = nil
+	summarizeIndexManifest(&idx)
 	idx.UpdatedAt = time.Now().UTC()
 	b, _ := marshalTree(idx)
 	if !exists {
@@ -579,7 +597,7 @@ func (s *TreeStore) ListDirectChildren(ctx context.Context, dir string, o Direct
 			records = append(records, page.Records...)
 		}
 	}
-	var p DirectChildrenPage
+	p := DirectChildrenPage{FolderSummary: folderSummaryFromIndex(idx)}
 	for _, r := range records {
 		if o.DirectoriesOnly && !r.IsDirectory {
 			continue
@@ -648,6 +666,9 @@ func (s *TreeStore) ListPrefix(ctx context.Context, prefix string) ([]FileRecord
 
 func (s *TreeStore) putNode(ctx context.Context, r FileRecord, requireAbsent bool) error {
 	r = normalizeTreeRecord(r)
+	// Aggregate snapshots belong to parent index entries, never canonical
+	// file/directory marker nodes.
+	r.FolderSummary = nil
 	key := s.activeKey(r.LogicPath, r.IsDirectory)
 	if e := validateMetadataKey(key); e != nil {
 		return e
@@ -678,6 +699,11 @@ func (s *TreeStore) ReplaceFile(ctx context.Context, path, hash string, size int
 func (s *TreeStore) ReplaceFileConditional(ctx context.Context, path, hash string, size int64, expected *string, absent bool) (string, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	release, _, e := s.acquireTreeMutationLease(ctx)
+	if e != nil {
+		return "", false, e
+	}
+	defer release()
 	path = pathpkg.Clean("/" + strings.TrimSpace(path))
 	old, ok, e := s.Find(ctx, path)
 	if e != nil {
@@ -702,7 +728,7 @@ func (s *TreeStore) ReplaceFileConditional(ctx context.Context, path, hash strin
 	if e = s.putNode(ctx, r, !ok); e != nil {
 		return "", false, e
 	}
-	if e = s.updateIndexRecord(ctx, pathpkg.Dir(path), r, false); e != nil {
+	if e = s.updateIndexRecordLeaseHeld(ctx, pathpkg.Dir(path), r, false, true); e != nil {
 		return "", false, e
 	}
 	delta := MetadataStats{}
@@ -727,6 +753,11 @@ func (s *TreeStore) ReplaceFileConditional(ctx context.Context, path, hash strin
 func (s *TreeStore) UpsertDirectory(ctx context.Context, path string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	release, _, e := s.acquireTreeMutationLease(ctx)
+	if e != nil {
+		return e
+	}
+	defer release()
 	path = pathpkg.Clean("/" + strings.TrimSpace(path))
 	if path == "/" {
 		return nil
@@ -747,13 +778,13 @@ func (s *TreeStore) UpsertDirectory(ctx context.Context, path string) error {
 	if e = s.putNode(ctx, r, !ok); e != nil {
 		return e
 	}
-	if e = s.updateIndexRecord(ctx, pathpkg.Dir(path), r, false); e != nil {
-		return e
-	}
 	_, _, exists, e := s.getIndex(ctx, path)
 	if e == nil && !exists {
-		idx := directoryIndex{Version: 1, Directory: path, UpdatedAt: time.Now().UTC()}
+		idx := directoryIndex{Version: 2, AggregateVersion: directoryAggregateVersion, Directory: path, UpdatedAt: time.Now().UTC()}
 		e = s.writeIndex(ctx, idx, 0, false)
+	}
+	if e == nil {
+		e = s.updateIndexRecordLeaseHeld(ctx, pathpkg.Dir(path), r, false, true)
 	}
 	if e == nil && !ok {
 		e = s.mutateStats(ctx, MetadataStats{LogicalDirs: 1})
@@ -763,6 +794,11 @@ func (s *TreeStore) UpsertDirectory(ctx context.Context, path string) error {
 func (s *TreeStore) DeletePath(ctx context.Context, path string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	release, _, e := s.acquireTreeMutationLease(ctx)
+	if e != nil {
+		return e
+	}
+	defer release()
 	r, ok, e := s.Find(ctx, path)
 	if e != nil || !ok {
 		return e
@@ -770,7 +806,9 @@ func (s *TreeStore) DeletePath(ctx context.Context, path string) error {
 	if e = s.deleteNode(ctx, r); e != nil {
 		return e
 	}
-	_ = s.updateIndexRecord(ctx, pathpkg.Dir(r.LogicPath), r, true)
+	if e = s.updateIndexRecordLeaseHeld(ctx, pathpkg.Dir(r.LogicPath), r, true, true); e != nil {
+		return e
+	}
 	if r.IsDirectory {
 		_ = s.objects.Delete(ctx, s.indexKey(r.LogicPath), nil)
 	}
@@ -1039,7 +1077,7 @@ func BulkImportTree(ctx context.Context, store Store, snapshot TreeImportSnapsho
 			return TreeValidation{}, fmt.Errorf("tree import destination is not empty: %s", key)
 		}
 	}
-	byDir := map[string][]FileRecord{}
+	byDir := map[string][]FileRecord{"/": nil}
 	trashRoots := map[string]FileRecord{}
 	physical := map[string]int64{}
 	var st MetadataStats
@@ -1096,6 +1134,11 @@ func BulkImportTree(ctx context.Context, store Store, snapshot TreeImportSnapsho
 		validation.Active++
 		byDir[pathpkg.Dir(r.LogicPath)] = append(byDir[pathpkg.Dir(r.LogicPath)], r)
 		if r.IsDirectory {
+			// Empty directories also need an aggregate manifest so their parent
+			// can publish an explicit zero summary.
+			if _, exists := byDir[r.LogicPath]; !exists {
+				byDir[r.LogicPath] = nil
+			}
 			st.LogicalDirs++
 		} else {
 			st.LogicalFiles++
@@ -1141,13 +1184,27 @@ func BulkImportTree(ctx context.Context, store Store, snapshot TreeImportSnapsho
 			st.PhysicalBytes += size
 		}
 	}
-	for dir, records := range byDir {
-		if e := tree.writeIndex(ctx, directoryIndex{Version: 1, Directory: dir, Records: records}, 0, false); e != nil {
+	directories := make([]string, 0, len(byDir))
+	for dir := range byDir {
+		directories = append(directories, dir)
+	}
+	sort.Slice(directories, func(i, j int) bool {
+		leftDepth := strings.Count(strings.Trim(directories[i], "/"), "/")
+		rightDepth := strings.Count(strings.Trim(directories[j], "/"), "/")
+		if leftDepth == rightDepth {
+			return directories[i] > directories[j]
+		}
+		return leftDepth > rightDepth
+	})
+	// Deepest-first makes every directory entry hydrate from an already
+	// finalized child manifest, producing exact aggregates in one pass.
+	for _, dir := range directories {
+		if e := tree.writeIndex(ctx, directoryIndex{Version: 2, AggregateVersion: directoryAggregateVersion, Directory: dir, Records: byDir[dir]}, 0, false); e != nil {
 			return TreeValidation{}, e
 		}
 	}
 	for id, root := range trashRoots {
-		m := trashManifest{Version: 1, ID: id, Root: root, Deleting: root.TrashDeleting, CreatedAt: *root.TrashedAt}
+		m := trashManifest{Version: 2, ID: id, Root: root, Deleting: root.TrashDeleting, CreatedAt: *root.TrashedAt}
 		b, _ := marshalTree(m)
 		z := int64(0)
 		if _, e := tree.objects.Put(ctx, tree.trashManifestKey(id), b, &z); e != nil {

@@ -46,24 +46,35 @@ func (s *Server) SetCORSOrigins(origins []string) *Server {
 }
 
 type Entry struct {
-	Name         string     `json:"name"`
-	Path         string     `json:"path"`
-	Kind         string     `json:"kind"`
-	Size         int64      `json:"size"`
-	UpdatedAt    time.Time  `json:"updatedAt"`
-	PhysicalHash string     `json:"physicalHash,omitempty"`
-	TrashID      string     `json:"trashId,omitempty"`
-	TrashedAt    *time.Time `json:"trashedAt,omitempty"`
+	Name          string         `json:"name"`
+	Path          string         `json:"path"`
+	Kind          string         `json:"kind"`
+	Size          int64          `json:"size"`
+	FolderSummary *FolderSummary `json:"folderSummary,omitempty"`
+	UpdatedAt     time.Time      `json:"updatedAt"`
+	PhysicalHash  string         `json:"physicalHash,omitempty"`
+	TrashID       string         `json:"trashId,omitempty"`
+	TrashedAt     *time.Time     `json:"trashedAt,omitempty"`
 }
 
 type FilesResponse struct {
-	Path         string     `json:"path"`
-	Breadcrumbs  []Entry    `json:"breadcrumbs"`
-	Entries      []Entry    `json:"entries"`
-	Pagination   Pagination `json:"pagination"`
-	VisibleBytes int64      `json:"visibleBytes"`
-	Stats        *Stats     `json:"stats,omitempty"`
-	GeneratedAt  string     `json:"generatedAt"`
+	Path          string        `json:"path"`
+	Breadcrumbs   []Entry       `json:"breadcrumbs"`
+	Entries       []Entry       `json:"entries"`
+	Pagination    Pagination    `json:"pagination"`
+	FolderSummary FolderSummary `json:"folderSummary"`
+	VisibleBytes  int64         `json:"visibleBytes"`
+	Stats         *Stats        `json:"stats,omitempty"`
+	GeneratedAt   string        `json:"generatedAt"`
+}
+
+// FolderSummary describes the complete active subtree rooted at a directory.
+// It is intentionally distinct from visibleBytes, which only describes direct
+// children matching the current list query.
+type FolderSummary struct {
+	Files       int64 `json:"files"`
+	Directories int64 `json:"directories"`
+	Bytes       int64 `json:"bytes"`
 }
 
 type Pagination struct {
@@ -220,8 +231,9 @@ func (s *Server) handleFiles(w http.ResponseWriter, r *http.Request) {
 			HasNext: offset+len(entries) < page.Total,
 			HasPrev: offset > 0,
 		},
-		VisibleBytes: page.TotalBytes,
-		GeneratedAt:  time.Now().Format(time.RFC3339),
+		FolderSummary: folderSummaryFromDB(page.FolderSummary),
+		VisibleBytes:  page.TotalBytes,
+		GeneratedAt:   time.Now().Format(time.RFC3339),
 	})
 }
 
@@ -410,13 +422,26 @@ func (s *Server) stats(ctx context.Context) (Stats, error) {
 }
 
 func entryFromRecord(record db.FileRecord) Entry {
-	return Entry{
+	entry := Entry{
 		Name:         path.Base(record.LogicPath),
 		Path:         record.LogicPath,
 		Kind:         kind(record),
 		Size:         record.Size,
 		UpdatedAt:    record.UpdatedAt,
 		PhysicalHash: record.PhysicalHash,
+	}
+	if record.FolderSummary != nil {
+		summary := folderSummaryFromDB(*record.FolderSummary)
+		entry.FolderSummary = &summary
+	}
+	return entry
+}
+
+func folderSummaryFromDB(summary db.FolderSummary) FolderSummary {
+	return FolderSummary{
+		Files:       summary.Files,
+		Directories: summary.Directories,
+		Bytes:       summary.Bytes,
 	}
 }
 

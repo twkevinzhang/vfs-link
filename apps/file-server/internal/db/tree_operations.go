@@ -564,6 +564,24 @@ func (s *TreeStore) runMove(ctx context.Context, paths []string, destination str
 		movedRoot.LogicPath = targetRoot
 		results = append(results, movedRoot)
 	}
+	var rebuild, propagate []string
+	for _, rootPath := range roots {
+		propagate = append(propagate, pathpkg.Dir(rootPath))
+		targetRoot := pathpkg.Join(destination, pathpkg.Base(rootPath))
+		if target, found, findErr := s.Find(ctx, targetRoot); findErr != nil {
+			return nil, findErr
+		} else if found && target.IsDirectory {
+			targetRecords, collectErr := s.collectSubtree(ctx, target)
+			if collectErr != nil {
+				return nil, collectErr
+			}
+			rebuild = append(rebuild, directoryPaths(targetRecords)...)
+		}
+	}
+	propagate = append(propagate, destination)
+	if e = s.repairOperationAggregatesLeaseHeld(ctx, rebuild, propagate); e != nil {
+		return nil, e
+	}
 	return results, nil
 }
 func (s *TreeStore) collectSubtree(ctx context.Context, root FileRecord) ([]FileRecord, error) {
@@ -656,6 +674,19 @@ func (s *TreeStore) RenamePath(ctx context.Context, from, to string) error {
 			}
 		}
 	}
+	var rebuild []string
+	if target, found, findErr := s.Find(ctx, to); findErr != nil {
+		return findErr
+	} else if found && target.IsDirectory {
+		targetRecords, collectErr := s.collectSubtree(ctx, target)
+		if collectErr != nil {
+			return collectErr
+		}
+		rebuild = directoryPaths(targetRecords)
+	}
+	if e = s.repairOperationAggregatesLeaseHeld(ctx, rebuild, []string{pathpkg.Dir(from), pathpkg.Dir(to)}); e != nil {
+		return e
+	}
 	return nil
 }
 
@@ -665,6 +696,61 @@ type trashManifest struct {
 	Root      FileRecord `json:"root"`
 	Deleting  bool       `json:"deleting"`
 	CreatedAt time.Time  `json:"createdAt"`
+}
+
+// repairOperationAggregatesLeaseHeld rebuilds touched directory manifests
+// deepest-first, then publishes the stable absolute summaries through their
+// ancestors. It is safe to rerun after a crash and costs O(touched directories
+// + touched roots*depth), rather than O(moved nodes*depth).
+func (s *TreeStore) repairOperationAggregatesLeaseHeld(ctx context.Context, rebuild, propagate []string) error {
+	uniqueRebuild := map[string]bool{}
+	for _, dir := range rebuild {
+		uniqueRebuild[pathpkg.Clean("/"+strings.TrimSpace(dir))] = true
+	}
+	dirs := make([]string, 0, len(uniqueRebuild))
+	for dir := range uniqueRebuild {
+		dirs = append(dirs, dir)
+	}
+	sort.Slice(dirs, func(i, j int) bool {
+		left := strings.Count(strings.Trim(dirs[i], "/"), "/")
+		right := strings.Count(strings.Trim(dirs[j], "/"), "/")
+		if left == right {
+			return dirs[i] > dirs[j]
+		}
+		return left > right
+	})
+	for _, dir := range dirs {
+		idx, generation, exists, err := s.getIndex(ctx, dir)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			continue
+		}
+		if err = s.writeIndex(ctx, idx, generation, true); err != nil {
+			return err
+		}
+	}
+	uniquePropagate := map[string]bool{}
+	for _, dir := range propagate {
+		uniquePropagate[pathpkg.Clean("/"+strings.TrimSpace(dir))] = true
+	}
+	for dir := range uniquePropagate {
+		if err := s.propagateDirectorySummaryLeaseHeld(ctx, dir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func directoryPaths(records []FileRecord) []string {
+	var dirs []string
+	for _, record := range records {
+		if record.IsDirectory {
+			dirs = append(dirs, record.LogicPath)
+		}
+	}
+	return dirs
 }
 
 func (s *TreeStore) trashManifestKey(id string) string { return s.trashPrefix(id) + "manifest.json" }
@@ -720,6 +806,17 @@ func (s *TreeStore) trashPathsInternal(ctx context.Context, items []TrashPath, c
 			}
 			return nil, fmt.Errorf("%w: %s", ErrNotFound, rootPath)
 		}
+		if root.IsDirectory {
+			idx, _, exists, indexErr := s.getIndexManifest(ctx, root.LogicPath)
+			if indexErr != nil {
+				return nil, indexErr
+			}
+			summary := FolderSummary{}
+			if exists {
+				summary = folderSummaryFromIndex(idx)
+			}
+			root.FolderSummary = &summary
+		}
 		records, e := s.collectSubtree(ctx, root)
 		if e != nil {
 			return nil, e
@@ -749,7 +846,7 @@ func (s *TreeStore) trashPathsInternal(ctx context.Context, items []TrashPath, c
 		if root.ID == 0 {
 			continue
 		}
-		m := trashManifest{Version: 1, ID: trashID, Root: root, CreatedAt: time.Now().UTC()}
+		m := trashManifest{Version: 2, ID: trashID, Root: root, CreatedAt: time.Now().UTC()}
 		b, _ := marshalTree(m)
 		z := int64(0)
 		manifestKey := s.trashManifestKey(trashID)
@@ -821,6 +918,13 @@ func (s *TreeStore) trashPathsInternal(ctx context.Context, items []TrashPath, c
 				return nil, e
 			}
 		}
+	}
+	var propagate []string
+	for _, rootPath := range roots {
+		propagate = append(propagate, pathpkg.Dir(rootPath))
+	}
+	if e = s.repairOperationAggregatesLeaseHeld(ctx, nil, propagate); e != nil {
+		return nil, e
 	}
 	return updated, nil
 }
@@ -922,6 +1026,7 @@ func (s *TreeStore) restoreTrashInternal(ctx context.Context, ids []string, chec
 	if len(wanted) == 0 {
 		return nil, fmt.Errorf("at least one trash id is required")
 	}
+	manifests := make([]trashManifest, 0, len(wanted))
 	for id := range wanted {
 		m, ok, e := s.GetTrashManifest(ctx, id)
 		if e != nil {
@@ -936,6 +1041,7 @@ func (s *TreeStore) restoreTrashInternal(ctx context.Context, ids []string, chec
 		if m.Deleting {
 			return nil, ErrTrashBusy
 		}
+		manifests = append(manifests, m)
 	}
 	records, e := s.ListTrashRecords(ctx, ids)
 	if e != nil {
@@ -1020,6 +1126,25 @@ func (s *TreeStore) restoreTrashInternal(ctx context.Context, ids []string, chec
 				return nil, e
 			}
 		}
+	}
+	var rebuild, propagate []string
+	for _, manifest := range manifests {
+		rootPath := manifest.Root.LogicPath
+		// The restored root's parent entry was written before all descendant
+		// manifests were rebuilt, so publish the root itself after repair.
+		propagate = append(propagate, rootPath)
+		if root, exists, findErr := s.Find(ctx, rootPath); findErr != nil {
+			return nil, findErr
+		} else if exists && root.IsDirectory {
+			activeRecords, collectErr := s.collectSubtree(ctx, root)
+			if collectErr != nil {
+				return nil, collectErr
+			}
+			rebuild = append(rebuild, directoryPaths(activeRecords)...)
+		}
+	}
+	if e = s.repairOperationAggregatesLeaseHeld(ctx, rebuild, propagate); e != nil {
+		return nil, e
 	}
 	for id := range wanted {
 		_ = s.objects.Delete(ctx, s.trashManifestKey(id), nil)

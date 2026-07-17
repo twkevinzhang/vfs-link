@@ -220,6 +220,7 @@ export default function Index() {
   );
   const currentPagination = state.files?.pagination;
   const totalVisibleBytes = state.files?.visibleBytes ?? 0;
+  const folderSummary = state.files?.folderSummary;
 
   const selectFile = useCallback((entry: FileEntry) => {
     setSelectedFile(entry);
@@ -485,9 +486,9 @@ export default function Index() {
               </div>
             )}
             {view === 'files' && (
-              <VisibleMetric
-                value={String(currentPagination?.total ?? 0)}
-                detail={formatBytes(totalVisibleBytes)}
+              <FolderMetric
+                value={`${folderSummary?.files ?? 0} files`}
+                detail={formatBytes(folderSummary?.bytes ?? 0)}
               />
             )}
             {view === 'files' && (
@@ -846,18 +847,18 @@ function HeaderMetricBadge({
   );
 }
 
-function VisibleMetric({ value, detail }: { value: string; detail: string }) {
+function FolderMetric({ value, detail }: { value: string; detail: string }) {
   return (
     <Badge
       variant="outline"
       className="h-9 max-w-full gap-1.5 bg-white px-2.5 py-1.5 text-foreground shadow-sm"
-      title={`Visible here: ${value} (${detail})`}
+      title={`Folder total: ${value} (${detail}, including descendants)`}
     >
       <Folder
         aria-hidden="true"
         className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
       />
-      <span className="truncate text-muted-foreground">Visible here</span>
+      <span className="truncate text-muted-foreground">Folder total</span>
       <span className="shrink-0 font-semibold">{value}</span>
       <span className="shrink-0 font-normal text-muted-foreground">
         {detail}
@@ -1082,7 +1083,9 @@ function FileTable({
                     </Badge>
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums">
-                    {isDirectory ? '-' : formatBytes(entry.size)}
+                    {formatBytes(
+                      isDirectory ? entry.folderSummary?.bytes ?? 0 : entry.size
+                    )}
                   </td>
                   <td className="px-4 py-3 text-muted-foreground">
                     {formatDate(
@@ -1140,6 +1143,7 @@ function FileTable({
         <span>
           Showing {pageStart}-{pageEnd} of {total}
           {pagination?.query ? ` matching "${pagination.query}"` : ''} ·{' '}
+          {pagination?.query ? 'Matching direct files' : 'Direct files'}{' '}
           {formatBytes(visibleBytes)}
         </span>
         {pagination && (
@@ -1231,9 +1235,11 @@ function MobileFileList({
               <Badge variant={isDirectory ? 'secondary' : 'outline'}>
                 {entry.kind}
               </Badge>
-              {!isDirectory && (
-                <span className="tabular-nums">{formatBytes(entry.size)}</span>
-              )}
+              <span className="tabular-nums">
+                {formatBytes(
+                  isDirectory ? entry.folderSummary?.bytes ?? 0 : entry.size
+                )}
+              </span>
               <span>
                 {formatDate(
                   trashView

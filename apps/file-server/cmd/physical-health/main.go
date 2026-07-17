@@ -90,22 +90,23 @@ func main() {
 
 func run() error {
 	var (
-		envFile        string
-		databaseDriver string
-		databaseURL    string
-		metadataDriver string
-		metadataRoot   string
-		metadataBucket string
-		metadataPrefix string
-		storageDriver  string
-		localRoot      string
-		gcsBucket      string
-		credentials    string
-		prefix         string
-		csvPath        string
-		failOnBad      bool
-		workers        int
-		timeout        time.Duration
+		envFile         string
+		databaseDriver  string
+		databaseURL     string
+		metadataDriver  string
+		metadataRoot    string
+		metadataBucket  string
+		metadataPrefix  string
+		storageDriver   string
+		localRoot       string
+		gcsBucket       string
+		credentials     string
+		prefix          string
+		csvPath         string
+		failOnBad       bool
+		checkAggregates bool
+		workers         int
+		timeout         time.Duration
 	)
 
 	flag.StringVar(&envFile, "env-file", ".env", "env file to load before reading database and storage settings")
@@ -122,6 +123,7 @@ func run() error {
 	flag.StringVar(&prefix, "prefix", "/", "logical path prefix to inspect")
 	flag.StringVar(&csvPath, "csv", "", "optional CSV report path")
 	flag.BoolVar(&failOnBad, "fail-on-unhealthy", false, "exit with status 2 when any file is unhealthy")
+	flag.BoolVar(&checkAggregates, "check-metadata-aggregates", false, "verify root folder summary and metadata stats against active records")
 	flag.IntVar(&workers, "workers", 8, "concurrent GCS metadata checks")
 	flag.DurationVar(&timeout, "timeout", 30*time.Minute, "overall scan timeout")
 	flag.Parse()
@@ -156,6 +158,13 @@ func run() error {
 	records, err := store.ListAll(ctx)
 	if err != nil {
 		return err
+	}
+	if checkAggregates {
+		summary, aggregateErr := validateMetadataAggregates(ctx, store, records)
+		if aggregateErr != nil {
+			return aggregateErr
+		}
+		fmt.Printf("metadata aggregates: ok files=%d directories=%d bytes=%d\n", summary.Files, summary.Directories, summary.Bytes)
 	}
 
 	rows := make([]healthRow, 0)
@@ -229,8 +238,8 @@ func openMetadataStore(ctx context.Context, driver string, databaseURL string, m
 	case "json":
 		metadataDriver = strings.ToLower(firstNonEmpty(metadataDriver, os.Getenv("METADATA_STORAGE_DRIVER"), storageDriverLocal))
 		metadataPrefix = firstNonEmpty(metadataPrefix, os.Getenv("METADATA_PREFIX"), "_vfs-link")
-		if metadataPrefix != "_vfs-link" {
-			return nil, errors.New("METADATA_PREFIX must be the reserved _vfs-link prefix")
+		if metadataPrefix != "_vfs-link" && metadataPrefix != "_vfs-link-v2" {
+			return nil, errors.New("METADATA_PREFIX must be _vfs-link or _vfs-link-v2")
 		}
 		switch metadataDriver {
 		case storageDriverLocal:
@@ -248,6 +257,50 @@ func openMetadataStore(ctx context.Context, driver string, databaseURL string, m
 	default:
 		return nil, fmt.Errorf("unsupported DB_DRIVER %q: expected postgres or json", driver)
 	}
+}
+
+func validateMetadataAggregates(ctx context.Context, store db.Store, records []db.FileRecord) (db.FolderSummary, error) {
+	provider, ok := store.(db.MetadataStatsProvider)
+	if !ok {
+		return db.FolderSummary{}, errors.New("metadata store does not expose aggregate stats")
+	}
+	var expected db.MetadataStats
+	physical := make(map[string]int64)
+	for _, record := range records {
+		if record.IsDirectory {
+			expected.LogicalDirs++
+			continue
+		}
+		expected.LogicalFiles++
+		expected.LogicalBytes += record.Size
+		physical[record.PhysicalHash] = record.Size
+	}
+	for key, size := range physical {
+		if key == "" {
+			continue
+		}
+		expected.PhysicalObjects++
+		expected.PhysicalBytes += size
+	}
+	actual, err := provider.MetadataStats(ctx)
+	if err != nil {
+		return db.FolderSummary{}, fmt.Errorf("read metadata stats: %w", err)
+	}
+	if actual.LogicalFiles != expected.LogicalFiles || actual.LogicalDirs != expected.LogicalDirs || actual.LogicalBytes != expected.LogicalBytes ||
+		actual.PhysicalObjects != expected.PhysicalObjects || actual.PhysicalBytes != expected.PhysicalBytes {
+		return db.FolderSummary{}, fmt.Errorf("metadata stats mismatch: got files=%d dirs=%d bytes=%d objects=%d objectBytes=%d want files=%d dirs=%d bytes=%d objects=%d objectBytes=%d",
+			actual.LogicalFiles, actual.LogicalDirs, actual.LogicalBytes, actual.PhysicalObjects, actual.PhysicalBytes,
+			expected.LogicalFiles, expected.LogicalDirs, expected.LogicalBytes, expected.PhysicalObjects, expected.PhysicalBytes)
+	}
+	page, err := store.ListDirectChildren(ctx, "/", db.DirectChildrenOptions{Limit: 1})
+	if err != nil {
+		return db.FolderSummary{}, fmt.Errorf("read root folder summary: %w", err)
+	}
+	wantSummary := db.FolderSummary{Files: expected.LogicalFiles, Directories: expected.LogicalDirs, Bytes: expected.LogicalBytes}
+	if page.FolderSummary != wantSummary {
+		return page.FolderSummary, fmt.Errorf("root folder summary mismatch: got %+v want %+v", page.FolderSummary, wantSummary)
+	}
+	return page.FolderSummary, nil
 }
 
 func resolveStorageConfig(driver string, localRoot string, gcsBucket string) (storageConfig, error) {

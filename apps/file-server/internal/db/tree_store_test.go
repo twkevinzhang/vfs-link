@@ -80,6 +80,10 @@ func TestTrashRestoreResumeAfterStatsBeforeCompletionIsExact(t *testing.T) {
 	if stats.LogicalFiles != 0 || stats.LogicalDirs != 0 {
 		t.Fatalf("stats=%+v", stats)
 	}
+	activePage, pageErr := s.ListDirectChildren(ctx, "/", DirectChildrenOptions{Limit: 10})
+	if pageErr != nil || activePage.FolderSummary != (FolderSummary{}) {
+		t.Fatalf("trash aggregate=%+v err=%v", activePage.FolderSummary, pageErr)
+	}
 	restore, e := s.CreateRestoreOperation(ctx, []string{trashID})
 	if e != nil {
 		t.Fatal(e)
@@ -105,6 +109,10 @@ func TestTrashRestoreResumeAfterStatsBeforeCompletionIsExact(t *testing.T) {
 	stats, _ = s.MetadataStats(ctx)
 	if stats.LogicalFiles != 1 || stats.LogicalDirs != 1 || len(done.Result) != 1 {
 		t.Fatalf("restore=%+v stats=%+v", done, stats)
+	}
+	activePage, pageErr = s.ListDirectChildren(ctx, "/", DirectChildrenOptions{Limit: 10})
+	if pageErr != nil || activePage.FolderSummary != (FolderSummary{Files: 1, Directories: 1, Bytes: 7}) {
+		t.Fatalf("restore aggregate=%+v err=%v", activePage.FolderSummary, pageErr)
 	}
 }
 
@@ -222,6 +230,122 @@ func TestTreePagedIndexReadsRequestedWindow(t *testing.T) {
 	if p.Total != 520 || len(p.Records) != 25 || p.Records[0].LogicPath != "/many/0300.txt" {
 		t.Fatalf("page=%+v first=%v", p, p.Records[0])
 	}
+	if p.FolderSummary != (FolderSummary{Files: 520, Bytes: 134940}) {
+		t.Fatalf("summary=%+v", p.FolderSummary)
+	}
+	idx, _, ok, e := s.getIndexManifest(ctx, "/many")
+	if e != nil || !ok || len(idx.Pages) < 2 {
+		t.Fatalf("index=%+v ok=%v err=%v", idx, ok, e)
+	}
+	var pageFiles, pageBytes int64
+	for _, descriptor := range idx.Pages {
+		pageFiles += descriptor.SubtreeFiles
+		pageBytes += descriptor.SubtreeBytes
+	}
+	if pageFiles != 520 || pageBytes != 134940 || idx.AggregateVersion != directoryAggregateVersion {
+		t.Fatalf("page files=%d bytes=%d index=%+v", pageFiles, pageBytes, idx)
+	}
+}
+
+func TestTreeFolderSummaryPropagatesAbsoluteValuesToRoot(t *testing.T) {
+	ctx := context.Background()
+	s := newTestTree(t)
+	for _, dir := range []string{"/a", "/a/b"} {
+		if e := s.UpsertDirectory(ctx, dir); e != nil {
+			t.Fatal(e)
+		}
+	}
+	if e := s.UpsertFile(ctx, "/a/direct.bin", "direct", 3); e != nil {
+		t.Fatal(e)
+	}
+	if e := s.UpsertFile(ctx, "/a/b/nested.bin", "nested", 10); e != nil {
+		t.Fatal(e)
+	}
+
+	root, e := s.ListDirectChildren(ctx, "/", DirectChildrenOptions{Limit: 10})
+	if e != nil {
+		t.Fatal(e)
+	}
+	if root.FolderSummary != (FolderSummary{Files: 2, Directories: 2, Bytes: 13}) {
+		t.Fatalf("root summary=%+v", root.FolderSummary)
+	}
+	if len(root.Records) != 1 || root.Records[0].FolderSummary == nil || *root.Records[0].FolderSummary != (FolderSummary{Files: 2, Directories: 1, Bytes: 13}) {
+		t.Fatalf("root records=%+v", root.Records)
+	}
+
+	if e = s.UpsertFile(ctx, "/a/b/nested.bin", "nested-v2", 20); e != nil {
+		t.Fatal(e)
+	}
+	root, e = s.ListDirectChildren(ctx, "/", DirectChildrenOptions{Limit: 10})
+	if e != nil || root.FolderSummary.Bytes != 23 || root.FolderSummary.Files != 2 {
+		t.Fatalf("overwrite summary=%+v err=%v", root.FolderSummary, e)
+	}
+	if e = s.DeletePath(ctx, "/a/direct.bin"); e != nil {
+		t.Fatal(e)
+	}
+	root, e = s.ListDirectChildren(ctx, "/", DirectChildrenOptions{Limit: 10})
+	if e != nil || root.FolderSummary != (FolderSummary{Files: 1, Directories: 2, Bytes: 20}) {
+		t.Fatalf("delete summary=%+v err=%v", root.FolderSummary, e)
+	}
+}
+
+func TestTreeFolderSummaryDoesNotChangeWithSearchOrPagination(t *testing.T) {
+	ctx := context.Background()
+	s := newTestTree(t)
+	if e := s.UpsertDirectory(ctx, "/folder"); e != nil {
+		t.Fatal(e)
+	}
+	for name, size := range map[string]int64{"alpha.txt": 4, "beta.txt": 6} {
+		if e := s.UpsertFile(ctx, "/folder/"+name, name, size); e != nil {
+			t.Fatal(e)
+		}
+	}
+	p, e := s.ListDirectChildren(ctx, "/folder", DirectChildrenOptions{Query: "alpha", Limit: 1})
+	if e != nil {
+		t.Fatal(e)
+	}
+	if p.Total != 1 || p.TotalBytes != 4 || p.FolderSummary != (FolderSummary{Files: 2, Bytes: 10}) {
+		t.Fatalf("search page=%+v", p)
+	}
+}
+
+func TestTreeFolderSummarySerializesAcrossStoreInstances(t *testing.T) {
+	ctx := context.Background()
+	root := filepath.Join(t.TempDir(), "shared-aggregates")
+	aRaw, e := NewTreeLocal(root, "")
+	if e != nil {
+		t.Fatal(e)
+	}
+	bRaw, e := NewTreeLocal(root, "")
+	if e != nil {
+		t.Fatal(e)
+	}
+	a, b := aRaw.(*TreeStore), bRaw.(*TreeStore)
+	defer a.Close()
+	defer b.Close()
+	if e = a.EnsureSchema(ctx); e != nil {
+		t.Fatal(e)
+	}
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	go func() {
+		<-start
+		errs <- a.UpsertFile(ctx, "/a.bin", "a", 1)
+	}()
+	go func() {
+		<-start
+		errs <- b.UpsertFile(ctx, "/b.bin", "b", 2)
+	}()
+	close(start)
+	for range 2 {
+		if e = <-errs; e != nil {
+			t.Fatal(e)
+		}
+	}
+	p, e := a.ListDirectChildren(ctx, "/", DirectChildrenOptions{Limit: 10})
+	if e != nil || p.FolderSummary != (FolderSummary{Files: 2, Bytes: 3}) {
+		t.Fatalf("summary=%+v err=%v", p.FolderSummary, e)
+	}
 }
 
 func newEmptyTree(t *testing.T) Store {
@@ -258,6 +382,34 @@ func TestBulkImportPreservesUnicodeIDsTrashAndStats(t *testing.T) {
 	trash, e := s.ListTrash(ctx)
 	if e != nil || len(trash) != 1 || trash[0].ID != 42 {
 		t.Fatalf("trash=%+v err=%v", trash, e)
+	}
+}
+
+func TestBulkImportBuildsAggregatesDeepestFirst(t *testing.T) {
+	ctx := context.Background()
+	s := newEmptyTree(t)
+	now := time.Now().UTC()
+	records := []FileRecord{
+		{ID: 1, LogicPath: "/a", IsDirectory: true, UpdatedAt: now},
+		{ID: 2, LogicPath: "/a/empty", IsDirectory: true, UpdatedAt: now},
+		{ID: 3, LogicPath: "/a/nested", IsDirectory: true, UpdatedAt: now},
+		{ID: 4, LogicPath: "/a/nested/file.bin", PhysicalHash: "h", Size: 42, UpdatedAt: now},
+	}
+	if _, e := BulkImportTree(ctx, s, TreeImportSnapshot{Records: records, NextFileID: 5}); e != nil {
+		t.Fatal(e)
+	}
+	p, e := s.ListDirectChildren(ctx, "/", DirectChildrenOptions{Limit: 10})
+	if e != nil || p.FolderSummary != (FolderSummary{Files: 1, Directories: 3, Bytes: 42}) {
+		t.Fatalf("root summary=%+v err=%v", p.FolderSummary, e)
+	}
+	p, e = s.ListDirectChildren(ctx, "/a", DirectChildrenOptions{Limit: 10})
+	if e != nil || p.FolderSummary != (FolderSummary{Files: 1, Directories: 2, Bytes: 42}) {
+		t.Fatalf("/a summary=%+v err=%v", p.FolderSummary, e)
+	}
+	for _, r := range p.Records {
+		if r.LogicPath == "/a/empty" && (r.FolderSummary == nil || *r.FolderSummary != (FolderSummary{})) {
+			t.Fatalf("empty summary=%+v", r.FolderSummary)
+		}
 	}
 }
 
@@ -371,6 +523,10 @@ func TestMoveOperationResumesWithoutInflatingTotal(t *testing.T) {
 	if _, ok, e = s.Find(ctx, "/dest/src/19.txt"); e != nil || !ok {
 		t.Fatalf("moved=%v err=%v", ok, e)
 	}
+	page, e := s.ListDirectChildren(ctx, "/", DirectChildrenOptions{Limit: 10})
+	if e != nil || page.FolderSummary != (FolderSummary{Files: 20, Directories: 2, Bytes: 20}) {
+		t.Fatalf("resume aggregate=%+v err=%v", page.FolderSummary, e)
+	}
 }
 
 func TestMoveOperationSupportsMultipleRootsWithSummaryOnly(t *testing.T) {
@@ -391,5 +547,107 @@ func TestMoveOperationSupportsMultipleRootsWithSummaryOnly(t *testing.T) {
 	}
 	if done.Total != 2 || len(done.Result) != 2 {
 		t.Fatalf("operation=%+v", done)
+	}
+	dest, e := s.ListDirectChildren(ctx, "/dest", DirectChildrenOptions{Limit: 10})
+	if e != nil || dest.FolderSummary != (FolderSummary{Directories: 2}) {
+		t.Fatalf("empty directory move aggregate=%+v err=%v", dest.FolderSummary, e)
+	}
+	root, e := s.ListDirectChildren(ctx, "/", DirectChildrenOptions{Limit: 10})
+	if e != nil || root.FolderSummary != (FolderSummary{Directories: 3}) {
+		t.Fatalf("root empty directory aggregate=%+v err=%v", root.FolderSummary, e)
+	}
+}
+
+func TestMoveTrashRestoreOperationsKeepFolderAggregatesExact(t *testing.T) {
+	ctx := context.Background()
+	s := newTestTree(t)
+	for _, dir := range []string{"/src", "/src/child", "/dest"} {
+		if e := s.UpsertDirectory(ctx, dir); e != nil {
+			t.Fatal(e)
+		}
+	}
+	if e := s.UpsertFile(ctx, "/src/child/data.bin", "data", 10); e != nil {
+		t.Fatal(e)
+	}
+	if e := s.UpsertFile(ctx, "/dest/keep.bin", "keep", 2); e != nil {
+		t.Fatal(e)
+	}
+	move, e := s.CreateMoveOperation(ctx, []string{"/src"}, "/dest")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = s.RunOperation(ctx, move.ID); e != nil {
+		t.Fatal(e)
+	}
+	dest, e := s.ListDirectChildren(ctx, "/dest", DirectChildrenOptions{Limit: 10})
+	if e != nil || dest.FolderSummary != (FolderSummary{Files: 2, Directories: 2, Bytes: 12}) {
+		t.Fatalf("move aggregate=%+v err=%v", dest.FolderSummary, e)
+	}
+	root, e := s.ListDirectChildren(ctx, "/", DirectChildrenOptions{Limit: 10})
+	if e != nil || root.FolderSummary != (FolderSummary{Files: 2, Directories: 3, Bytes: 12}) {
+		t.Fatalf("root after move=%+v err=%v", root.FolderSummary, e)
+	}
+
+	trashID := "aggregate-trash"
+	trash, e := s.CreateTrashOperation(ctx, []TrashPath{{Path: "/dest/src", TrashID: trashID}})
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = s.RunOperation(ctx, trash.ID); e != nil {
+		t.Fatal(e)
+	}
+	manifest, ok, e := s.GetTrashManifest(ctx, trashID)
+	if e != nil || !ok || manifest.Root.FolderSummary == nil || *manifest.Root.FolderSummary != (FolderSummary{Files: 1, Directories: 1, Bytes: 10}) {
+		t.Fatalf("trash manifest=%+v ok=%v err=%v", manifest, ok, e)
+	}
+	root, e = s.ListDirectChildren(ctx, "/", DirectChildrenOptions{Limit: 10})
+	if e != nil || root.FolderSummary != (FolderSummary{Files: 1, Directories: 1, Bytes: 2}) {
+		t.Fatalf("root after trash=%+v err=%v", root.FolderSummary, e)
+	}
+
+	restore, e := s.CreateRestoreOperation(ctx, []string{trashID})
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = s.RunOperation(ctx, restore.ID); e != nil {
+		t.Fatal(e)
+	}
+	root, e = s.ListDirectChildren(ctx, "/", DirectChildrenOptions{Limit: 10})
+	if e != nil || root.FolderSummary != (FolderSummary{Files: 2, Directories: 3, Bytes: 12}) {
+		t.Fatalf("root after restore=%+v err=%v", root.FolderSummary, e)
+	}
+}
+
+func TestHardDeleteTrashDoesNotChangeActiveFolderAggregate(t *testing.T) {
+	ctx := context.Background()
+	s := newTestTree(t)
+	for _, dir := range []string{"/keep", "/gone"} {
+		if e := s.UpsertDirectory(ctx, dir); e != nil {
+			t.Fatal(e)
+		}
+	}
+	if e := s.UpsertFile(ctx, "/keep/a.bin", "a", 5); e != nil {
+		t.Fatal(e)
+	}
+	if e := s.UpsertFile(ctx, "/gone/b.bin", "b", 10); e != nil {
+		t.Fatal(e)
+	}
+	trashID := "hard-delete-aggregate"
+	if _, e := s.TrashPaths(ctx, []TrashPath{{Path: "/gone", TrashID: trashID}}); e != nil {
+		t.Fatal(e)
+	}
+	before, e := s.ListDirectChildren(ctx, "/", DirectChildrenOptions{Limit: 10})
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = s.ClaimTrash(ctx, []string{trashID}); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = s.DeleteTrash(ctx, []string{trashID}); e != nil {
+		t.Fatal(e)
+	}
+	after, e := s.ListDirectChildren(ctx, "/", DirectChildrenOptions{Limit: 10})
+	if e != nil || after.FolderSummary != before.FolderSummary || after.FolderSummary != (FolderSummary{Files: 1, Directories: 1, Bytes: 5}) {
+		t.Fatalf("before=%+v after=%+v err=%v", before.FolderSummary, after.FolderSummary, e)
 	}
 }

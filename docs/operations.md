@@ -24,8 +24,8 @@ Restore the database before bringing the file server online, then restore the
 matching object volume. Adjust the volume name if you use a custom Compose
 project name.
 
-For `DB_DRIVER=json`, the metadata tree lives under the reserved `_vfs-link/`
-prefix of `METADATA_STORAGE_DRIVER`. Back up the metadata bucket consistently
+For `DB_DRIVER=json`, the metadata tree lives under the versioned prefix named
+by `METADATA_PREFIX` (for example `_vfs-link/` or `_vfs-link-v2/`). Back up the metadata bucket consistently
 with file objects. On versioned GCS buckets, retain noncurrent metadata
 generations long enough to recover from an accidental logical mutation. The
 old monolithic `metadata.json` is only an offline backup and is not a runtime
@@ -70,7 +70,11 @@ docker compose exec file-server ./file-server rebuild-mapping --yes
 # Compare database mappings with objects without changing data.
 docker compose exec file-server ./physical-health --fail-on-unhealthy
 
-# One-time legacy metadata.json to tree migration; dry-run first.
+# Also compare active records, stats.json, and the root folder summary.
+docker compose exec file-server ./physical-health \
+  --check-metadata-aggregates --fail-on-unhealthy
+
+# Distributed tree prefix migration (or historical metadata.json import).
 docker compose exec file-server ./metadata-migrate --help
 ```
 

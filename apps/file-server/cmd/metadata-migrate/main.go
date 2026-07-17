@@ -21,6 +21,10 @@ type options struct {
 	sourceBucket     string
 	sourceObject     string
 	sourceGeneration int64
+	sourceTreeDriver string
+	sourceTreeRoot   string
+	sourceTreeBucket string
+	sourceTreePrefix string
 	targetDriver     string
 	targetRoot       string
 	targetBucket     string
@@ -45,18 +49,28 @@ func run(args []string, output io.Writer) error {
 	flags.StringVar(&o.sourceBucket, "source-gcs-bucket", "", "legacy metadata GCS bucket")
 	flags.StringVar(&o.sourceObject, "source-gcs-object", "_vfs-link/metadata.json", "legacy metadata GCS object")
 	flags.Int64Var(&o.sourceGeneration, "source-gcs-generation", 0, "specific legacy object generation; 0 pins the latest generation")
+	flags.StringVar(&o.sourceTreeDriver, "source-tree-driver", "", "distributed tree source: local or gcs")
+	flags.StringVar(&o.sourceTreeRoot, "source-tree-local-root", "./data/metadata", "local distributed tree root")
+	flags.StringVar(&o.sourceTreeBucket, "source-tree-gcs-bucket", "", "distributed tree GCS bucket")
+	flags.StringVar(&o.sourceTreePrefix, "source-tree-prefix", "_vfs-link", "existing distributed tree prefix; must be _vfs-link")
 	flags.StringVar(&o.targetDriver, "target-driver", "local", "tree metadata target: local or gcs")
 	flags.StringVar(&o.targetRoot, "target-local-root", "./data/metadata", "local tree metadata root")
 	flags.StringVar(&o.targetBucket, "target-gcs-bucket", "", "GCS tree metadata bucket")
-	flags.StringVar(&o.targetPrefix, "target-prefix", "_vfs-link", "tree metadata prefix")
+	flags.StringVar(&o.targetPrefix, "target-prefix", "_vfs-link-v2", "new tree metadata prefix; must be _vfs-link-v2")
 	flags.BoolVar(&o.dryRun, "dry-run", false, "decode and validate without writing")
 	flags.BoolVar(&o.assumeYes, "yes", false, "confirm writing the tree target")
 	flags.DurationVar(&o.timeout, "timeout", 24*time.Hour, "migration timeout")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if (o.sourceFile == "") == (o.sourceBucket == "") {
-		return errors.New("set exactly one of --source-file or --source-gcs-bucket")
+	sourceModes := 0
+	for _, selected := range []bool{o.sourceFile != "", o.sourceBucket != "", o.sourceTreeDriver != ""} {
+		if selected {
+			sourceModes++
+		}
+	}
+	if sourceModes != 1 {
+		return errors.New("set exactly one source: --source-file, --source-gcs-bucket, or --source-tree-driver")
 	}
 	if !o.dryRun && !o.assumeYes {
 		return errors.New("pass --yes after reviewing the target, or use --dry-run")
@@ -67,31 +81,16 @@ func run(args []string, output io.Writer) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), o.timeout)
 	defer cancel()
-	reader, generation, closeSource, err := openLegacySource(ctx, o)
+	importSnapshot, err := loadImportSnapshot(ctx, o, output)
 	if err != nil {
 		return err
 	}
-	defer closeSource()
-	digest := sha256.New()
-	snapshot, err := decodeLegacy(io.TeeReader(reader, digest))
-	if err != nil {
-		return err
-	}
-	summary, err := validateLegacy(snapshot)
-	if err != nil {
-		return fmt.Errorf("validate source: %w", err)
-	}
-	sourceSHA256 := hex.EncodeToString(digest.Sum(nil))
-	fmt.Fprintf(output, "source generation=%d sha256=%s files=%d directories=%d bytes=%d ids=%d..%d nextFileId=%d shares=%d locks=%d uploads=%d\n",
-		generation, sourceSHA256, summary.Files, summary.Directories, summary.Bytes, summary.MinID, summary.MaxID, snapshot.NextFileID,
-		summary.Shares, summary.DAVLocks, summary.Uploads)
-	importSnapshot, activeLocks, activeUploads := makeImportSnapshot(snapshot, sourceSHA256, generation, time.Now())
 	preflight, err := db.ValidateTreeImport(o.targetPrefix, importSnapshot)
 	if err != nil {
 		return fmt.Errorf("tree import preflight: %w", err)
 	}
 	fmt.Fprintf(output, "tree preflight: %+v; entities shares=%d activeLocks=%d activeUploads=%d\n",
-		preflight, len(importSnapshot.Shares), activeLocks, activeUploads)
+		preflight, len(importSnapshot.Shares), len(importSnapshot.DAVLocks), len(importSnapshot.Uploads))
 	if o.dryRun {
 		fmt.Fprintln(output, "dry-run complete; target was not modified")
 		return nil
@@ -117,8 +116,78 @@ func run(args []string, output io.Writer) error {
 		return fmt.Errorf("bulk import tree: %w", err)
 	}
 	fmt.Fprintf(output, "target validation: %+v\n", validation)
-	fmt.Fprintln(output, "migration complete; keep the legacy metadata.json as an offline backup")
+	aggregates, err := validateRootAggregates(ctx, target)
+	if err != nil {
+		return fmt.Errorf("validate target aggregates: %w", err)
+	}
+	fmt.Fprintf(output, "target root aggregates: files=%d directories=%d bytes=%d (matches stats.json)\n",
+		aggregates.Files, aggregates.Directories, aggregates.Bytes)
+	fmt.Fprintln(output, "migration complete; keep the source metadata prefix and legacy metadata.json only as offline rollback backups")
 	return nil
+}
+
+func loadImportSnapshot(ctx context.Context, o options, output io.Writer) (db.TreeImportSnapshot, error) {
+	if o.sourceTreeDriver != "" {
+		source, err := openTreeSource(ctx, o)
+		if err != nil {
+			return db.TreeImportSnapshot{}, err
+		}
+		defer source.Close()
+		snapshot, err := db.ExportTreeSnapshot(ctx, source)
+		if err != nil {
+			return db.TreeImportSnapshot{}, fmt.Errorf("export distributed tree source: %w", err)
+		}
+		printImportSnapshotSummary(output, "distributed-tree", snapshot)
+		return snapshot, nil
+	}
+
+	reader, generation, closeSource, err := openLegacySource(ctx, o)
+	if err != nil {
+		return db.TreeImportSnapshot{}, err
+	}
+	defer closeSource()
+	digest := sha256.New()
+	legacy, err := decodeLegacy(io.TeeReader(reader, digest))
+	if err != nil {
+		return db.TreeImportSnapshot{}, err
+	}
+	summary, err := validateLegacy(legacy)
+	if err != nil {
+		return db.TreeImportSnapshot{}, fmt.Errorf("validate source: %w", err)
+	}
+	sourceSHA256 := hex.EncodeToString(digest.Sum(nil))
+	fmt.Fprintf(output, "source legacy generation=%d sha256=%s files=%d directories=%d bytes=%d ids=%d..%d nextFileId=%d shares=%d locks=%d uploads=%d\n",
+		generation, sourceSHA256, summary.Files, summary.Directories, summary.Bytes, summary.MinID, summary.MaxID, legacy.NextFileID,
+		summary.Shares, summary.DAVLocks, summary.Uploads)
+	snapshot, _, _ := makeImportSnapshot(legacy, sourceSHA256, generation, time.Now())
+	return snapshot, nil
+}
+
+func openTreeSource(ctx context.Context, o options) (db.Store, error) {
+	if o.sourceTreePrefix != "_vfs-link" {
+		return nil, errors.New("--source-tree-prefix must be the existing _vfs-link prefix")
+	}
+	switch strings.ToLower(strings.TrimSpace(o.sourceTreeDriver)) {
+	case "local":
+		if strings.TrimSpace(o.sourceTreeRoot) == "" {
+			return nil, errors.New("--source-tree-local-root is required when --source-tree-driver=local")
+		}
+		return db.NewTreeLocal(o.sourceTreeRoot, o.sourceTreePrefix)
+	case "gcs":
+		if strings.TrimSpace(o.sourceTreeBucket) == "" {
+			return nil, errors.New("--source-tree-gcs-bucket is required when --source-tree-driver=gcs")
+		}
+		return db.NewTreeGCS(ctx, o.sourceTreeBucket, o.sourceTreePrefix)
+	default:
+		return nil, fmt.Errorf("unsupported source tree driver %q", o.sourceTreeDriver)
+	}
+}
+
+func printImportSnapshotSummary(output io.Writer, source string, snapshot db.TreeImportSnapshot) {
+	validation, _ := db.ValidateTreeImport("_vfs-link-v2", snapshot)
+	fmt.Fprintf(output, "source %s sha256=%s active=%d trash=%d files=%d directories=%d bytes=%d nextFileId=%d shares=%d locks=%d uploads=%d\n",
+		source, snapshot.SourceSHA256, validation.Active, validation.Trash, validation.Files, validation.Directories,
+		validation.Bytes, snapshot.NextFileID, len(snapshot.Shares), len(snapshot.DAVLocks), len(snapshot.Uploads))
 }
 
 func openLegacySource(ctx context.Context, o options) (io.Reader, int64, func(), error) {
@@ -166,8 +235,8 @@ func openTreeTarget(ctx context.Context, o options) (db.Store, error) {
 }
 
 func validateTargetOptions(o options) error {
-	if o.targetPrefix != "_vfs-link" {
-		return errors.New("--target-prefix must be the reserved _vfs-link prefix")
+	if o.targetPrefix != "_vfs-link-v2" {
+		return errors.New("--target-prefix must be the new reserved _vfs-link-v2 prefix")
 	}
 	switch strings.ToLower(strings.TrimSpace(o.targetDriver)) {
 	case "local":
@@ -182,6 +251,26 @@ func validateTargetOptions(o options) error {
 		return fmt.Errorf("unsupported target driver %q", o.targetDriver)
 	}
 	return nil
+}
+
+func validateRootAggregates(ctx context.Context, store db.Store) (db.FolderSummary, error) {
+	provider, ok := store.(db.MetadataStatsProvider)
+	if !ok {
+		return db.FolderSummary{}, fmt.Errorf("metadata store does not expose aggregate stats")
+	}
+	stats, err := provider.MetadataStats(ctx)
+	if err != nil {
+		return db.FolderSummary{}, fmt.Errorf("read metadata stats: %w", err)
+	}
+	page, err := store.ListDirectChildren(ctx, "/", db.DirectChildrenOptions{Limit: 1})
+	if err != nil {
+		return db.FolderSummary{}, fmt.Errorf("read root folder summary: %w", err)
+	}
+	want := db.FolderSummary{Files: stats.LogicalFiles, Directories: stats.LogicalDirs, Bytes: stats.LogicalBytes}
+	if page.FolderSummary != want {
+		return page.FolderSummary, fmt.Errorf("root folder summary mismatch: got %+v want %+v", page.FolderSummary, want)
+	}
+	return page.FolderSummary, nil
 }
 
 func makeImportSnapshot(snapshot legacySnapshot, sha256 string, generation int64, now time.Time) (db.TreeImportSnapshot, int, int) {

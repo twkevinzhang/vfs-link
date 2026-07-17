@@ -70,6 +70,15 @@ type MetadataStatsProvider interface {
 	MetadataStats(context.Context) (MetadataStats, error)
 }
 
+// FolderSummary describes every active descendant of a directory. The
+// directory itself is intentionally excluded, while nested directories are
+// included in Directories.
+type FolderSummary struct {
+	Files       int64 `json:"files"`
+	Directories int64 `json:"directories"`
+	Bytes       int64 `json:"bytes"`
+}
+
 type TrashPath struct {
 	Path    string `json:"path"`
 	TrashID string `json:"trashId"`

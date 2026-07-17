@@ -1,10 +1,17 @@
 export type EntryKind = 'directory' | 'file';
 
+export type FolderSummary = {
+  files: number;
+  directories: number;
+  bytes: number;
+};
+
 export type FileEntry = {
   path: string;
   name: string;
   kind: EntryKind;
   size: number;
+  folderSummary?: FolderSummary;
   physicalHash?: string;
   updatedAt: string;
   trashId?: string;
@@ -46,6 +53,7 @@ export type FilesResponse = {
   breadcrumbs: FileEntry[];
   entries: FileEntry[];
   pagination: Pagination;
+  folderSummary: FolderSummary;
   visibleBytes: number;
   stats?: Stats;
   generatedAt: string;

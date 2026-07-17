@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/db"
 )
 
 func TestResolveStorageConfig(t *testing.T) {
@@ -52,6 +54,34 @@ func TestOpenMetadataStoreJSONLocal(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "_vfs-link", "stats.json")); err != nil {
 		t.Fatalf("tree metadata was not created: %v", err)
+	}
+}
+
+func TestOpenMetadataStoreTreeV2AndValidateAggregates(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store, err := openMetadataStore(ctx, "json", "", "local", root, "", "_vfs-link-v2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	records := []db.FileRecord{
+		{ID: 1, LogicPath: "/docs", IsDirectory: true},
+		{ID: 2, LogicPath: "/docs/a.txt", PhysicalHash: "same", Size: 4},
+		{ID: 3, LogicPath: "/docs/b.txt", PhysicalHash: "same", Size: 4},
+	}
+	if _, err := db.BulkImportTree(ctx, store, db.TreeImportSnapshot{Records: records, NextFileID: 4}); err != nil {
+		t.Fatal(err)
+	}
+	summary, err := validateMetadataAggregates(ctx, store, records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary != (db.FolderSummary{Files: 2, Directories: 1, Bytes: 8}) {
+		t.Fatalf("summary = %+v", summary)
 	}
 }
 

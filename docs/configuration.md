@@ -12,7 +12,7 @@ Copy `.env.example` to `.env`. The `.env` file is deliberately ignored by Git.
 | `METADATA_STORAGE_DRIVER` | JSON backend | Metadata backend: `local` (default) or `gcs`; independent from file-byte storage. |
 | `METADATA_LOCAL_ROOT` | Local JSON metadata | Persistent metadata root; default `./data/metadata`. |
 | `METADATA_GCS_BUCKET` | GCS JSON metadata | Dedicated Standard-class metadata bucket. |
-| `METADATA_PREFIX` | JSON backend | Reserved metadata prefix; currently must be `_vfs-link`. |
+| `METADATA_PREFIX` | JSON backend | Reserved metadata prefix: `_vfs-link` or the aggregate-v2 prefix `_vfs-link-v2`. |
 | `FTP_ENABLED` | No | Enables transitional FTP service; default `true`. Set `false` for HTTP-only/serverless operation. |
 | `FTP_USER`, `FTP_PASS` | FTP enabled | FTP login credentials. Use a unique, strong password. |
 | `FTP_PORT` | No | FTP control port; default `21`. |

@@ -22,7 +22,7 @@ DATABASE_URL=postgres://...
 STORAGE_DRIVER=local
 ```
 
-或使用與 active storage 相同 backend 的 JSON DB：
+或使用獨立 backend 的 JSON metadata tree：
 
 ```dotenv
 DB_DRIVER=json
@@ -65,7 +65,7 @@ GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
 | `-metadata-driver` | `METADATA_STORAGE_DRIVER`，未設定時為 `local` | JSON tree storage driver：`local` 或 `gcs` |
 | `-metadata-local-root` | `METADATA_LOCAL_ROOT`，未設定時為 `./data/metadata` | 本機 JSON tree root |
 | `-metadata-gcs-bucket` | `METADATA_GCS_BUCKET` | JSON tree 專用 GCS bucket |
-| `-metadata-prefix` | `METADATA_PREFIX`，未設定時為 `_vfs-link` | JSON tree 保留 prefix |
+| `-metadata-prefix` | `METADATA_PREFIX`，未設定時為 `_vfs-link` | JSON tree prefix：`_vfs-link` 或 `_vfs-link-v2` |
 | `-storage-driver` | `STORAGE_DRIVER`，未設定時為 `local` | active storage driver：`local` 或 `gcs` |
 | `-local-root` | `LOCAL_STORAGE_ROOT`，未設定時為 `./data/objects` | local object root |
 | `-gcs-bucket` | `GCS_BUCKET` | active GCS bucket 名稱 |
@@ -73,6 +73,7 @@ GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
 | `-prefix` | `/` | 僅檢查此 logical path 與其子路徑 |
 | `-csv` | 空 | 將逐檔結果寫入指定 CSV |
 | `-fail-on-unhealthy` | `false` | 有 unhealthy 檔案時以 exit code 2 結束 |
+| `-check-metadata-aggregates` | `false` | 比對 active records、`stats.json` 與 root folder summary；不一致時失敗 |
 | `-workers` | `8` | GCS metadata 檢查的並行數；小於 1 時改為 1 |
 | `-timeout` | `30m` | 整次掃描的 timeout |
 
@@ -110,6 +111,19 @@ GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
   -storage-driver local \
   -local-root /data/objects \
   -fail-on-unhealthy
+```
+
+切換到 v2 prefix 前，驗證 metadata aggregates：
+
+```sh
+./physical-health \
+  -db-driver json \
+  -metadata-driver gcs \
+  -metadata-gcs-bucket PROJECT_ID-vfs-link-metadata \
+  -metadata-prefix _vfs-link-v2 \
+  -storage-driver gcs \
+  -gcs-bucket PROJECT_ID-archive \
+  -check-metadata-aggregates
 ```
 
 檢查 GCS active store 的 `/projects/demo` 範圍並輸出 CSV：

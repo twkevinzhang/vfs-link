@@ -34,6 +34,9 @@ type FileRecord struct {
 	TrashID       string     `json:"trashId,omitempty"`
 	TrashRoot     bool       `json:"trashRoot,omitempty"`
 	TrashDeleting bool       `json:"trashDeleting,omitempty"`
+	// FolderSummary is populated for directory records returned by an indexed
+	// listing. It is not part of the directory's canonical node marker.
+	FolderSummary *FolderSummary `json:"folderSummary,omitempty"`
 }
 
 type DirectChildrenOptions struct {
@@ -44,9 +47,10 @@ type DirectChildrenOptions struct {
 }
 
 type DirectChildrenPage struct {
-	Records    []FileRecord
-	Total      int
-	TotalBytes int64
+	Records       []FileRecord
+	Total         int
+	TotalBytes    int64
+	FolderSummary FolderSummary
 }
 
 type ShareRecord struct {
@@ -122,6 +126,7 @@ ALTER TABLE "File" ADD COLUMN IF NOT EXISTS "trashDeleting" BOOLEAN NOT NULL DEF
 ALTER TABLE "File" DROP CONSTRAINT IF EXISTS "File_logicPath_key";
 CREATE UNIQUE INDEX IF NOT EXISTS "File_active_logicPath_uidx" ON "File" ("logicPath") WHERE "trashedAt" IS NULL;
 CREATE INDEX IF NOT EXISTS "File_logicPath_idx" ON "File" ("logicPath");
+CREATE INDEX IF NOT EXISTS "File_active_logicPath_pattern_idx" ON "File" ("logicPath" text_pattern_ops) WHERE "trashedAt" IS NULL;
 CREATE INDEX IF NOT EXISTS "File_trashId_idx" ON "File" ("trashId") WHERE "trashedAt" IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS "Share" (
@@ -522,6 +527,11 @@ WITH direct AS (
 `
 
 	var page DirectChildrenPage
+	var err error
+	page.FolderSummary, err = s.postgresFolderSummary(ctx, dirPath)
+	if err != nil {
+		return DirectChildrenPage{}, err
+	}
 	countSQL := fmt.Sprintf(`%s
 SELECT count(*), coalesce(sum(CASE WHEN "isDirectory" THEN 0 ELSE size END), 0)::bigint
 FROM direct
@@ -572,7 +582,94 @@ ORDER BY "isDirectory" DESC, suffix
 	if err := rows.Err(); err != nil {
 		return DirectChildrenPage{}, err
 	}
+	rows.Close()
+	if err := s.hydratePostgresDirectorySummaries(ctx, page.Records); err != nil {
+		return DirectChildrenPage{}, err
+	}
 	return page, nil
+}
+
+func (s *PostgresStore) postgresFolderSummary(ctx context.Context, dirPath string) (FolderSummary, error) {
+	var summary FolderSummary
+	err := s.pool.QueryRow(ctx, `
+SELECT
+  count(*) FILTER (WHERE NOT "isDirectory")::bigint,
+  count(*) FILTER (WHERE "isDirectory")::bigint,
+  coalesce(sum(size) FILTER (WHERE NOT "isDirectory"), 0)::bigint
+FROM "File"
+WHERE "logicPath" LIKE $1 ESCAPE E'\\'
+  AND "trashedAt" IS NULL
+`, postgresDescendantPattern(dirPath)).Scan(&summary.Files, &summary.Directories, &summary.Bytes)
+	if err != nil {
+		return FolderSummary{}, err
+	}
+	return summary, nil
+}
+
+func (s *PostgresStore) hydratePostgresDirectorySummaries(ctx context.Context, records []FileRecord) error {
+	paths := make([]string, 0, len(records))
+	patterns := make([]string, 0, len(records))
+	indices := make(map[string]int, len(records))
+	for i := range records {
+		if !records[i].IsDirectory {
+			continue
+		}
+		paths = append(paths, records[i].LogicPath)
+		patterns = append(patterns, postgresDescendantPattern(records[i].LogicPath))
+		indices[records[i].LogicPath] = i
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+
+	rows, err := s.pool.Query(ctx, `
+WITH directories AS (
+  SELECT *
+  FROM unnest($1::text[], $2::text[]) AS directory(path, pattern)
+)
+SELECT directory.path,
+  summary.files,
+  summary.directories,
+  summary.bytes
+FROM directories AS directory
+CROSS JOIN LATERAL (
+  SELECT
+    count(*) FILTER (WHERE NOT child."isDirectory")::bigint AS files,
+    count(*) FILTER (WHERE child."isDirectory")::bigint AS directories,
+    coalesce(sum(child.size) FILTER (WHERE NOT child."isDirectory"), 0)::bigint AS bytes
+  FROM "File" AS child
+  WHERE child."logicPath" LIKE directory.pattern ESCAPE E'\\'
+    AND child."trashedAt" IS NULL
+) AS summary
+`, paths, patterns)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var path string
+		var summary FolderSummary
+		if err := rows.Scan(&path, &summary.Files, &summary.Directories, &summary.Bytes); err != nil {
+			return err
+		}
+		index, found := indices[path]
+		if !found {
+			return fmt.Errorf("unexpected directory summary for %q", path)
+		}
+		records[index].FolderSummary = &summary
+	}
+	return rows.Err()
+}
+
+func postgresDescendantPattern(dirPath string) string {
+	prefix := withTrailingSlash(dirPath)
+	escaped := strings.NewReplacer(
+		`\`, `\\`,
+		`%`, `\%`,
+		`_`, `\_`,
+	).Replace(prefix)
+	return escaped + "%"
 }
 
 func (s *PostgresStore) UpsertFile(ctx context.Context, logicPath, physicalHash string, size int64) error {

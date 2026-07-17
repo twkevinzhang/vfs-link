@@ -85,6 +85,15 @@ func TestLoadDatabaseDriverRequirements(t *testing.T) {
 	if cfg.DatabaseDriver != "json" || cfg.MetadataStorageDriver != "local" || cfg.MetadataPrefix != "_vfs-link" {
 		t.Fatalf("tree metadata config = %#v", cfg)
 	}
+	cfg, err = Load([]string{
+		"DB_DRIVER=json",
+		"METADATA_STORAGE_DRIVER=local",
+		"METADATA_LOCAL_ROOT=" + t.TempDir(),
+		"METADATA_PREFIX=_vfs-link-v2",
+	})
+	if err != nil || cfg.MetadataPrefix != "_vfs-link-v2" {
+		t.Fatalf("v2 metadata prefix config = %#v, error = %v", cfg, err)
+	}
 
 	_, err = Load([]string{"DB_DRIVER=postgres", "DATABASE_URL="})
 	if err == nil || !strings.Contains(err.Error(), "DATABASE_URL is required when DB_DRIVER=postgres") {
@@ -116,7 +125,7 @@ func TestLoadDatabaseDriverRequirements(t *testing.T) {
 	}
 
 	_, err = Load([]string{"DB_DRIVER=json", "METADATA_PREFIX=metadata"})
-	if err == nil || !strings.Contains(err.Error(), "reserved _vfs-link prefix") {
+	if err == nil || !strings.Contains(err.Error(), "reserved prefixes") {
 		t.Fatalf("metadata prefix validation error = %v", err)
 	}
 
