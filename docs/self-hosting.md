@@ -43,7 +43,9 @@ permissions required by the chosen mode, store it outside this repository, and
 set its absolute host path in `GOOGLE_APPLICATION_CREDENTIALS_HOST`.
 
 Set `GCS_BUCKET` when using GCS as primary storage. Set `SHARE_GCS_BUCKET` for
-sharing. Then start with the credential overlay:
+sharing. With `DB_DRIVER=json`, set `METADATA_STORAGE_DRIVER=gcs` and
+`METADATA_GCS_BUCKET` to a separate Standard-class bucket. Then start with the
+credential overlay:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.gcs.yml up -d --build

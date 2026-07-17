@@ -24,6 +24,18 @@ export type TrashResponse = {
 export type FileMutationResponse = { entries: FileEntry[] };
 export type DeleteResponse = { deleted: number };
 
+export type FileOperationResponse = {
+  operationId: string;
+  type: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  progress: number;
+  total: number;
+  error?: string;
+  entries?: FileEntry[];
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type TreeNode = FileEntry & {
   children?: TreeNode[];
   hasChildren?: boolean;

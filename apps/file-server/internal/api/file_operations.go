@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	pathpkg "path"
+	"strings"
 	"time"
 
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/db"
@@ -23,6 +24,18 @@ type entriesResponse struct {
 }
 type deletedResponse struct {
 	Deleted int64 `json:"deleted"`
+}
+type operationResponse struct {
+	OperationID string  `json:"operationId"`
+	Type        string  `json:"type"`
+	Status      string  `json:"status"`
+	Progress    int     `json:"progress"`
+	Total       int     `json:"total"`
+	Deleted     int64   `json:"deleted,omitempty"`
+	Error       string  `json:"error,omitempty"`
+	Entries     []Entry `json:"entries,omitempty"`
+	CreatedAt   string  `json:"createdAt"`
+	UpdatedAt   string  `json:"updatedAt"`
 }
 
 func decodeBody(r *http.Request, target any) error {
@@ -58,12 +71,53 @@ func (s *Server) handleMoveFiles(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	records, err := s.files.Move(r.Context(), request.Paths, request.Destination)
+	result, err := s.files.Move(r.Context(), request.Paths, request.Destination)
 	if err != nil {
 		writeFileOperationError(w, err)
 		return
 	}
-	writeJSON(w, entriesResponse{Entries: recordsToEntries(records), GeneratedAt: time.Now().Format(time.RFC3339)})
+	if result.Operation != nil {
+		writeAcceptedOperation(w, *result.Operation)
+		return
+	}
+	writeJSON(w, entriesResponse{Entries: recordsToEntries(result.Records), GeneratedAt: time.Now().Format(time.RFC3339)})
+}
+
+func (s *Server) handleOperation(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/operations/"), "/")
+	if id == "" || strings.Contains(id, "/") {
+		writeError(w, http.StatusNotFound, "operation not found")
+		return
+	}
+	operation, found, err := s.files.Operation(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "operation not found")
+		return
+	}
+	writeJSON(w, operationToResponse(operation))
+}
+
+func operationToResponse(operation db.OperationRecord) operationResponse {
+	return operationResponse{
+		OperationID: operation.ID,
+		Type:        operation.Type,
+		Status:      operation.Status,
+		Progress:    operation.Progress,
+		Total:       operation.Total,
+		Deleted:     operation.Deleted,
+		Error:       operation.Error,
+		Entries:     recordsToEntries(operation.Result),
+		CreatedAt:   operation.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:   operation.UpdatedAt.Format(time.RFC3339),
+	}
 }
 func (s *Server) handleTrashFiles(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -75,12 +129,16 @@ func (s *Server) handleTrashFiles(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	records, err := s.files.Trash(r.Context(), request.Paths)
+	result, err := s.files.Trash(r.Context(), request.Paths)
 	if err != nil {
 		writeFileOperationError(w, err)
 		return
 	}
-	writeJSON(w, entriesResponse{Entries: recordsToEntries(records), GeneratedAt: time.Now().Format(time.RFC3339)})
+	if result.Operation != nil {
+		writeAcceptedOperation(w, *result.Operation)
+		return
+	}
+	writeJSON(w, entriesResponse{Entries: recordsToEntries(result.Records), GeneratedAt: time.Now().Format(time.RFC3339)})
 }
 func (s *Server) handleTrash(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -104,12 +162,16 @@ func (s *Server) handleRestoreTrash(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	records, err := s.files.Restore(r.Context(), request.TrashIDs)
+	result, err := s.files.Restore(r.Context(), request.TrashIDs)
 	if err != nil {
 		writeFileOperationError(w, err)
 		return
 	}
-	writeJSON(w, entriesResponse{Entries: recordsToEntries(records), GeneratedAt: time.Now().Format(time.RFC3339)})
+	if result.Operation != nil {
+		writeAcceptedOperation(w, *result.Operation)
+		return
+	}
+	writeJSON(w, entriesResponse{Entries: recordsToEntries(result.Records), GeneratedAt: time.Now().Format(time.RFC3339)})
 }
 func (s *Server) handleDeleteTrash(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -125,22 +187,37 @@ func (s *Server) handleDeleteTrash(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "at least one trash id is required")
 		return
 	}
-	deleted, err := s.files.DeletePermanently(r.Context(), request.TrashIDs)
+	result, err := s.files.DeletePermanently(r.Context(), request.TrashIDs)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, deletedResponse{Deleted: deleted})
+	if result.Operation != nil {
+		writeAcceptedOperation(w, *result.Operation)
+		return
+	}
+	writeJSON(w, deletedResponse{Deleted: result.Deleted})
 }
 func (s *Server) handleEmptyTrash(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	deleted, err := s.files.DeletePermanently(r.Context(), nil)
+	result, err := s.files.DeletePermanently(r.Context(), nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, deletedResponse{Deleted: deleted})
+	if result.Operation != nil {
+		writeAcceptedOperation(w, *result.Operation)
+		return
+	}
+	writeJSON(w, deletedResponse{Deleted: result.Deleted})
+}
+
+func writeAcceptedOperation(w http.ResponseWriter, operation db.OperationRecord) {
+	w.Header().Set("Location", "/api/operations/"+operation.ID)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	writeJSON(w, operationToResponse(operation))
 }

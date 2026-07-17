@@ -2,7 +2,8 @@
 
 Each logical path is mapped by the selected metadata database to a
 `physicalHash` object key. Set `DB_DRIVER=postgres` for PostgreSQL or
-`DB_DRIVER=json` for a versioned JSON snapshot stored on `STORAGE_DRIVER`.
+`DB_DRIVER=json` for a tree of small JSON metadata objects stored on the
+independent `METADATA_STORAGE_DRIVER`.
 The active storage backend holds the bytes; moving a logical path only updates
 the database mapping.
 
@@ -13,7 +14,7 @@ the mapping table in `pgdata`. Back up and restore both together. A bind mount
 may be substituted for `objectdata` when host-managed storage is preferred.
 
 With `DB_DRIVER=json`, metadata is written beneath
-`LOCAL_STORAGE_ROOT/_vfs-link/` using a temporary file, fsync, and atomic rename.
+`METADATA_LOCAL_ROOT/_vfs-link/` using temporary files, fsync, and atomic rename.
 Local JSON coordinates writers inside one process and is not a shared-disk
 multi-process database.
 
@@ -33,11 +34,16 @@ WebDAV range downloads map to range readers, while `PUT` streams into a new
 object before the logical mapping is published. Standard WebDAV does not add a
 cross-request resumable upload protocol.
 
-With `DB_DRIVER=json`, metadata defaults to
-`gs://$GCS_BUCKET/_vfs-link/metadata.json`. Every mutation reloads the snapshot
-and writes it with a generation-match precondition. Conflicts retry with bounded
-backoff. The reserved `_vfs-link/` prefix is excluded from user listings and
-mapping rebuilds.
+With `DB_DRIVER=json`, configure `METADATA_STORAGE_DRIVER=gcs` and a dedicated
+`METADATA_GCS_BUCKET`. The tree stores one sidecar per file and directory,
+directory indexes, entity records, operation manifests, and aggregate stats
+beneath the reserved `_vfs-link/` prefix. Writes use generation-match
+preconditions. The metadata bucket should use Standard storage in the same
+region as Cloud Run; an Archive-class primary bucket should hold file bytes,
+not frequently read or rewritten metadata.
+
+The legacy single `_vfs-link/metadata.json` snapshot is not read by the runtime.
+It can be kept as an offline migration/rollback backup only.
 
 ## Browser uploads
 

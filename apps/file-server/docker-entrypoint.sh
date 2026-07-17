@@ -12,10 +12,25 @@ case "$db_driver" in
     fi
     ;;
   json)
-    if [ -z "$JSON_DB_OBJECT" ]; then
-      echo "Error: JSON_DB_OBJECT is not set for DB_DRIVER=json."
-      exit 1
-    fi
+    metadata_driver="${METADATA_STORAGE_DRIVER:-local}"
+    case "$metadata_driver" in
+      local)
+        if [ -z "$METADATA_LOCAL_ROOT" ]; then
+          echo "Error: METADATA_LOCAL_ROOT is not set for METADATA_STORAGE_DRIVER=local."
+          exit 1
+        fi
+        ;;
+      gcs)
+        if [ -z "$METADATA_GCS_BUCKET" ]; then
+          echo "Error: METADATA_GCS_BUCKET is not set for METADATA_STORAGE_DRIVER=gcs."
+          exit 1
+        fi
+        ;;
+      *)
+        echo "Error: unsupported METADATA_STORAGE_DRIVER '$metadata_driver'."
+        exit 1
+        ;;
+    esac
     ;;
   *)
     echo "Error: unsupported DB_DRIVER '$db_driver'."

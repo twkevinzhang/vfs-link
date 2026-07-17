@@ -9,7 +9,10 @@ Copy `.env.example` to `.env`. The `.env` file is deliberately ignored by Git.
 | `POSTGRES_DB` | Compose | Database name. |
 | `DB_DRIVER` | No | Metadata backend: `postgres` (default) or `json`. |
 | `DATABASE_URL` | PostgreSQL backend | PostgreSQL connection URL. |
-| `JSON_DB_OBJECT` | JSON backend | Reserved metadata path on the selected storage driver; default `_vfs-link/metadata.json`. |
+| `METADATA_STORAGE_DRIVER` | JSON backend | Metadata backend: `local` (default) or `gcs`; independent from file-byte storage. |
+| `METADATA_LOCAL_ROOT` | Local JSON metadata | Persistent metadata root; default `./data/metadata`. |
+| `METADATA_GCS_BUCKET` | GCS JSON metadata | Dedicated Standard-class metadata bucket. |
+| `METADATA_PREFIX` | JSON backend | Reserved metadata prefix; currently must be `_vfs-link`. |
 | `FTP_ENABLED` | No | Enables transitional FTP service; default `true`. Set `false` for HTTP-only/serverless operation. |
 | `FTP_USER`, `FTP_PASS` | FTP enabled | FTP login credentials. Use a unique, strong password. |
 | `FTP_PORT` | No | FTP control port; default `21`. |
@@ -17,6 +20,7 @@ Copy `.env.example` to `.env`. The `.env` file is deliberately ignored by Git.
 | `HTTP_BASIC_AUTH_ENABLED` | No | Protects the browser and public HTTP API; default `false`. Enable for internet exposure. |
 | `HTTP_BASIC_AUTH_USER`, `HTTP_BASIC_AUTH_PASS` | HTTP auth enabled | Application Basic Auth credential. Keep the password in managed secrets. |
 | `HTTP_CORS_ORIGINS` | No | Comma-separated cross-origin API allowlist. Empty means same-origin only; `*` is intended for local development. |
+| `MAINTENANCE_MODE` | No | Read-only migration mode. GET/HEAD/OPTIONS remain available; metadata mutations and Pub/Sub pushes return `503`. |
 | `UPLOAD_MAX_BYTES` | No | Maximum declared upload size; default `53687091200` (50 GiB). |
 | `UPLOAD_SESSION_TTL` | No | Upload-session lifetime; default `24h`. |
 | `FTP_PASV_URL` | Yes | Public DNS name or IP advertised to passive FTP clients. |
@@ -43,7 +47,8 @@ storage driver does not migrate existing files.
 
 For a binary started outside Docker, select the metadata and byte-storage
 drivers independently. PostgreSQL requires `DATABASE_URL`; JSON uses
-`JSON_DB_OBJECT` on either `LOCAL_STORAGE_ROOT` or `GCS_BUCKET`.
+`METADATA_STORAGE_DRIVER` with either `METADATA_LOCAL_ROOT` or
+`METADATA_GCS_BUCKET`. `STORAGE_DRIVER` controls only file bytes.
 `WEB_STATIC_ROOT` optionally serves the built browser UI and
 `WEB_BASE_PATH` sets its public path prefix.
 

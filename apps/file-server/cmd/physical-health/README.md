@@ -26,7 +26,9 @@ STORAGE_DRIVER=local
 
 ```dotenv
 DB_DRIVER=json
-JSON_DB_OBJECT=_vfs-link/metadata.json
+METADATA_STORAGE_DRIVER=local
+METADATA_LOCAL_ROOT=./data/metadata
+METADATA_PREFIX=_vfs-link
 STORAGE_DRIVER=local
 ```
 
@@ -60,7 +62,10 @@ GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
 | `-env-file` | `.env` | 載入環境變數的檔案；傳入空字串可停用 |
 | `-db-driver` | `DB_DRIVER`，未設定時為 `postgres` | metadata driver：`postgres` 或 `json` |
 | `-database-url` | `DATABASE_URL` | PostgreSQL connection string |
-| `-json-db-object` | `JSON_DB_OBJECT`，未設定時為 `_vfs-link/metadata.json` | JSON metadata object；儲存在 active storage |
+| `-metadata-driver` | `METADATA_STORAGE_DRIVER`，未設定時為 `local` | JSON tree storage driver：`local` 或 `gcs` |
+| `-metadata-local-root` | `METADATA_LOCAL_ROOT`，未設定時為 `./data/metadata` | 本機 JSON tree root |
+| `-metadata-gcs-bucket` | `METADATA_GCS_BUCKET` | JSON tree 專用 GCS bucket |
+| `-metadata-prefix` | `METADATA_PREFIX`，未設定時為 `_vfs-link` | JSON tree 保留 prefix |
 | `-storage-driver` | `STORAGE_DRIVER`，未設定時為 `local` | active storage driver：`local` 或 `gcs` |
 | `-local-root` | `LOCAL_STORAGE_ROOT`，未設定時為 `./data/objects` | local object root |
 | `-gcs-bucket` | `GCS_BUCKET` | active GCS bucket 名稱 |

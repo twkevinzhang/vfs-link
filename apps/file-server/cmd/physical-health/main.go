@@ -93,7 +93,10 @@ func run() error {
 		envFile        string
 		databaseDriver string
 		databaseURL    string
-		jsonDBObject   string
+		metadataDriver string
+		metadataRoot   string
+		metadataBucket string
+		metadataPrefix string
 		storageDriver  string
 		localRoot      string
 		gcsBucket      string
@@ -108,7 +111,10 @@ func run() error {
 	flag.StringVar(&envFile, "env-file", ".env", "env file to load before reading database and storage settings")
 	flag.StringVar(&databaseDriver, "db-driver", "", "metadata driver (postgres or json); defaults to DB_DRIVER or postgres")
 	flag.StringVar(&databaseURL, "database-url", "", "PostgreSQL connection string; defaults to DATABASE_URL")
-	flag.StringVar(&jsonDBObject, "json-db-object", "", "JSON metadata object; defaults to JSON_DB_OBJECT or _vfs-link/metadata.json")
+	flag.StringVar(&metadataDriver, "metadata-driver", "", "JSON tree storage driver; defaults to METADATA_STORAGE_DRIVER or local")
+	flag.StringVar(&metadataRoot, "metadata-local-root", "", "local JSON tree root; defaults to METADATA_LOCAL_ROOT or ./data/metadata")
+	flag.StringVar(&metadataBucket, "metadata-gcs-bucket", "", "JSON tree GCS bucket; defaults to METADATA_GCS_BUCKET")
+	flag.StringVar(&metadataPrefix, "metadata-prefix", "", "JSON tree prefix; defaults to METADATA_PREFIX or _vfs-link")
 	flag.StringVar(&storageDriver, "storage-driver", "", "active storage driver (local or gcs); defaults to STORAGE_DRIVER or local")
 	flag.StringVar(&localRoot, "local-root", "", "local object root; defaults to LOCAL_STORAGE_ROOT or ./data/objects")
 	flag.StringVar(&gcsBucket, "gcs-bucket", "", "active GCS bucket; defaults to GCS_BUCKET")
@@ -141,7 +147,7 @@ func run() error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	store, err := openMetadataStore(ctx, databaseDriver, databaseURL, jsonDBObject, config)
+	store, err := openMetadataStore(ctx, databaseDriver, databaseURL, metadataDriver, metadataRoot, metadataBucket, metadataPrefix)
 	if err != nil {
 		return err
 	}
@@ -211,7 +217,7 @@ func run() error {
 	return nil
 }
 
-func openMetadataStore(ctx context.Context, driver string, databaseURL string, jsonDBObject string, storage storageConfig) (db.Store, error) {
+func openMetadataStore(ctx context.Context, driver string, databaseURL string, metadataDriver string, metadataRoot string, metadataBucket string, metadataPrefix string) (db.Store, error) {
 	driver = strings.ToLower(firstNonEmpty(driver, os.Getenv("DB_DRIVER"), "postgres"))
 	switch driver {
 	case "postgres":
@@ -221,14 +227,24 @@ func openMetadataStore(ctx context.Context, driver string, databaseURL string, j
 		}
 		return db.NewPostgres(ctx, databaseURL)
 	case "json":
-		jsonDBObject = firstNonEmpty(jsonDBObject, os.Getenv("JSON_DB_OBJECT"), "_vfs-link/metadata.json")
-		if !strings.HasPrefix(jsonDBObject, "_vfs-link/") || strings.Contains(jsonDBObject, "..") {
-			return nil, errors.New("JSON_DB_OBJECT must be located under _vfs-link/")
+		metadataDriver = strings.ToLower(firstNonEmpty(metadataDriver, os.Getenv("METADATA_STORAGE_DRIVER"), storageDriverLocal))
+		metadataPrefix = firstNonEmpty(metadataPrefix, os.Getenv("METADATA_PREFIX"), "_vfs-link")
+		if metadataPrefix != "_vfs-link" {
+			return nil, errors.New("METADATA_PREFIX must be the reserved _vfs-link prefix")
 		}
-		if storage.Driver == storageDriverGCS {
-			return db.NewJSONGCS(ctx, storage.GCSBucket, jsonDBObject)
+		switch metadataDriver {
+		case storageDriverLocal:
+			metadataRoot = firstNonEmpty(metadataRoot, os.Getenv("METADATA_LOCAL_ROOT"), "./data/metadata")
+			return db.NewTreeLocal(metadataRoot, metadataPrefix)
+		case storageDriverGCS:
+			metadataBucket = firstNonEmpty(metadataBucket, os.Getenv("METADATA_GCS_BUCKET"))
+			if metadataBucket == "" {
+				return nil, errors.New("METADATA_GCS_BUCKET is required when METADATA_STORAGE_DRIVER=gcs")
+			}
+			return db.NewTreeGCS(ctx, metadataBucket, metadataPrefix)
+		default:
+			return nil, fmt.Errorf("unsupported METADATA_STORAGE_DRIVER %q", metadataDriver)
 		}
-		return db.NewJSONLocal(filepath.Join(storage.LocalRoot, filepath.FromSlash(jsonDBObject)))
 	default:
 		return nil, fmt.Errorf("unsupported DB_DRIVER %q: expected postgres or json", driver)
 	}

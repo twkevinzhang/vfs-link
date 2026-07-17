@@ -1,5 +1,6 @@
 import {
   DeleteResponse,
+  FileOperationResponse,
   FileMutationResponse,
   FilesResponse,
   StatusResponse,
@@ -99,14 +100,26 @@ export function getTree(path = '/') {
 }
 
 export function moveFiles(paths: string[], destination: string) {
-  return postJson<FileMutationResponse>('/api/files/move', {
-    paths,
-    destination,
-  });
+  return postJson<FileMutationResponse | FileOperationResponse>(
+    '/api/files/move',
+    {
+      paths,
+      destination,
+    }
+  );
+}
+
+export function getFileOperation(id: string) {
+  return requestJson<FileOperationResponse>(
+    `/api/operations/${encodeURIComponent(id)}`
+  );
 }
 
 export function moveFilesToTrash(paths: string[]) {
-  return postJson<FileMutationResponse>('/api/files/trash', { paths });
+  return postJson<FileMutationResponse | FileOperationResponse>(
+    '/api/files/trash',
+    { paths }
+  );
 }
 
 export function getTrash() {
@@ -114,15 +127,23 @@ export function getTrash() {
 }
 
 export function restoreTrash(trashIds: string[]) {
-  return postJson<FileMutationResponse>('/api/trash/restore', { trashIds });
+  return postJson<FileMutationResponse | FileOperationResponse>(
+    '/api/trash/restore',
+    { trashIds }
+  );
 }
 
 export function deleteTrash(trashIds: string[]) {
-  return postJson<DeleteResponse>('/api/trash/delete', { trashIds });
+  return postJson<DeleteResponse | FileOperationResponse>('/api/trash/delete', {
+    trashIds,
+  });
 }
 
 export function emptyTrash() {
-  return postJson<DeleteResponse>('/api/trash/empty', {});
+  return postJson<DeleteResponse | FileOperationResponse>(
+    '/api/trash/empty',
+    {}
+  );
 }
 
 export function getDownloadUrl(path: string) {

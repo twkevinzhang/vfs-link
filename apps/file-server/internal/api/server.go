@@ -141,6 +141,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/files", s.handleFiles)
 	mux.HandleFunc("/api/files/move", s.handleMoveFiles)
+	mux.HandleFunc("/api/operations/", s.handleOperation)
 	mux.HandleFunc("/api/files/trash", s.handleTrashFiles)
 	mux.HandleFunc("/api/trash", s.handleTrash)
 	mux.HandleFunc("/api/trash/restore", s.handleRestoreTrash)
@@ -367,11 +368,29 @@ func entriesFromRecords(records []db.FileRecord) []Entry {
 }
 
 func (s *Server) stats(ctx context.Context) (Stats, error) {
+	if provider, ok := s.store.(db.MetadataStatsProvider); ok {
+		metadataStats, err := provider.MetadataStats(ctx)
+		if err != nil {
+			return Stats{}, err
+		}
+		return Stats{
+			FileCount:      int(metadataStats.LogicalFiles),
+			DirectoryCount: int(metadataStats.LogicalDirs),
+			TotalBytes:     metadataStats.LogicalBytes,
+			ObjectCount:    int(metadataStats.PhysicalObjects),
+			ObjectBytes:    metadataStats.PhysicalBytes,
+		}, nil
+	}
+
+	// PostgreSQL does not maintain a separate aggregate yet. Derive both the
+	// logical and referenced-object totals from metadata so status never has to
+	// enumerate an entire physical bucket.
 	records, err := s.store.ListAll(ctx)
 	if err != nil {
 		return Stats{}, err
 	}
 	var stats Stats
+	physicalObjects := make(map[string]int64)
 	for _, record := range records {
 		if record.IsDirectory {
 			stats.DirectoryCount++
@@ -379,14 +398,13 @@ func (s *Server) stats(ctx context.Context) (Stats, error) {
 		}
 		stats.FileCount++
 		stats.TotalBytes += record.Size
+		if record.PhysicalHash != "" {
+			physicalObjects[record.PhysicalHash] = record.Size
+		}
 	}
-	objects, err := s.objects.List(ctx)
-	if err != nil {
-		return Stats{}, err
-	}
-	stats.ObjectCount = len(objects)
-	for _, object := range objects {
-		stats.ObjectBytes += object.Size
+	stats.ObjectCount = len(physicalObjects)
+	for _, size := range physicalObjects {
+		stats.ObjectBytes += size
 	}
 	return stats, nil
 }

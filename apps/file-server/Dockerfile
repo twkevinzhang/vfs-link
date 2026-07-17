@@ -25,7 +25,8 @@ RUN go mod download
 
 COPY apps/file-server ./
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/file-server ./cmd/file-server \
-    && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/physical-health ./cmd/physical-health
+    && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/physical-health ./cmd/physical-health \
+    && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/metadata-migrate ./cmd/metadata-migrate
 
 FROM alpine:3.20
 
@@ -35,6 +36,7 @@ WORKDIR /app
 
 COPY --from=builder /out/file-server ./file-server
 COPY --from=builder /out/physical-health ./physical-health
+COPY --from=builder /out/metadata-migrate ./metadata-migrate
 COPY --from=web-builder /src/apps/web/build/client ./web
 COPY apps/file-server/docker-entrypoint.sh ./docker-entrypoint.sh
 RUN chmod +x ./docker-entrypoint.sh

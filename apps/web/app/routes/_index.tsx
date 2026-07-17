@@ -6,6 +6,7 @@ import {
   Folder,
   FolderInput,
   HardDrive,
+  LoaderCircle,
   Play,
   RefreshCcw,
   RotateCcw,
@@ -40,6 +41,7 @@ import {
   emptyTrash,
   getDownloadUrl,
   getFiles,
+  getFileOperation,
   getPreviewUrl,
   getStatus,
   getTrash,
@@ -56,6 +58,7 @@ import {
 import { cn } from '../lib/utils';
 import {
   FileEntry,
+  FileOperationResponse,
   FilesResponse,
   Pagination,
   StatusResponse,
@@ -100,6 +103,8 @@ export default function Index() {
   const [trashEntries, setTrashEntries] = useState<TrashEntry[]>([]);
   const [trashLoading, setTrashLoading] = useState(false);
   const [actionError, setActionError] = useState<string>();
+  const [activeOperation, setActiveOperation] =
+    useState<FileOperationResponse>();
   const [actionPaths, setActionPaths] = useState<string[]>([]);
   const [actionTrashIds, setActionTrashIds] = useState<string[]>([]);
   const [showMove, setShowMove] = useState(false);
@@ -294,9 +299,14 @@ export default function Index() {
   };
   const runMove = async (destination: string) => {
     try {
-      await moveFiles(actionPaths, destination);
+      const result = await moveFiles(actionPaths, destination);
       setShowMove(false);
       selection.clear();
+      if ('operationId' in result) {
+        setActiveOperation(result);
+        void watchOperation(result.operationId);
+        return;
+      }
       refresh();
     } catch (error) {
       setActionError(
@@ -304,12 +314,48 @@ export default function Index() {
       );
     }
   };
+
+  const watchOperation = async (id: string) => {
+    try {
+      for (;;) {
+        const operation = await getFileOperation(id);
+        setActiveOperation(operation);
+        if (operation.status === 'completed') {
+          setActiveOperation(undefined);
+          selection.clear();
+          setSelectedFile(undefined);
+          refresh();
+          void loadTrash();
+          void loadStatus();
+          return;
+        }
+        if (operation.status === 'failed') {
+          setActiveOperation(undefined);
+          setActionError(operation.error || 'Background operation failed');
+          return;
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 1500));
+      }
+    } catch (error) {
+      setActiveOperation(undefined);
+      setActionError(
+        error instanceof Error
+          ? error.message
+          : 'Unable to monitor background operation'
+      );
+    }
+  };
   const runTrash = async () => {
     try {
-      await moveFilesToTrash(actionPaths);
+      const result = await moveFilesToTrash(actionPaths);
       setShowTrashConfirm(false);
       selection.clear();
       setSelectedFile(undefined);
+      if ('operationId' in result) {
+        setActiveOperation(result);
+        void watchOperation(result.operationId);
+        return;
+      }
       refresh();
     } catch (error) {
       setActionError(
@@ -320,8 +366,13 @@ export default function Index() {
   const runRestore = async () => {
     const trashIds = selectedTrashIds;
     try {
-      await restoreTrash(trashIds);
+      const result = await restoreTrash(trashIds);
       selection.clear();
+      if ('operationId' in result) {
+        setActiveOperation(result);
+        void watchOperation(result.operationId);
+        return;
+      }
       await Promise.all([loadTrash(), loadStatus()]);
     } catch (error) {
       setActionError(
@@ -333,9 +384,14 @@ export default function Index() {
     const trashIds =
       actionTrashIds.length > 0 ? actionTrashIds : selectedTrashIds;
     try {
-      await deleteTrash(trashIds);
+      const result = await deleteTrash(trashIds);
       setShowPermanentConfirm(false);
       selection.clear();
+      if ('operationId' in result) {
+        setActiveOperation(result);
+        void watchOperation(result.operationId);
+        return;
+      }
       await Promise.all([loadTrash(), loadStatus()]);
     } catch (error) {
       setActionError(
@@ -345,9 +401,14 @@ export default function Index() {
   };
   const runEmptyTrash = async () => {
     try {
-      await emptyTrash();
+      const result = await emptyTrash();
       setShowEmptyConfirm(false);
       selection.clear();
+      if ('operationId' in result) {
+        setActiveOperation(result);
+        void watchOperation(result.operationId);
+        return;
+      }
       await Promise.all([loadTrash(), loadStatus()]);
     } catch (error) {
       setActionError(
@@ -498,6 +559,33 @@ export default function Index() {
               <div className="grid gap-1">
                 <p className="font-semibold">Action unavailable</p>
                 <p className="text-sm text-foreground">{actionError}</p>
+              </div>
+            </div>
+          </Alert>
+        )}
+
+        {activeOperation && (
+          <Alert className="border-primary/30 bg-primary/5 text-foreground">
+            <div className="flex items-start gap-3">
+              <LoaderCircle
+                aria-hidden="true"
+                className="mt-0.5 h-5 w-5 shrink-0 animate-spin text-primary"
+              />
+              <div className="grid gap-1">
+                <p className="font-semibold">
+                  {activeOperation.type === 'move'
+                    ? 'Move in progress'
+                    : activeOperation.type === 'trash'
+                    ? 'Moving to trash'
+                    : activeOperation.type === 'restore'
+                    ? 'Restore in progress'
+                    : 'Permanent deletion in progress'}
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  {activeOperation.total > 0
+                    ? `${activeOperation.progress.toLocaleString()} of ${activeOperation.total.toLocaleString()} metadata records`
+                    : 'Preparing metadata operation…'}
+                </p>
               </div>
             </div>
           </Alert>

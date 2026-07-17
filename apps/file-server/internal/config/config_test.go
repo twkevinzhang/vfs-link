@@ -73,12 +73,17 @@ func TestLoadDatabaseDriverRequirements(t *testing.T) {
 	t.Setenv("LOCAL_STORAGE_ROOT", t.TempDir())
 	t.Setenv("DATABASE_URL", "")
 
-	cfg, err := Load([]string{"DB_DRIVER=json", "JSON_DB_OBJECT=_vfs-link/test.json"})
+	cfg, err := Load([]string{
+		"DB_DRIVER=json",
+		"METADATA_STORAGE_DRIVER=local",
+		"METADATA_LOCAL_ROOT=" + t.TempDir(),
+		"METADATA_PREFIX=_vfs-link",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.DatabaseDriver != "json" || cfg.JSONDBObject != "_vfs-link/test.json" {
-		t.Fatalf("JSON database config = %q/%q", cfg.DatabaseDriver, cfg.JSONDBObject)
+	if cfg.DatabaseDriver != "json" || cfg.MetadataStorageDriver != "local" || cfg.MetadataPrefix != "_vfs-link" {
+		t.Fatalf("tree metadata config = %#v", cfg)
 	}
 
 	_, err = Load([]string{"DB_DRIVER=postgres", "DATABASE_URL="})
@@ -86,14 +91,38 @@ func TestLoadDatabaseDriverRequirements(t *testing.T) {
 		t.Fatalf("postgres validation error = %v", err)
 	}
 
-	_, err = Load([]string{"DB_DRIVER=json", "JSON_DB_OBJECT="})
-	if err == nil || !strings.Contains(err.Error(), "JSON_DB_OBJECT is required when DB_DRIVER=json") {
-		t.Fatalf("JSON validation error = %v", err)
+	_, err = Load([]string{"DB_DRIVER=json", "METADATA_STORAGE_DRIVER=local", "METADATA_LOCAL_ROOT="})
+	if err == nil || !strings.Contains(err.Error(), "METADATA_LOCAL_ROOT is required") {
+		t.Fatalf("local metadata validation error = %v", err)
 	}
 
-	_, err = Load([]string{"DB_DRIVER=json", "JSON_DB_OBJECT=../metadata.json"})
-	if err == nil || !strings.Contains(err.Error(), "reserved _vfs-link/ prefix") {
-		t.Fatalf("JSON path validation error = %v", err)
+	_, err = Load([]string{"DB_DRIVER=json", "METADATA_STORAGE_DRIVER=gcs", "METADATA_GCS_BUCKET="})
+	if err == nil || !strings.Contains(err.Error(), "METADATA_GCS_BUCKET is required") {
+		t.Fatalf("GCS metadata validation error = %v", err)
+	}
+
+	cfg, err = Load([]string{
+		"DB_DRIVER=json",
+		"METADATA_STORAGE_DRIVER=gcs",
+		"METADATA_GCS_BUCKET=metadata-standard",
+		"STORAGE_DRIVER=local",
+		"LOCAL_STORAGE_ROOT=" + t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MetadataGCSBucket != "metadata-standard" || cfg.StorageDriver != "local" {
+		t.Fatalf("independent metadata/object drivers = %#v", cfg)
+	}
+
+	_, err = Load([]string{"DB_DRIVER=json", "METADATA_PREFIX=metadata"})
+	if err == nil || !strings.Contains(err.Error(), "reserved _vfs-link prefix") {
+		t.Fatalf("metadata prefix validation error = %v", err)
+	}
+
+	_, err = Load([]string{"DB_DRIVER=json", "METADATA_STORAGE_DRIVER=s3"})
+	if err == nil || !strings.Contains(err.Error(), `unsupported METADATA_STORAGE_DRIVER "s3"`) {
+		t.Fatalf("metadata driver validation error = %v", err)
 	}
 
 	_, err = Load([]string{"DB_DRIVER=sqlite"})
@@ -118,6 +147,7 @@ func TestLoadHTTPAuthUploadAndPubSub(t *testing.T) {
 		"PUB_SUB_TOPIC=vfs-link-share-jobs",
 		"PUB_SUB_PUSH_AUDIENCE=https://file-server.example/",
 		"PUB_SUB_PUSH_SERVICE_ACCOUNT=push@example.iam.gserviceaccount.com",
+		"MAINTENANCE_MODE=true",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -130,6 +160,9 @@ func TestLoadHTTPAuthUploadAndPubSub(t *testing.T) {
 	}
 	if cfg.PubSubDriver != "pubsub" || cfg.PubSubTopic != "vfs-link-share-jobs" {
 		t.Fatalf("Pub/Sub config = %q/%q", cfg.PubSubDriver, cfg.PubSubTopic)
+	}
+	if !cfg.MaintenanceMode {
+		t.Fatal("MaintenanceMode = false, want true")
 	}
 
 	_, err = Load([]string{"HTTP_BASIC_AUTH_ENABLED=true", "HTTP_BASIC_AUTH_USER="})

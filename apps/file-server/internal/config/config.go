@@ -12,90 +12,98 @@ import (
 )
 
 type Config struct {
-	FTPEnabled        bool
-	FTPPort           int
-	HTTPPort          int
-	FTPUser           string
-	FTPPass           string
-	FTPPasvURL        string
-	FTPPasvMin        int
-	FTPPasvMax        int
-	DatabaseURL       string
-	DatabaseDriver    string
-	JSONDBObject      string
-	StorageDriver     string
-	LocalStorageRoot  string
-	GCSBucket         string
-	ShareGCSBucket    string
-	ShareGCSPrefix    string
-	SharePublicURL    string
-	TelegramBotToken  string
-	TelegramChatID    string
-	WebStaticRoot     string
-	WebBasePath       string
-	WebDAVEnabled     bool
-	WebDAVPath        string
-	WebDAVUser        string
-	WebDAVPass        string
-	WebDAVLockTimeout time.Duration
-	WebDAVTrustProxy  bool
-	HTTPBasicAuth     bool
-	HTTPBasicUser     string
-	HTTPBasicPass     string
-	HTTPCORSOrigins   string
-	UploadSessionTTL  time.Duration
-	UploadMaxBytes    int64
-	PubSubDriver      string
-	GCPProjectID      string
-	PubSubTopic       string
-	PubSubAudience    string
-	PubSubPushEmail   string
-	CommandArgs       []string
-	AssumeYes         bool
+	FTPEnabled            bool
+	FTPPort               int
+	HTTPPort              int
+	FTPUser               string
+	FTPPass               string
+	FTPPasvURL            string
+	FTPPasvMin            int
+	FTPPasvMax            int
+	DatabaseURL           string
+	DatabaseDriver        string
+	MetadataStorageDriver string
+	MetadataLocalRoot     string
+	MetadataGCSBucket     string
+	MetadataPrefix        string
+	StorageDriver         string
+	LocalStorageRoot      string
+	GCSBucket             string
+	ShareGCSBucket        string
+	ShareGCSPrefix        string
+	SharePublicURL        string
+	TelegramBotToken      string
+	TelegramChatID        string
+	WebStaticRoot         string
+	WebBasePath           string
+	WebDAVEnabled         bool
+	WebDAVPath            string
+	WebDAVUser            string
+	WebDAVPass            string
+	WebDAVLockTimeout     time.Duration
+	WebDAVTrustProxy      bool
+	HTTPBasicAuth         bool
+	HTTPBasicUser         string
+	HTTPBasicPass         string
+	HTTPCORSOrigins       string
+	UploadSessionTTL      time.Duration
+	UploadMaxBytes        int64
+	PubSubDriver          string
+	GCPProjectID          string
+	PubSubTopic           string
+	PubSubAudience        string
+	PubSubPushEmail       string
+	CommandArgs           []string
+	AssumeYes             bool
+	MaintenanceMode       bool
 }
 
 func Load(args []string) (Config, error) {
 	_ = godotenv.Load()
 
 	cfg := Config{
-		FTPEnabled:        envBool("FTP_ENABLED", true),
-		FTPPort:           envInt("FTP_PORT", 21),
-		HTTPPort:          envInt("HTTP_PORT", envInt("PORT", 8080)),
-		FTPUser:           envString("FTP_USER", "admin"),
-		FTPPass:           envString("FTP_PASS", "admin123"),
-		FTPPasvURL:        envString("FTP_PASV_URL", "127.0.0.1"),
-		FTPPasvMin:        envInt("FTP_PASV_MIN", 30000),
-		FTPPasvMax:        envInt("FTP_PASV_MAX", 30005),
-		DatabaseURL:       strings.TrimSpace(os.Getenv("DATABASE_URL")),
-		DatabaseDriver:    envString("DB_DRIVER", "postgres"),
-		JSONDBObject:      envString("JSON_DB_OBJECT", "_vfs-link/metadata.json"),
-		StorageDriver:     envString("STORAGE_DRIVER", "local"),
-		LocalStorageRoot:  envString("LOCAL_STORAGE_ROOT", "./data/objects"),
-		GCSBucket:         envString("GCS_BUCKET", ""),
-		ShareGCSBucket:    envString("SHARE_GCS_BUCKET", ""),
-		ShareGCSPrefix:    envString("SHARE_GCS_PREFIX", "shares"),
-		SharePublicURL:    envString("SHARE_PUBLIC_BASE_URL", ""),
-		TelegramBotToken:  envString("TELEGRAM_BOT_TOKEN", ""),
-		TelegramChatID:    envString("TELEGRAM_CHAT_ID", ""),
-		WebStaticRoot:     envString("WEB_STATIC_ROOT", ""),
-		WebBasePath:       envString("WEB_BASE_PATH", "/"),
-		WebDAVEnabled:     envBool("WEBDAV_ENABLED", false),
-		WebDAVPath:        normalizeWebDAVPath(envString("WEBDAV_PATH", "/dav/")),
-		WebDAVUser:        envString("WEBDAV_USER", ""),
-		WebDAVPass:        envString("WEBDAV_PASS", ""),
-		WebDAVLockTimeout: envDuration("WEBDAV_LOCK_TIMEOUT", 30*time.Minute),
-		WebDAVTrustProxy:  envBool("WEBDAV_TRUST_FORWARDED_HEADERS", false),
-		HTTPBasicAuth:     envBool("HTTP_BASIC_AUTH_ENABLED", false),
-		HTTPBasicUser:     envString("HTTP_BASIC_AUTH_USER", ""),
-		HTTPBasicPass:     envString("HTTP_BASIC_AUTH_PASS", ""),
-		HTTPCORSOrigins:   envString("HTTP_CORS_ORIGINS", ""),
-		UploadSessionTTL:  envDuration("UPLOAD_SESSION_TTL", 24*time.Hour),
-		UploadMaxBytes:    envInt64("UPLOAD_MAX_BYTES", 50*1024*1024*1024),
-		PubSubDriver:      envString("PUB_SUB_DRIVER", "goroutine"),
-		GCPProjectID:      envString("GCP_PROJECT_ID", ""),
-		PubSubTopic:       envString("PUB_SUB_TOPIC", ""),
-		PubSubAudience:    envString("PUB_SUB_PUSH_AUDIENCE", ""),
-		PubSubPushEmail:   envString("PUB_SUB_PUSH_SERVICE_ACCOUNT", ""),
+		FTPEnabled:            envBool("FTP_ENABLED", true),
+		FTPPort:               envInt("FTP_PORT", 21),
+		HTTPPort:              envInt("HTTP_PORT", envInt("PORT", 8080)),
+		FTPUser:               envString("FTP_USER", "admin"),
+		FTPPass:               envString("FTP_PASS", "admin123"),
+		FTPPasvURL:            envString("FTP_PASV_URL", "127.0.0.1"),
+		FTPPasvMin:            envInt("FTP_PASV_MIN", 30000),
+		FTPPasvMax:            envInt("FTP_PASV_MAX", 30005),
+		DatabaseURL:           strings.TrimSpace(os.Getenv("DATABASE_URL")),
+		DatabaseDriver:        envString("DB_DRIVER", "postgres"),
+		MetadataStorageDriver: envString("METADATA_STORAGE_DRIVER", "local"),
+		MetadataLocalRoot:     envString("METADATA_LOCAL_ROOT", "./data/metadata"),
+		MetadataGCSBucket:     envString("METADATA_GCS_BUCKET", ""),
+		MetadataPrefix:        envString("METADATA_PREFIX", "_vfs-link"),
+		StorageDriver:         envString("STORAGE_DRIVER", "local"),
+		LocalStorageRoot:      envString("LOCAL_STORAGE_ROOT", "./data/objects"),
+		GCSBucket:             envString("GCS_BUCKET", ""),
+		ShareGCSBucket:        envString("SHARE_GCS_BUCKET", ""),
+		ShareGCSPrefix:        envString("SHARE_GCS_PREFIX", "shares"),
+		SharePublicURL:        envString("SHARE_PUBLIC_BASE_URL", ""),
+		TelegramBotToken:      envString("TELEGRAM_BOT_TOKEN", ""),
+		TelegramChatID:        envString("TELEGRAM_CHAT_ID", ""),
+		WebStaticRoot:         envString("WEB_STATIC_ROOT", ""),
+		WebBasePath:           envString("WEB_BASE_PATH", "/"),
+		WebDAVEnabled:         envBool("WEBDAV_ENABLED", false),
+		WebDAVPath:            normalizeWebDAVPath(envString("WEBDAV_PATH", "/dav/")),
+		WebDAVUser:            envString("WEBDAV_USER", ""),
+		WebDAVPass:            envString("WEBDAV_PASS", ""),
+		WebDAVLockTimeout:     envDuration("WEBDAV_LOCK_TIMEOUT", 30*time.Minute),
+		WebDAVTrustProxy:      envBool("WEBDAV_TRUST_FORWARDED_HEADERS", false),
+		HTTPBasicAuth:         envBool("HTTP_BASIC_AUTH_ENABLED", false),
+		HTTPBasicUser:         envString("HTTP_BASIC_AUTH_USER", ""),
+		HTTPBasicPass:         envString("HTTP_BASIC_AUTH_PASS", ""),
+		HTTPCORSOrigins:       envString("HTTP_CORS_ORIGINS", ""),
+		UploadSessionTTL:      envDuration("UPLOAD_SESSION_TTL", 24*time.Hour),
+		UploadMaxBytes:        envInt64("UPLOAD_MAX_BYTES", 50*1024*1024*1024),
+		PubSubDriver:          envString("PUB_SUB_DRIVER", "goroutine"),
+		GCPProjectID:          envString("GCP_PROJECT_ID", ""),
+		PubSubTopic:           envString("PUB_SUB_TOPIC", ""),
+		PubSubAudience:        envString("PUB_SUB_PUSH_AUDIENCE", ""),
+		PubSubPushEmail:       envString("PUB_SUB_PUSH_SERVICE_ACCOUNT", ""),
+		MaintenanceMode:       envBool("MAINTENANCE_MODE", false),
 	}
 
 	for _, arg := range args {
@@ -116,12 +124,21 @@ func Load(args []string) (Config, error) {
 			return Config{}, fmt.Errorf("DATABASE_URL is required when DB_DRIVER=postgres")
 		}
 	case "json":
-		if strings.TrimSpace(cfg.JSONDBObject) == "" {
-			return Config{}, fmt.Errorf("JSON_DB_OBJECT is required when DB_DRIVER=json")
+		cfg.MetadataPrefix = path.Clean(strings.TrimLeft(cfg.MetadataPrefix, "/"))
+		if cfg.MetadataPrefix == "." || cfg.MetadataPrefix != "_vfs-link" {
+			return Config{}, fmt.Errorf("METADATA_PREFIX must be the reserved _vfs-link prefix")
 		}
-		cfg.JSONDBObject = path.Clean(strings.TrimLeft(cfg.JSONDBObject, "/"))
-		if cfg.JSONDBObject == "." || strings.HasPrefix(cfg.JSONDBObject, "../") || !strings.HasPrefix(cfg.JSONDBObject, "_vfs-link/") {
-			return Config{}, fmt.Errorf("JSON_DB_OBJECT must be within the reserved _vfs-link/ prefix")
+		switch cfg.MetadataStorageDriver {
+		case "local":
+			if strings.TrimSpace(cfg.MetadataLocalRoot) == "" {
+				return Config{}, fmt.Errorf("METADATA_LOCAL_ROOT is required when METADATA_STORAGE_DRIVER=local")
+			}
+		case "gcs":
+			if strings.TrimSpace(cfg.MetadataGCSBucket) == "" {
+				return Config{}, fmt.Errorf("METADATA_GCS_BUCKET is required when METADATA_STORAGE_DRIVER=gcs")
+			}
+		default:
+			return Config{}, fmt.Errorf("unsupported METADATA_STORAGE_DRIVER %q", cfg.MetadataStorageDriver)
 		}
 	default:
 		return Config{}, fmt.Errorf("unsupported DB_DRIVER %q", cfg.DatabaseDriver)
@@ -253,8 +270,14 @@ func applyOverride(cfg *Config, key, value string) {
 		cfg.DatabaseURL = value
 	case "DB_DRIVER":
 		cfg.DatabaseDriver = strings.TrimSpace(value)
-	case "JSON_DB_OBJECT":
-		cfg.JSONDBObject = strings.TrimSpace(value)
+	case "METADATA_STORAGE_DRIVER":
+		cfg.MetadataStorageDriver = strings.TrimSpace(value)
+	case "METADATA_LOCAL_ROOT":
+		cfg.MetadataLocalRoot = strings.TrimSpace(value)
+	case "METADATA_GCS_BUCKET":
+		cfg.MetadataGCSBucket = strings.TrimSpace(value)
+	case "METADATA_PREFIX":
+		cfg.MetadataPrefix = strings.TrimSpace(value)
 	case "STORAGE_DRIVER":
 		cfg.StorageDriver = strings.TrimSpace(value)
 	case "LOCAL_STORAGE_ROOT":
@@ -311,6 +334,8 @@ func applyOverride(cfg *Config, key, value string) {
 		cfg.PubSubAudience = strings.TrimSpace(value)
 	case "PUB_SUB_PUSH_SERVICE_ACCOUNT":
 		cfg.PubSubPushEmail = strings.TrimSpace(value)
+	case "MAINTENANCE_MODE":
+		cfg.MaintenanceMode = parseBool(value, cfg.MaintenanceMode)
 	}
 }
 

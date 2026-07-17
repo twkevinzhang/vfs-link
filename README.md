@@ -36,7 +36,7 @@ ports are `30000-30100`. For HTTP-only operation, set `FTP_ENABLED=false`.
 
 ```text
 WebDAV client ── HTTPS ──┐
-Browser ─────── HTTP(S) ─┼─> file-server ─> PostgreSQL or JSON metadata
+Browser ─────── HTTP(S) ─┼─> file-server ─> PostgreSQL or JSON metadata tree
 FTP client ────── FTP ───┘       │
                                  ├────────> local object volume
                                  └────────> GCS (serverless primary storage)
@@ -54,8 +54,10 @@ The server provides:
 
 For Cloud Run or a similar scale-to-zero HTTP platform, use GCS plus either an
 external PostgreSQL database or `DB_DRIVER=json`, set `FTP_ENABLED=false`, and
-expose only the HTTP port. JSON metadata uses GCS generation preconditions so
-concurrent instances cannot silently overwrite each other's updates.
+expose only the HTTP port. Keep file bytes in the primary bucket and the JSON
+metadata tree in a separate Standard-class bucket in the Cloud Run region.
+JSON metadata uses GCS generation preconditions so concurrent instances cannot
+silently overwrite each other's updates.
 Standard WebDAV `PUT` streams through one request; resumable direct-to-GCS
 uploads for custom clients are outside the current protocol endpoint.
 
@@ -64,6 +66,7 @@ uploads for custom clients are outside the current protocol endpoint.
 - [Self-hosting](docs/self-hosting.md)
 - [Configuration reference](docs/configuration.md)
 - [Storage and GCS](docs/storage.md)
+- [Legacy JSON metadata migration](docs/metadata-migration.md)
 - [Networking and exposure](docs/networking.md)
 - [WebDAV and serverless deployment](docs/webdav.md)
 - [Browser upload API](docs/uploads.md)

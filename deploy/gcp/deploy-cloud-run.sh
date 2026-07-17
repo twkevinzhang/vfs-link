@@ -7,7 +7,10 @@ set -euo pipefail
 REGION="${REGION:-asia-east1}"
 SERVICE="${SERVICE:-vfs-link-file-server}"
 REPOSITORY="${REPOSITORY:-vfs-link}"
-PRIMARY_BUCKET="${PRIMARY_BUCKET:-${PROJECT_ID}-vfs-link-prod}"
+PRIMARY_BUCKET="${PRIMARY_BUCKET:-${PROJECT_ID}-archive}"
+PRIMARY_BUCKET_LOCATION="${PRIMARY_BUCKET_LOCATION:-us-east5}"
+PRIMARY_BUCKET_CLASS="${PRIMARY_BUCKET_CLASS:-ARCHIVE}"
+METADATA_BUCKET="${METADATA_BUCKET:-${PROJECT_ID}-vfs-link-metadata}"
 SHARE_BUCKET="${SHARE_BUCKET:-${PROJECT_ID}-vfs-link-shares}"
 TOPIC="${TOPIC:-vfs-link-share-jobs}"
 DEAD_LETTER_TOPIC="${DEAD_LETTER_TOPIC:-vfs-link-share-dead-letter}"
@@ -16,6 +19,7 @@ RUNTIME_SA_NAME="${RUNTIME_SA_NAME:-vfs-link-runtime}"
 PUSH_SA_NAME="${PUSH_SA_NAME:-vfs-link-pubsub-push}"
 HTTP_BASIC_AUTH_USER="${HTTP_BASIC_AUTH_USER:-vfs_link}"
 TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}"
+MAINTENANCE_MODE="${MAINTENANCE_MODE:-false}"
 
 retry() {
   local attempt
@@ -45,9 +49,14 @@ if ! gcloud artifacts repositories describe "$REPOSITORY" --location="$REGION" -
   gcloud artifacts repositories create "$REPOSITORY" --repository-format=docker --location="$REGION" --project="$PROJECT_ID"
 fi
 
-for bucket in "$PRIMARY_BUCKET" "$SHARE_BUCKET"; do
+if ! gcloud storage buckets describe "gs://${PRIMARY_BUCKET}" --project="$PROJECT_ID" >/dev/null 2>&1; then
+  gcloud storage buckets create "gs://${PRIMARY_BUCKET}" --location="$PRIMARY_BUCKET_LOCATION" \
+    --default-storage-class="$PRIMARY_BUCKET_CLASS" --uniform-bucket-level-access --project="$PROJECT_ID"
+fi
+for bucket in "$METADATA_BUCKET" "$SHARE_BUCKET"; do
   if ! gcloud storage buckets describe "gs://${bucket}" --project="$PROJECT_ID" >/dev/null 2>&1; then
-    gcloud storage buckets create "gs://${bucket}" --location="$REGION" --uniform-bucket-level-access --project="$PROJECT_ID"
+    gcloud storage buckets create "gs://${bucket}" --location="$REGION" \
+      --default-storage-class=STANDARD --uniform-bucket-level-access --project="$PROJECT_ID"
   fi
 done
 gcloud storage buckets add-iam-policy-binding "gs://${SHARE_BUCKET}" \
@@ -59,7 +68,7 @@ for account in "$RUNTIME_SA_NAME" "$PUSH_SA_NAME"; do
   fi
 done
 
-for bucket in "$PRIMARY_BUCKET" "$SHARE_BUCKET"; do
+for bucket in "$PRIMARY_BUCKET" "$METADATA_BUCKET" "$SHARE_BUCKET"; do
   retry gcloud storage buckets add-iam-policy-binding "gs://${bucket}" \
     --member="serviceAccount:${RUNTIME_SA}" --role=roles/storage.objectAdmin --project="$PROJECT_ID" >/dev/null
 done
@@ -96,11 +105,11 @@ fi
 gcloud builds submit --config=deploy/gcp/cloudbuild.yaml \
   --substitutions="_IMAGE=${IMAGE}" --project="$PROJECT_ID" .
 
-COMMON_ENV="FTP_ENABLED=false,WEBDAV_ENABLED=false,STORAGE_DRIVER=gcs,GCS_BUCKET=${PRIMARY_BUCKET},DB_DRIVER=json,JSON_DB_OBJECT=_vfs-link/metadata.json,HTTP_BASIC_AUTH_ENABLED=true,HTTP_BASIC_AUTH_USER=${HTTP_BASIC_AUTH_USER},HTTP_CORS_ORIGINS=,UPLOAD_MAX_BYTES=53687091200,UPLOAD_SESSION_TTL=24h,SHARE_GCS_BUCKET=${SHARE_BUCKET},SHARE_GCS_PREFIX=shares,SHARE_PUBLIC_BASE_URL=https://storage.googleapis.com/${SHARE_BUCKET},TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID},GCP_PROJECT_ID=${PROJECT_ID},PUB_SUB_TOPIC=${TOPIC}"
+COMMON_ENV="FTP_ENABLED=false,WEBDAV_ENABLED=false,STORAGE_DRIVER=gcs,GCS_BUCKET=${PRIMARY_BUCKET},DB_DRIVER=json,METADATA_STORAGE_DRIVER=gcs,METADATA_GCS_BUCKET=${METADATA_BUCKET},METADATA_PREFIX=_vfs-link,MAINTENANCE_MODE=${MAINTENANCE_MODE},HTTP_BASIC_AUTH_ENABLED=true,HTTP_BASIC_AUTH_USER=${HTTP_BASIC_AUTH_USER},HTTP_CORS_ORIGINS=,UPLOAD_MAX_BYTES=53687091200,UPLOAD_SESSION_TTL=24h,SHARE_GCS_BUCKET=${SHARE_BUCKET},SHARE_GCS_PREFIX=shares,SHARE_PUBLIC_BASE_URL=https://storage.googleapis.com/${SHARE_BUCKET},TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID},GCP_PROJECT_ID=${PROJECT_ID},PUB_SUB_TOPIC=${TOPIC}"
 
 gcloud run deploy "$SERVICE" --image="$IMAGE" --region="$REGION" --project="$PROJECT_ID" \
   --service-account="$RUNTIME_SA" --allow-unauthenticated --port=8080 \
-  --memory=1Gi --cpu=1 --concurrency=8 --max-instances=10 --timeout=3600 \
+  --memory=1Gi --cpu=1 --no-cpu-throttling --concurrency=8 --max-instances=10 --timeout=3600 \
   --set-env-vars="${COMMON_ENV},PUB_SUB_DRIVER=goroutine" --set-secrets="$SECRET_ARGS"
 
 SERVICE_URL="$(gcloud run services describe "$SERVICE" --region="$REGION" --project="$PROJECT_ID" --format='value(status.url)')"
@@ -133,4 +142,6 @@ gcloud storage buckets update "gs://${PRIMARY_BUCKET}" --cors-file="$CORS_FILE" 
 
 printf 'Cloud Run URL: %s\n' "$SERVICE_URL"
 printf 'HTTP user: %s\n' "$HTTP_BASIC_AUTH_USER"
+printf 'Primary object bucket: gs://%s (%s)\n' "$PRIMARY_BUCKET" "$PRIMARY_BUCKET_CLASS"
+printf 'Metadata bucket: gs://%s (STANDARD, %s)\n' "$METADATA_BUCKET" "$REGION"
 printf 'Retrieve the password with: gcloud secrets versions access latest --secret=vfs-link-http-basic-password --project=%s\n' "$PROJECT_ID"

@@ -40,7 +40,7 @@ func TestDefaultMaxBytesIsFiftyGiB(t *testing.T) {
 func TestLocalUploadCreateWriteComplete(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
-	store, err := db.NewJSONLocal(filepath.Join(root, "_vfs-link", "metadata.json"))
+	store, err := db.NewTreeLocal(filepath.Join(root, "_vfs-link"), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestLocalUploadCreateWriteComplete(t *testing.T) {
 func TestLocalFolderUploadCreatesParentDirectories(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
-	store, err := db.NewJSONLocal(filepath.Join(root, "_vfs-link", "metadata.json"))
+	store, err := db.NewTreeLocal(filepath.Join(root, "_vfs-link"), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestLocalFolderUploadCreatesParentDirectories(t *testing.T) {
 func TestLocalUploadRejectsMoreThanDeclaredSize(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
-	store, err := db.NewJSONLocal(filepath.Join(root, "_vfs-link", "metadata.json"))
+	store, err := db.NewTreeLocal(filepath.Join(root, "_vfs-link"), "")
 	if err != nil {
 		t.Fatal(err)
 	}

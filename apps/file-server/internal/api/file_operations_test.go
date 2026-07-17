@@ -8,16 +8,39 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/blob"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/db"
 )
 
+type blockingOperationStore struct {
+	db.Store
+	db.TreeOperationStore
+	runs    atomic.Int32
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *blockingOperationStore) RunOperation(ctx context.Context, id string) (db.OperationRecord, error) {
+	s.runs.Add(1)
+	s.once.Do(func() { close(s.started) })
+	select {
+	case <-s.release:
+	case <-ctx.Done():
+		return db.OperationRecord{}, ctx.Err()
+	}
+	return s.TreeOperationStore.RunOperation(ctx, id)
+}
+
 func TestFileOperationsAPITrashLifecycle(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
-	store, err := db.NewJSONLocal(filepath.Join(root, "metadata.json"))
+	store, err := db.NewTreeLocal(filepath.Join(root, "metadata"), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,6 +116,269 @@ func TestFileOperationsAPITrashLifecycle(t *testing.T) {
 	}
 	if records, err := store.ListTrashRecords(ctx, nil); err != nil || len(records) != 0 {
 		t.Fatalf("remaining trash records=%d err=%v", len(records), err)
+	}
+}
+
+func TestTreeDirectoryMoveReturnsAcceptedOperationAndCanBePolled(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store, err := db.NewTreeLocal(filepath.Join(root, "tree"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	if err := store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	objects, err := blob.NewLocal(filepath.Join(root, "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, directory := range []string{"/source", "/target"} {
+		if err := store.UpsertDirectory(ctx, directory); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.UpsertFile(ctx, "/source/a.txt", "object-a", 1); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := New(store, objects, nil, "", "").Handler()
+	var accepted operationResponse
+	requestJSON(t, handler, http.MethodPost, "/api/files/move", map[string]any{
+		"paths": []string{"/source"}, "destination": "/target",
+	}, http.StatusAccepted, &accepted)
+	if accepted.OperationID == "" || accepted.Status != "pending" {
+		t.Fatalf("accepted operation = %#v", accepted)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	var completed operationResponse
+	for {
+		var current operationResponse
+		requestJSON(t, handler, http.MethodGet, "/api/operations/"+accepted.OperationID, nil, http.StatusOK, &current)
+		if current.Status == "completed" {
+			if len(current.Entries) == 0 {
+				t.Fatalf("completed operation has no entries: %#v", current)
+			}
+			completed = current
+			break
+		}
+		if current.Status == "failed" {
+			t.Fatalf("operation failed: %#v", current)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("operation did not complete: %#v", current)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, found, err := store.Find(ctx, "/target/source/a.txt"); err != nil || !found {
+		t.Fatalf("moved descendant found=%v err=%v operation=%#v", found, err, completed)
+	}
+}
+
+func TestTreeFileMoveRemainsSynchronous(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store, err := db.NewTreeLocal(filepath.Join(root, "tree"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	if err := store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	objects, err := blob.NewLocal(filepath.Join(root, "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertDirectory(ctx, "/target"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertFile(ctx, "/a.txt", "object-a", 1); err != nil {
+		t.Fatal(err)
+	}
+
+	var moved entriesResponse
+	requestJSON(t, New(store, objects, nil, "", "").Handler(), http.MethodPost, "/api/files/move", map[string]any{
+		"paths": []string{"/a.txt"}, "destination": "/target",
+	}, http.StatusOK, &moved)
+	if len(moved.Entries) != 1 || moved.Entries[0].Path != "/target/a.txt" {
+		t.Fatalf("moved entries = %#v", moved.Entries)
+	}
+}
+
+func TestTreeDirectoryTrashAndRestoreReturnAcceptedOperations(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store, err := db.NewTreeLocal(filepath.Join(root, "tree"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	if err := store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertDirectory(ctx, "/folder"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertFile(ctx, "/folder/a.txt", "object-a", 1); err != nil {
+		t.Fatal(err)
+	}
+	objects, err := blob.NewLocal(filepath.Join(root, "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := New(store, objects, nil, "", "").Handler()
+
+	var accepted operationResponse
+	requestJSON(t, handler, http.MethodPost, "/api/files/trash", map[string]any{
+		"paths": []string{"/folder"},
+	}, http.StatusAccepted, &accepted)
+	completed := pollOperation(t, handler, accepted.OperationID)
+	if len(completed.Entries) == 0 || completed.Entries[0].TrashID == "" {
+		t.Fatalf("trash operation entries = %#v", completed.Entries)
+	}
+
+	accepted = operationResponse{}
+	requestJSON(t, handler, http.MethodPost, "/api/trash/restore", map[string]any{
+		"trashIds": []string{completed.Entries[0].TrashID},
+	}, http.StatusAccepted, &accepted)
+	pollOperation(t, handler, accepted.OperationID)
+	if _, found, err := store.Find(ctx, "/folder/a.txt"); err != nil || !found {
+		t.Fatalf("restored descendant found=%v err=%v", found, err)
+	}
+}
+
+func TestTreeDirectoryPermanentDeleteRunsDurableOperation(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store, err := db.NewTreeLocal(filepath.Join(root, "tree"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	if err := store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertDirectory(ctx, "/folder"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertFile(ctx, "/folder/a.txt", "object-a", 1); err != nil {
+		t.Fatal(err)
+	}
+	objects, err := blob.NewLocal(filepath.Join(root, "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, err := objects.NewWriter(ctx, "object-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write([]byte("a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	handler := New(store, objects, nil, "", "").Handler()
+
+	var accepted operationResponse
+	requestJSON(t, handler, http.MethodPost, "/api/files/trash", map[string]any{
+		"paths": []string{"/folder"},
+	}, http.StatusAccepted, &accepted)
+	trashed := pollOperation(t, handler, accepted.OperationID)
+	trashID := trashed.Entries[0].TrashID
+
+	accepted = operationResponse{}
+	requestJSON(t, handler, http.MethodPost, "/api/trash/delete", map[string]any{
+		"trashIds": []string{trashID},
+	}, http.StatusAccepted, &accepted)
+	deleted := pollOperation(t, handler, accepted.OperationID)
+	if deleted.Deleted == 0 || deleted.Progress != 1 || deleted.Total != 1 {
+		t.Fatalf("delete operation = %#v", deleted)
+	}
+	if _, err := os.Stat(filepath.Join(objects.Root(), "object-a")); !os.IsNotExist(err) {
+		t.Fatalf("permanently deleted object stat error = %v", err)
+	}
+	if trash, err := store.ListTrash(ctx); err != nil || len(trash) != 0 {
+		t.Fatalf("remaining trash=%d err=%v", len(trash), err)
+	}
+}
+
+func pollOperation(t *testing.T, handler http.Handler, id string) operationResponse {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var current operationResponse
+		requestJSON(t, handler, http.MethodGet, "/api/operations/"+id, nil, http.StatusOK, &current)
+		switch current.Status {
+		case "completed":
+			return current
+		case "failed":
+			t.Fatalf("operation failed: %#v", current)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("operation did not complete: %#v", current)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestOperationPollsDoNotStartDuplicateInProcessWorkers(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	base, err := db.NewTreeLocal(filepath.Join(root, "tree"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(base.Close)
+	if err := base.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.UpsertDirectory(ctx, "/source"); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.UpsertDirectory(ctx, "/target"); err != nil {
+		t.Fatal(err)
+	}
+	treeOperations := base.(db.TreeOperationStore)
+	store := &blockingOperationStore{
+		Store: base, TreeOperationStore: treeOperations,
+		started: make(chan struct{}), release: make(chan struct{}),
+	}
+	objects, err := blob.NewLocal(filepath.Join(root, "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := New(store, objects, nil, "", "")
+	handler := server.Handler()
+	var releaseOnce sync.Once
+	releaseWorker := func() { releaseOnce.Do(func() { close(store.release) }) }
+	t.Cleanup(func() {
+		releaseWorker()
+		waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := server.files.WaitOperations(waitCtx); err != nil {
+			t.Errorf("wait operation workers during cleanup: %v", err)
+		}
+	})
+	var accepted operationResponse
+	requestJSON(t, handler, http.MethodPost, "/api/files/move", map[string]any{
+		"paths": []string{"/source"}, "destination": "/target",
+	}, http.StatusAccepted, &accepted)
+	<-store.started
+	for range 5 {
+		requestJSON(t, handler, http.MethodGet, "/api/operations/"+accepted.OperationID, nil, http.StatusOK, nil)
+	}
+	if got := store.runs.Load(); got != 1 {
+		t.Fatalf("RunOperation calls = %d, want 1", got)
+	}
+	releaseWorker()
+	waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := server.files.WaitOperations(waitCtx); err != nil {
+		t.Fatalf("wait operation workers: %v", err)
 	}
 }
 

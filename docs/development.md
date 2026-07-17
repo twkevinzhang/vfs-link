@@ -19,7 +19,9 @@ For a database-free local run, replace `DATABASE_URL` with:
 
 ```bash
 DB_DRIVER=json \
-JSON_DB_OBJECT=_vfs-link/metadata.json \
+METADATA_STORAGE_DRIVER=local \
+METADATA_LOCAL_ROOT='../../data/metadata' \
+METADATA_PREFIX=_vfs-link \
 STORAGE_DRIVER=local \
 LOCAL_STORAGE_ROOT='../../data/objects' \
 FTP_ENABLED=false WEBDAV_ENABLED=false HTTP_PORT=8080 \

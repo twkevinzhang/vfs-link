@@ -12,7 +12,10 @@ services:
     environment:
       - DB_DRIVER=${DB_DRIVER:-postgres}
       - DATABASE_URL=${DATABASE_URL:-postgresql://vfs_link:vfs_link@db:5432/vfs_link?sslmode=disable}
-      - JSON_DB_OBJECT=${JSON_DB_OBJECT:-_vfs-link/metadata.json}
+      - METADATA_STORAGE_DRIVER=${METADATA_STORAGE_DRIVER:-local}
+      - METADATA_LOCAL_ROOT=/data/metadata
+      - METADATA_GCS_BUCKET=${METADATA_GCS_BUCKET:-}
+      - METADATA_PREFIX=${METADATA_PREFIX:-_vfs-link}
       - STORAGE_DRIVER=${STORAGE_DRIVER:-local}
       - LOCAL_STORAGE_ROOT=/data/objects
       - GCS_BUCKET=${GCS_BUCKET:-}
@@ -39,6 +42,7 @@ services:
       - HTTP_BASIC_AUTH_USER=${HTTP_BASIC_AUTH_USER:-}
       - HTTP_BASIC_AUTH_PASS=${HTTP_BASIC_AUTH_PASS:-}
       - HTTP_CORS_ORIGINS=${HTTP_CORS_ORIGINS:-*}
+      - MAINTENANCE_MODE=${MAINTENANCE_MODE:-false}
       - UPLOAD_SESSION_TTL=${UPLOAD_SESSION_TTL:-24h}
       - UPLOAD_MAX_BYTES=${UPLOAD_MAX_BYTES:-53687091200}
       - PUB_SUB_DRIVER=${PUB_SUB_DRIVER:-goroutine}
@@ -48,6 +52,7 @@ services:
       - PUB_SUB_PUSH_SERVICE_ACCOUNT=${PUB_SUB_PUSH_SERVICE_ACCOUNT:-}
     volumes:
       - objectdata:/data/objects
+      - metadata:/data/metadata
     networks:
       - vfs-net
 
@@ -71,6 +76,7 @@ services:
 volumes:
   pgdata:
   objectdata:
+  metadata:
 
 networks:
   vfs-net:

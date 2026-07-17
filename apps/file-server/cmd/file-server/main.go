@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -102,7 +101,7 @@ func run(logger *slog.Logger) error {
 	httpHandler.Handle("/", httpauth.Basic(cfg.HTTPBasicAuth, cfg.HTTPBasicUser, cfg.HTTPBasicPass, publicHandler))
 	apiServer := &http.Server{
 		Addr:              cfg.HTTPListenAddr(),
-		Handler:           httpHandler,
+		Handler:           maintenanceMode(cfg.MaintenanceMode, httpHandler),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -170,18 +169,35 @@ func run(logger *slog.Logger) error {
 	}
 }
 
+func maintenanceMode(enabled bool, next http.Handler) http.Handler {
+	if !enabled {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet, http.MethodHead, http.MethodOptions:
+			next.ServeHTTP(w, r)
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Retry-After", "60")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":"maintenance mode: metadata mutations are temporarily disabled"}`))
+		}
+	})
+}
+
 func newMetadataStore(ctx context.Context, cfg config.Config) (db.Store, error) {
 	switch cfg.DatabaseDriver {
 	case "postgres":
 		return db.NewPostgres(ctx, cfg.DatabaseURL)
 	case "json":
-		switch cfg.StorageDriver {
+		switch cfg.MetadataStorageDriver {
 		case "local":
-			return db.NewJSONLocal(filepath.Join(cfg.LocalStorageRoot, filepath.FromSlash(cfg.JSONDBObject)))
+			return db.NewTreeLocal(cfg.MetadataLocalRoot, cfg.MetadataPrefix)
 		case "gcs":
-			return db.NewJSONGCS(ctx, cfg.GCSBucket, cfg.JSONDBObject)
+			return db.NewTreeGCS(ctx, cfg.MetadataGCSBucket, cfg.MetadataPrefix)
 		default:
-			return nil, fmt.Errorf("unsupported STORAGE_DRIVER %q for JSON metadata", cfg.StorageDriver)
+			return nil, fmt.Errorf("unsupported METADATA_STORAGE_DRIVER %q", cfg.MetadataStorageDriver)
 		}
 	default:
 		return nil, fmt.Errorf("unsupported DB_DRIVER %q", cfg.DatabaseDriver)

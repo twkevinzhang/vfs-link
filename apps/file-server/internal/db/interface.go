@@ -54,6 +54,22 @@ type Store interface {
 	DeleteUpload(context.Context, string) (bool, error)
 }
 
+// MetadataStats is a cheap logical metadata summary maintained by stores that
+// can avoid scanning every record. PhysicalObjects/PhysicalBytes describe the
+// referenced immutable objects, not objects in the metadata bucket.
+type MetadataStats struct {
+	LogicalFiles        int64    `json:"logicalFiles"`
+	LogicalDirs         int64    `json:"logicalDirectories"`
+	LogicalBytes        int64    `json:"logicalBytes"`
+	PhysicalObjects     int64    `json:"physicalObjects"`
+	PhysicalBytes       int64    `json:"physicalBytes"`
+	AppliedOperationIDs []string `json:"appliedOperationIds,omitempty"`
+}
+
+type MetadataStatsProvider interface {
+	MetadataStats(context.Context) (MetadataStats, error)
+}
+
 type TrashPath struct {
 	Path    string `json:"path"`
 	TrashID string `json:"trashId"`
