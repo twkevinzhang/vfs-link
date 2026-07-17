@@ -23,6 +23,41 @@ func newTestTree(t *testing.T) *TreeStore {
 	return tree
 }
 
+func TestCanonicalTreeIndexPathOnlyAliasesOuterWhitespace(t *testing.T) {
+	if left, right := canonicalTreeIndexPath("/Game/PCGame/archive"), canonicalTreeIndexPath("/Game/PCGame/archive "); left != right {
+		t.Fatalf("canonical directory paths differ: %q != %q", left, right)
+	}
+	if got := normalizeTreeRecord(FileRecord{LogicPath: "/Game/PCGame/archive /file.bin"}).LogicPath; got != "/Game/PCGame/archive /file.bin" {
+		t.Fatalf("internal segment whitespace was changed: %q", got)
+	}
+	if left, right := encodeTreePath("/Game/PCGame/archive"), encodeTreePath("/Game/PCGame/archive "); left != right {
+		t.Fatalf("canonical index keys differ: %q != %q", left, right)
+	}
+}
+
+func TestBulkImportTreeMergesDirectoryIndexWhitespaceAliases(t *testing.T) {
+	ctx := context.Background()
+	target := newTestTree(t)
+	snapshot := TreeImportSnapshot{
+		Records: []FileRecord{
+			{ID: 1, LogicPath: "/archive", IsDirectory: true},
+			{ID: 2, LogicPath: "/archive /one.bin", PhysicalHash: "one", Size: 3},
+			{ID: 3, LogicPath: "/archive /two.bin", PhysicalHash: "two", Size: 5},
+		},
+		NextFileID: 4,
+	}
+	if _, err := BulkImportTree(ctx, target, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	page, err := target.ListDirectChildren(ctx, "/archive", DirectChildrenOptions{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Records) != 2 || page.FolderSummary != (FolderSummary{Files: 2, Bytes: 8}) {
+		t.Fatalf("page=%+v", page)
+	}
+}
+
 func TestTrashRestoreResumeAfterStatsBeforeCompletionIsExact(t *testing.T) {
 	ctx := context.Background()
 	s := newTestTree(t)

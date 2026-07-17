@@ -107,7 +107,7 @@ func (s *TreeStore) EnsureSchema(ctx context.Context) error {
 }
 
 func encodeTreePath(logicPath string) string {
-	logicPath = pathpkg.Clean("/" + strings.TrimSpace(logicPath))
+	logicPath = canonicalTreeIndexPath(logicPath)
 	if logicPath == "/" {
 		return "_root"
 	}
@@ -272,6 +272,10 @@ func (s *TreeStore) nextID(ctx context.Context) (int, error) {
 func normalizeTreeRecord(r FileRecord) FileRecord {
 	r.LogicPath = pathpkg.Clean("/" + strings.TrimSpace(r.LogicPath))
 	return r
+}
+
+func canonicalTreeIndexPath(logicPath string) string {
+	return pathpkg.Clean("/" + strings.TrimSpace(logicPath))
 }
 func marshalTree(v any) ([]byte, error) {
 	b, e := json.MarshalIndent(v, "", "  ")
@@ -983,7 +987,7 @@ func ValidateTreeImport(prefix string, snapshot TreeImportSnapshot) (TreeValidat
 		return nil
 	}
 	v := TreeValidation{Expected: len(snapshot.Records), Actual: len(snapshot.Records)}
-	dirs := map[string]bool{}
+	dirs := map[string]bool{"/": true}
 	trashRoots := map[string]bool{}
 	for _, r := range snapshot.Records {
 		r = normalizeTreeRecord(r)
@@ -997,7 +1001,10 @@ func ValidateTreeImport(prefix string, snapshot TreeImportSnapshot) (TreeValidat
 		} else {
 			key = fake.activeKey(r.LogicPath, r.IsDirectory)
 			v.Active++
-			dirs[pathpkg.Dir(r.LogicPath)] = true
+			dirs[canonicalTreeIndexPath(pathpkg.Dir(r.LogicPath))] = true
+			if r.IsDirectory {
+				dirs[canonicalTreeIndexPath(r.LogicPath)] = true
+			}
 		}
 		if e := validateUniqueKey(key); e != nil {
 			return v, e
@@ -1132,12 +1139,14 @@ func BulkImportTree(ctx context.Context, store Store, snapshot TreeImportSnapsho
 		rCopy := r
 		tasks = append(tasks, func(taskCtx context.Context) error { return tree.putNode(taskCtx, rCopy, true) })
 		validation.Active++
-		byDir[pathpkg.Dir(r.LogicPath)] = append(byDir[pathpkg.Dir(r.LogicPath)], r)
+		parentDir := canonicalTreeIndexPath(pathpkg.Dir(r.LogicPath))
+		byDir[parentDir] = append(byDir[parentDir], r)
 		if r.IsDirectory {
 			// Empty directories also need an aggregate manifest so their parent
 			// can publish an explicit zero summary.
-			if _, exists := byDir[r.LogicPath]; !exists {
-				byDir[r.LogicPath] = nil
+			directory := canonicalTreeIndexPath(r.LogicPath)
+			if _, exists := byDir[directory]; !exists {
+				byDir[directory] = nil
 			}
 			st.LogicalDirs++
 		} else {
