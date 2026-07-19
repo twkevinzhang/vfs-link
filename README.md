@@ -1,9 +1,150 @@
 # vfs-link
 
-vfs-link is a PostgreSQL- or JSON-backed file server with a browser UI and HTTP
-API, optional Google Cloud Storage (GCS), WebDAV, and transitional FTP support. Logical
-file moves only update the database mapping; object bytes are not copied during
-a rename.
+> ## Move paths, not bytes.
+>
+> vfs-link is a virtual filesystem for object storage. The user-visible file tree
+> lives in PostgreSQL or a distributed JSON metadata tree, while file payloads
+> live under opaque `physicalHash` object keys.
+>
+> **Rename a 100 GiB file: 0 B of payload copied.**
+
+With `DB_DRIVER=json`, the JSON tree is not a cache—it is the source of truth
+for the logical filesystem namespace. Rename, move, trash, and restore
+operations change the namespace; the underlying file payload stays where it is.
+
+## The core idea
+
+### A path-coupled object layout
+
+When the user-visible path is also the object key, a logical move can become a
+storage operation:
+
+```text
+User-visible path                  GCS object
+─────────────────                  ──────────
+
+/incoming/report.zip  ───────────> gs://bucket/incoming/report.zip
+                                    100 GiB
+
+
+MOVE /incoming/report.zip
+  TO /archive/report.zip
+
+
+gs://bucket/incoming/report.zip
+          │
+          ├── copy / rewrite 100 GiB
+          │
+          └──────────────────────────────> gs://bucket/archive/report.zip
+                                             100 GiB
+          │
+          └── delete the source object
+```
+
+The logical namespace and physical object layout are coupled.
+
+### The vfs-link layout
+
+vfs-link inserts a metadata layer between the path users see and the object
+that stores the bytes:
+
+```text
+Logical namespace                         Physical storage
+PostgreSQL or JSON metadata               GCS payload objects
+───────────────────────────               ───────────────────
+
+BEFORE
+
+/incoming/report.zip
+    │
+    └── physicalHash: 7f3a... ──────────> gs://data-bucket/7f3a...
+                                           100 GiB payload
+
+
+MOVE /incoming/report.zip
+  TO /archive/report.zip
+
+
+AFTER
+
+/archive/report.zip
+    │
+    └── physicalHash: 7f3a... ──────────> gs://data-bucket/7f3a...
+                                           same 100 GiB payload
+                                           same physical object
+
+          metadata changed                  payload copied: 0 B
+```
+
+A 1 KiB file and a 100 GiB file have the same payload-copy cost during a
+rename: **zero**.
+
+For directory moves, work scales with metadata records and indexes—not with the
+total number of payload bytes stored beneath that directory.
+
+## What moves—and what does not
+
+| Logical operation | Metadata | Physical payload |
+| --- | --- | --- |
+| Rename a file | Updated | Unchanged — **0 B copied** |
+| Move a file | Updated | Unchanged — **0 B copied** |
+| Move a directory | Updated asynchronously when needed | Unchanged — **0 B copied** |
+| Move to trash | Active mapping is hidden | Retained — **0 B copied** |
+| Restore from trash | Mapping is restored | Reused — **0 B copied** |
+| Permanently delete | Mapping is removed | Object is deleted |
+
+> [!IMPORTANT]
+> Metadata-only does not mean zero work. Large JSON-tree operations may update
+> many metadata records and run asynchronously. The important property is that
+> vfs-link never rewrites the file payload merely because its logical path
+> changed.
+
+## Two buckets, two jobs
+
+For a serverless GCS deployment, vfs-link separates frequently updated
+metadata from large, mostly stable file payloads:
+
+```text
+                         Browser / HTTP API
+                                  │
+                                  ▼
+                       ┌─────────────────────┐
+                       │ vfs-link / Cloud Run│
+                       └──────────┬──────────┘
+                                  │
+                    ┌─────────────┴─────────────┐
+                    │                           │
+                    ▼                           ▼
+       ┌────────────────────────┐   ┌───────────────────────────┐
+       │ Metadata bucket        │   │ Primary data bucket       │
+       │                        │   │                           │
+       │ Small JSON records     │   │ Large file payloads       │
+       │ Paths and indexes      │   │ Keyed by physicalHash     │
+       │ Operation manifests    │   │ Unchanged by path moves   │
+       │ Aggregate statistics   │   │                           │
+       │                        │   │                           │
+       │ Standard storage       │   │ Standard or Archive       │
+       └────────────────────────┘   └───────────────────────────┘
+```
+
+Metadata writes use GCS generation preconditions to prevent concurrent
+instances from silently overwriting one another. Long-running JSON-tree
+operations use persisted manifests, leases, checkpoints, and retries so they
+can recover safely.
+
+## More than cheap moves
+
+vfs-link also provides:
+
+- A bundled browser UI and HTTP API
+- WebDAV and transitional FTP access
+- PostgreSQL or distributed JSON metadata
+- Local or GCS-backed primary storage
+- Direct-to-GCS browser uploads
+- Trash, restore, sharing, and physical-object health checks
+- A serverless deployment model for Cloud Run
+
+## Quick start
 
 > [!WARNING]
 > WebDAV uses Basic authentication and rejects requests that are not HTTPS.
