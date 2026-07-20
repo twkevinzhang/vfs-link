@@ -3,6 +3,7 @@ import {
   ChevronDown,
   ChevronUp,
   Check,
+  Copy,
   Database,
   Download,
   File,
@@ -661,8 +662,8 @@ export default function FileBrowserRoute() {
         </header>
 
         <section className="flex min-w-0 flex-col gap-4 lg:min-h-0 lg:flex-1">
-          <div className="overflow-x-auto rounded-lg border border-border bg-white p-4">
-            <div className="min-w-max">
+          <div className="overflow-hidden rounded-lg border border-border bg-white p-4">
+            <div className="min-w-0">
               {view === 'files' ? (
                 <Breadcrumbs
                   entries={state.files?.breadcrumbs ?? []}
@@ -1306,6 +1307,11 @@ function Breadcrumbs({
   currentPath: string;
   onSelectPath: (path: string) => void;
 }) {
+  const logicalPath = normalizePath(currentPath);
+  const [copiedPath, setCopiedPath] = useState<string>();
+  const copyResetTimerRef = useRef<number | undefined>(undefined);
+  const currentLogicalPathRef = useRef(logicalPath);
+  currentLogicalPathRef.current = logicalPath;
   const crumbs =
     entries.length > 0
       ? entries
@@ -1319,31 +1325,77 @@ function Breadcrumbs({
           },
         ];
 
+  useEffect(() => {
+    setCopiedPath(undefined);
+    return () => {
+      if (copyResetTimerRef.current !== undefined) {
+        window.clearTimeout(copyResetTimerRef.current);
+      }
+    };
+  }, [logicalPath]);
+
+  async function handleCopyPath() {
+    try {
+      await navigator.clipboard.writeText(logicalPath);
+      if (currentLogicalPathRef.current !== logicalPath) {
+        return;
+      }
+      if (copyResetTimerRef.current !== undefined) {
+        window.clearTimeout(copyResetTimerRef.current);
+      }
+      setCopiedPath(logicalPath);
+      copyResetTimerRef.current = window.setTimeout(() => {
+        setCopiedPath((path) => (path === logicalPath ? undefined : path));
+        copyResetTimerRef.current = undefined;
+      }, 1500);
+    } catch {
+      // Clipboard access can be unavailable outside a secure browser context.
+    }
+  }
+
+  const isCopied = copiedPath === logicalPath;
+
   return (
-    <div className="flex min-w-max flex-nowrap items-center gap-1 text-sm">
-      {crumbs.map((entry, index) => {
-        const path = normalizePath(entry.path);
-        const label = formatPathDisplayName(path, entry.name);
-        const isLast =
-          path === normalizePath(currentPath) || index === crumbs.length - 1;
-        return (
-          <div
-            key={`${entry.path}-${index}`}
-            className="flex shrink-0 items-center gap-1"
-          >
-            <Button
-              variant={isLast ? 'secondary' : 'ghost'}
-              size="sm"
-              className="max-w-none shrink-0 whitespace-nowrap"
-              onClick={() => onSelectPath(path)}
-              title={path === '/' ? label : path}
-            >
-              {label}
-            </Button>
-            {!isLast && <span className="text-muted-foreground">/</span>}
-          </div>
-        );
-      })}
+    <div className="flex min-w-0 items-center gap-2 text-sm">
+      <div className="min-w-0 flex-1 overflow-x-auto">
+        <div className="flex min-w-max flex-nowrap items-center gap-1">
+          {crumbs.map((entry, index) => {
+            const path = normalizePath(entry.path);
+            const label = formatPathDisplayName(path, entry.name);
+            const isLast = path === logicalPath || index === crumbs.length - 1;
+            return (
+              <div
+                key={`${entry.path}-${index}`}
+                className="flex shrink-0 items-center gap-1"
+              >
+                <Button
+                  variant={isLast ? 'secondary' : 'ghost'}
+                  size="sm"
+                  className="max-w-none shrink-0 whitespace-nowrap"
+                  onClick={() => onSelectPath(path)}
+                  title={path === '/' ? label : path}
+                >
+                  {label}
+                </Button>
+                {!isLast && <span className="text-muted-foreground">/</span>}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      <Button
+        variant="outline"
+        size="icon"
+        onClick={() => void handleCopyPath()}
+        aria-label={isCopied ? '已複製路徑' : '複製路徑'}
+        title={isCopied ? '已複製路徑' : '複製路徑'}
+      >
+        {isCopied ? (
+          <Check aria-hidden="true" className="h-4 w-4" />
+        ) : (
+          <Copy aria-hidden="true" className="h-4 w-4" />
+        )}
+      </Button>
     </div>
   );
 }
