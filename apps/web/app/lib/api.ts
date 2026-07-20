@@ -37,7 +37,11 @@ async function requestJson<T>(path: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-async function postJson<T>(path: string, body: unknown): Promise<T> {
+async function postJson<T>(
+  path: string,
+  body: unknown,
+  options: { signal?: AbortSignal } = {}
+): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: 'POST',
     headers: {
@@ -45,6 +49,7 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(body),
+    signal: options.signal,
   });
 
   if (!response.ok) {
@@ -175,8 +180,8 @@ export function createUpload(input: CreateUploadInput) {
   return postJson<UploadSession>('/api/uploads', input);
 }
 
-export function completeUpload(session: UploadSession) {
-  return postJson<UploadSession>(session.completeUrl, {});
+export function completeUpload(session: UploadSession, signal?: AbortSignal) {
+  return postJson<UploadSession>(session.completeUrl, {}, { signal });
 }
 
 export function cancelUpload(id: string) {
@@ -190,10 +195,32 @@ export function cancelUpload(id: string) {
 export function putUpload(
   session: UploadSession,
   file: File,
-  onProgress: (uploaded: number, total: number) => void
+  onProgress: (uploaded: number, total: number) => void,
+  signal?: AbortSignal
 ) {
   return new Promise<void>((resolve, reject) => {
     const request = new XMLHttpRequest();
+    let settled = false;
+
+    const abortRequest = () => request.abort();
+    const cleanup = () => signal?.removeEventListener('abort', abortRequest);
+    const succeed = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve();
+    };
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+    if (signal?.aborted) {
+      fail(new Error('Upload cancelled'));
+      return;
+    }
+
     request.open(session.method, apiUrl(session.uploadUrl));
     for (const [name, value] of Object.entries(session.headers)) {
       request.setRequestHeader(name, value);
@@ -210,19 +237,22 @@ export function putUpload(
     });
     request.addEventListener('load', () => {
       if (request.status >= 200 && request.status < 300) {
-        resolve();
+        succeed();
         return;
       }
-      reject(
-        new Error(`Upload failed: ${request.status} ${request.statusText}`)
-      );
+      fail(new Error(`Upload failed: ${request.status} ${request.statusText}`));
     });
     request.addEventListener('error', () =>
-      reject(new Error('Upload connection failed'))
+      fail(new Error('Upload connection failed'))
     );
     request.addEventListener('abort', () =>
-      reject(new Error('Upload cancelled'))
+      fail(new Error('Upload cancelled'))
     );
-    request.send(file);
+    signal?.addEventListener('abort', abortRequest, { once: true });
+    try {
+      request.send(file);
+    } catch (error) {
+      fail(error instanceof Error ? error : new Error('Upload failed'));
+    }
   });
 }

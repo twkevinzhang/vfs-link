@@ -87,6 +87,10 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
   const itemsRef = useRef(items);
   const onItemCompleteRef = useRef(onItemComplete);
   const runningKeysRef = useRef(new Set<string>());
+  const cancelledKeysRef = useRef(new Set<string>());
+  const abortControllersRef = useRef(new Map<string, AbortController>());
+  const sessionIdsRef = useRef(new Map<string, string>());
+  const cleanedSessionIdsRef = useRef(new Set<string>());
   const progressRef = useRef(new Map<string, number>());
   const progressFrameRef = useRef<number | undefined>(undefined);
   const completeTimersRef = useRef(
@@ -123,6 +127,12 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
     }
   }, []);
 
+  const cleanupUploadSession = useCallback((sessionId: string) => {
+    if (cleanedSessionIdsRef.current.has(sessionId)) return;
+    cleanedSessionIdsRef.current.add(sessionId);
+    void cancelUpload(sessionId).catch(() => undefined);
+  }, []);
+
   const dismiss = useCallback(
     (key: string) => {
       const item = itemsRef.current.find((candidate) => candidate.key === key);
@@ -137,6 +147,39 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
     },
     [clearCompleteTimer, updateItems]
   );
+
+  const cancel = useCallback(
+    (key: string) => {
+      const item = itemsRef.current.find((candidate) => candidate.key === key);
+      if (!item || (item.state !== 'queued' && item.state !== 'uploading'))
+        return;
+
+      const isRunning = runningKeysRef.current.has(key);
+      if (isRunning) cancelledKeysRef.current.add(key);
+      clearCompleteTimer(key);
+      progressRef.current.delete(key);
+      abortControllersRef.current.get(key)?.abort();
+
+      const sessionId = sessionIdsRef.current.get(key) ?? item.sessionId;
+      if (sessionId) cleanupUploadSession(sessionId);
+
+      // Cancellation is intentionally immediate: it should remove the row
+      // regardless of whether the active request has finished unwinding yet.
+      updateItems((current) =>
+        current.filter((candidate) => candidate.key !== key)
+      );
+      if (!isRunning) cancelledKeysRef.current.delete(key);
+      scheduleRef.current?.();
+    },
+    [cleanupUploadSession, clearCompleteTimer, updateItems]
+  );
+
+  const cancelAll = useCallback(() => {
+    const pendingKeys = itemsRef.current
+      .filter((item) => item.state === 'queued' || item.state === 'uploading')
+      .map((item) => item.key);
+    for (const key of pendingKeys) cancel(key);
+  }, [cancel]);
 
   const flushProgress = useCallback(() => {
     progressFrameRef.current = undefined;
@@ -188,10 +231,14 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
   const startUpload = useCallback(
     async (key: string) => {
       const item = itemsRef.current.find((candidate) => candidate.key === key);
-      if (!item || item.state !== 'queued') {
+      if (!mountedRef.current || !item || item.state !== 'queued') {
         runningKeysRef.current.delete(key);
+        cancelledKeysRef.current.delete(key);
         return;
       }
+
+      const controller = new AbortController();
+      abortControllersRef.current.set(key, controller);
 
       updateItems((current) =>
         current.map((candidate) =>
@@ -219,6 +266,7 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
         try {
           session = await createUpload(createInput);
         } catch (error) {
+          if (cancelledKeysRef.current.has(key)) return;
           if (
             !overwrite &&
             isAlreadyExistsError(error) &&
@@ -238,16 +286,36 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
           }
         }
         sessionId = session.id;
+        sessionIdsRef.current.set(key, sessionId);
+        // Do not abort session creation: the server may create a session just
+        // as the user cancels. Once its id is known, clean it up exactly once.
+        if (cancelledKeysRef.current.has(key)) {
+          cleanupUploadSession(sessionId);
+          return;
+        }
         updateItems((current) =>
           current.map((candidate) =>
             candidate.key === key ? { ...candidate, sessionId } : candidate
           )
         );
 
-        await putUpload(session, item.file, (uploaded, total) => {
-          queueProgress(key, total > 0 ? (uploaded / total) * 100 : 0);
-        });
-        await completeUpload(session);
+        await putUpload(
+          session,
+          item.file,
+          (uploaded, total) => {
+            queueProgress(key, total > 0 ? (uploaded / total) * 100 : 0);
+          },
+          controller.signal
+        );
+        if (cancelledKeysRef.current.has(key)) {
+          cleanupUploadSession(sessionId);
+          return;
+        }
+        await completeUpload(session, controller.signal);
+        if (cancelledKeysRef.current.has(key)) {
+          cleanupUploadSession(sessionId);
+          return;
+        }
 
         progressRef.current.delete(key);
         const completedItem: UploadQueueItem = {
@@ -269,6 +337,10 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
         completeTimersRef.current.set(key, timer);
       } catch (error) {
         progressRef.current.delete(key);
+        if (cancelledKeysRef.current.has(key)) {
+          if (sessionId) cleanupUploadSession(sessionId);
+          return;
+        }
         updateItems((current) =>
           current.map((candidate) =>
             candidate.key === key
@@ -282,17 +354,21 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
           )
         );
         if (sessionId) {
-          void cancelUpload(sessionId).catch(() => undefined);
+          cleanupUploadSession(sessionId);
         }
       } finally {
         runningKeysRef.current.delete(key);
+        abortControllersRef.current.delete(key);
+        sessionIdsRef.current.delete(key);
+        cancelledKeysRef.current.delete(key);
         scheduleRef.current?.();
       }
     },
-    [dismiss, queueProgress, updateItems]
+    [cleanupUploadSession, dismiss, queueProgress, updateItems]
   );
 
   const schedule = useCallback(() => {
+    if (!mountedRef.current) return;
     const available = MAX_CONCURRENT_UPLOADS - runningKeysRef.current.size;
     if (available <= 0) return;
 
@@ -406,14 +482,25 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
         clearTimeout(timer);
       completeTimersRef.current.clear();
       progressRef.current.clear();
+      for (const sessionId of sessionIdsRef.current.values()) {
+        cleanupUploadSession(sessionId);
+      }
+      for (const controller of abortControllersRef.current.values()) {
+        controller.abort();
+      }
+      abortControllersRef.current.clear();
+      sessionIdsRef.current.clear();
+      cancelledKeysRef.current.clear();
     };
-  }, []);
+  }, [cleanupUploadSession]);
 
   return {
     items,
     add,
     retry,
     dismiss,
+    cancel,
+    cancelAll,
     hasPendingUploads,
     summary,
   };

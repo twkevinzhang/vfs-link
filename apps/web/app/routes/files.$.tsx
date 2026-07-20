@@ -1,5 +1,7 @@
 import {
   AlertCircle,
+  ChevronDown,
+  ChevronUp,
   Check,
   Database,
   Download,
@@ -28,6 +30,14 @@ import {
 
 import { Alert } from '../components/ui/alert';
 import { ActivityDock } from '../components/activity-dock';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogTitle,
+} from '../components/ui/alert-dialog';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -135,6 +145,9 @@ export default function FileBrowserRoute() {
   const [showTrashConfirm, setShowTrashConfirm] = useState(false);
   const [showPermanentConfirm, setShowPermanentConfirm] = useState(false);
   const [showEmptyConfirm, setShowEmptyConfirm] = useState(false);
+  const [uploadDockExpanded, setUploadDockExpanded] = useState(true);
+  const [showCancelUploadsConfirm, setShowCancelUploadsConfirm] =
+    useState(false);
   const filesRequestRef = useRef(0);
   const uploadRefreshTimerRef = useRef<number | undefined>(undefined);
   const completedUploadDestinationsRef = useRef(new Set<string>());
@@ -237,6 +250,19 @@ export default function FileBrowserRoute() {
   );
 
   const uploadQueue = useBackgroundUploadQueue();
+  const failedUploadKeysRef = useRef(new Set<string>());
+
+  useEffect(() => {
+    const failedKeys = new Set(
+      uploadQueue.items
+        .filter((item) => item.state === 'failed')
+        .map((item) => item.key)
+    );
+    if ([...failedKeys].some((key) => !failedUploadKeysRef.current.has(key))) {
+      setUploadDockExpanded(true);
+    }
+    failedUploadKeysRef.current = failedKeys;
+  }, [uploadQueue.items]);
 
   useEffect(() => {
     const activeKeys = new Set(uploadQueue.items.map((item) => item.key));
@@ -737,7 +763,6 @@ export default function FileBrowserRoute() {
                     }
                   }}
                   onShareFile={shareFile}
-                  activityDockVisible={hasActivityDock}
                 />
               )}
             </div>
@@ -759,7 +784,12 @@ export default function FileBrowserRoute() {
         >
           <div className="divide-y divide-border">
             {uploadQueue.items.length > 0 && (
-              <UploadActivity queue={uploadQueue} />
+              <UploadActivity
+                queue={uploadQueue}
+                expanded={uploadDockExpanded}
+                onExpandedChange={setUploadDockExpanded}
+                onRequestCancelAll={() => setShowCancelUploadsConfirm(true)}
+              />
             )}
             {state.error && (
               <Alert className="rounded-none border-0 text-destructive">
@@ -927,6 +957,37 @@ export default function FileBrowserRoute() {
           onOpenChange={setShowEmptyConfirm}
           onConfirm={runEmptyTrash}
         />
+        <AlertDialog
+          open={showCancelUploadsConfirm}
+          onOpenChange={setShowCancelUploadsConfirm}
+        >
+          <AlertDialogContent>
+            <AlertDialogTitle className="text-lg font-semibold">
+              Cancel all uploads?
+            </AlertDialogTitle>
+            <AlertDialogDescription className="text-sm text-muted-foreground">
+              {uploadQueue.summary.queued + uploadQueue.summary.uploading}{' '}
+              queued or uploading file
+              {uploadQueue.summary.queued + uploadQueue.summary.uploading === 1
+                ? ''
+                : 's'}{' '}
+              will be stopped and removed from this process list.
+            </AlertDialogDescription>
+            <div className="flex justify-end gap-2">
+              <AlertDialogCancel asChild>
+                <Button variant="outline">Keep uploads</Button>
+              </AlertDialogCancel>
+              <AlertDialogAction asChild>
+                <Button
+                  variant="destructive"
+                  onClick={() => uploadQueue.cancelAll()}
+                >
+                  Cancel uploads
+                </Button>
+              </AlertDialogAction>
+            </div>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </main>
   );
@@ -934,14 +995,22 @@ export default function FileBrowserRoute() {
 
 function UploadActivity({
   queue,
+  expanded,
+  onExpandedChange,
+  onRequestCancelAll,
 }: {
   queue: Pick<
     ReturnType<typeof useBackgroundUploadQueue>,
-    'items' | 'summary' | 'retry' | 'dismiss'
+    'items' | 'summary' | 'retry' | 'dismiss' | 'cancel'
   >;
+  expanded: boolean;
+  onExpandedChange: (expanded: boolean) => void;
+  onRequestCancelAll: () => void;
 }) {
   const { items, summary } = queue;
   const roundedProgress = Math.round(summary.progress);
+  const pendingCount = summary.queued + summary.uploading;
+  const queueListId = 'background-upload-queue';
   const headline =
     summary.uploading > 0
       ? `Uploading ${summary.uploading} ${
@@ -954,11 +1023,11 @@ function UploadActivity({
       : 'Uploads complete';
 
   return (
-    <section className="grid gap-3 p-3" aria-label="Background uploads">
+    <section className="grid gap-3 p-3" aria-labelledby="upload-activity-title">
       <div className="grid gap-1.5">
-        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+        <div className="flex min-w-0 items-center gap-2">
           <div className="flex min-w-0 items-center gap-2">
-            {summary.queued + summary.uploading > 0 ? (
+            {pendingCount > 0 ? (
               <LoaderCircle
                 aria-hidden="true"
                 className="h-4 w-4 shrink-0 animate-spin text-accent"
@@ -974,40 +1043,86 @@ function UploadActivity({
                 className="h-4 w-4 shrink-0 text-[#11615a]"
               />
             )}
-            <p className="truncate text-sm font-semibold">{headline}</p>
+            <p
+              id="upload-activity-title"
+              className="truncate text-sm font-semibold"
+            >
+              {headline}
+            </p>
           </div>
-          <p className="text-xs text-muted-foreground">
-            {formatBytes(summary.uploadedBytes)} of{' '}
-            {formatBytes(summary.totalBytes)} · {roundedProgress}%
-          </p>
+          <div className="ml-auto flex shrink-0 items-center gap-1">
+            <p className="text-right text-xs text-muted-foreground">
+              <span className="sm:hidden">
+                {formatBytes(summary.uploadedBytes)} · {roundedProgress}%
+              </span>
+              <span className="hidden sm:inline">
+                {formatBytes(summary.uploadedBytes)} of{' '}
+                {formatBytes(summary.totalBytes)} · {roundedProgress}%
+              </span>
+            </p>
+            {pendingCount > 0 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 px-2 text-destructive hover:text-destructive"
+                onClick={onRequestCancelAll}
+              >
+                Cancel all
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={() => onExpandedChange(!expanded)}
+              aria-expanded={expanded}
+              aria-controls={queueListId}
+              aria-label={
+                expanded ? 'Collapse upload details' : 'Expand upload details'
+              }
+            >
+              {expanded ? (
+                <ChevronUp aria-hidden="true" className="h-4 w-4" />
+              ) : (
+                <ChevronDown aria-hidden="true" className="h-4 w-4" />
+              )}
+            </Button>
+          </div>
         </div>
         <UploadProgress value={roundedProgress} label="Overall upload" />
-        <p className="text-xs text-muted-foreground" aria-live="polite">
-          {summary.complete} complete · {summary.queued} queued
-          {summary.failed > 0 ? ` · ${summary.failed} failed` : ''}
-        </p>
+        {expanded && (
+          <p className="text-xs text-muted-foreground" aria-live="polite">
+            {summary.complete} complete · {summary.queued} queued
+            {summary.failed > 0 ? ` · ${summary.failed} failed` : ''}
+          </p>
+        )}
       </div>
 
-      <ul className="grid gap-2" aria-label="Upload queue">
-        {items.map((item) => (
-          <UploadActivityItem
-            key={item.key}
-            item={item}
-            onRetry={() => queue.retry(item.key)}
-            onDismiss={() => queue.dismiss(item.key)}
-          />
-        ))}
-      </ul>
+      {expanded && (
+        <ul id={queueListId} className="grid gap-2" aria-label="Upload queue">
+          {items.map((item) => (
+            <UploadActivityItem
+              key={item.key}
+              item={item}
+              onCancel={() => queue.cancel(item.key)}
+              onRetry={() => queue.retry(item.key)}
+              onDismiss={() => queue.dismiss(item.key)}
+            />
+          ))}
+        </ul>
+      )}
     </section>
   );
 }
 
 function UploadActivityItem({
   item,
+  onCancel,
   onRetry,
   onDismiss,
 }: {
   item: UploadQueueItem;
+  onCancel: () => void;
   onRetry: () => void;
   onDismiss: () => void;
 }) {
@@ -1056,6 +1171,17 @@ function UploadActivityItem({
         <span className="shrink-0 text-xs text-muted-foreground">
           {statusLabel}
         </span>
+        {(item.state === 'queued' || item.state === 'uploading') && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-8 shrink-0 px-2 text-destructive hover:text-destructive"
+            onClick={onCancel}
+            aria-label={`Cancel upload ${item.relativePath}`}
+          >
+            Cancel
+          </Button>
+        )}
         {item.state === 'failed' && (
           <div className="flex shrink-0 items-center gap-1">
             <Button variant="outline" size="sm" onClick={onRetry}>
@@ -1239,7 +1365,6 @@ function FileTable({
   onRestore,
   onPermanentDelete,
   onShareFile,
-  activityDockVisible,
 }: {
   entries: FileEntry[];
   pagination?: Pagination;
@@ -1260,7 +1385,6 @@ function FileTable({
   onRestore: (entry: FileEntry) => void;
   onPermanentDelete: (entry: FileEntry) => void;
   onShareFile: (path: string) => void;
-  activityDockVisible: boolean;
 }) {
   const limit = pagination?.limit ?? FILE_PAGE_SIZE;
   const offset = pagination?.offset ?? 0;
@@ -1271,12 +1395,7 @@ function FileTable({
   const totalPages = Math.max(1, Math.ceil(total / limit));
 
   return (
-    <div
-      className={cn(
-        'flex h-full min-h-0 flex-col',
-        activityDockVisible && 'pb-28 sm:pb-24'
-      )}
-    >
+    <div className="flex h-full min-h-0 flex-col">
       <div className="md:hidden">
         <MobileFileList
           entries={entries}
