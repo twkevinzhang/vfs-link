@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"mime"
 	"net/http"
@@ -313,7 +312,6 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		"filename": path.Base(record.LogicPath),
 	}))
 	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Content-Length", fmt.Sprintf("%d", record.Size))
 	if _, err := io.Copy(w, reader); err != nil {
 		return
 	}

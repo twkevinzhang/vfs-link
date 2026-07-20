@@ -1,7 +1,9 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"io"
@@ -274,4 +276,85 @@ func TestDownloadContentDispositionPreservesUnicodeFilenames(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDownloadStreamsLargeFilesWithChunkedHTTP1Response(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store, err := db.NewTreeLocal(filepath.Join(root, "metadata"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	if err := store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	objects, err := blob.NewLocal(filepath.Join(root, "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const downloadSize = 33 * 1024 * 1024
+	payload := bytes.Repeat([]byte("vfs-link-large-download\n"), downloadSize/len("vfs-link-large-download\n")+1)[:downloadSize]
+	const logicPath = "/downloads/large-file.zip"
+	const physicalHash = "large-download"
+	if err := store.UpsertFile(ctx, logicPath, physicalHash, int64(len(payload))); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := objects.NewWriter(ctx, physicalHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewUnstartedServer(New(store, objects, nil, "", "").Handler())
+	server.EnableHTTP2 = false
+	server.Start()
+	t.Cleanup(server.Close)
+
+	response, err := server.Client().Get(server.URL + "/api/download?" + url.Values{"path": {logicPath}}.Encode())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+
+	if response.ProtoMajor != 1 {
+		t.Fatalf("HTTP protocol = %s, want HTTP/1.x", response.Proto)
+	}
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("download status = %d, want %d", response.StatusCode, http.StatusOK)
+	}
+	if response.ContentLength != -1 {
+		t.Fatalf("ContentLength = %d, want -1 for chunked response", response.ContentLength)
+	}
+	if !containsString(response.TransferEncoding, "chunked") {
+		t.Fatalf("TransferEncoding = %q, want chunked", response.TransferEncoding)
+	}
+
+	downloadedHash := sha256.New()
+	downloadedSize, err := io.Copy(downloadedHash, response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if downloadedSize != int64(len(payload)) {
+		t.Fatalf("downloaded bytes = %d, want %d", downloadedSize, len(payload))
+	}
+	expectedHash := sha256.Sum256(payload)
+	if !bytes.Equal(downloadedHash.Sum(nil), expectedHash[:]) {
+		t.Fatal("downloaded payload hash does not match source payload")
+	}
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
