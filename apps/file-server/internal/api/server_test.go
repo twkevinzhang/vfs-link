@@ -4,7 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"mime"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -191,5 +195,83 @@ func TestFilesReturnsRecursiveFolderSummaryIndependentOfQuery(t *testing.T) {
 	}
 	if *archive.FolderSummary != (FolderSummary{Files: 2, Directories: 1, Bytes: 8}) {
 		t.Fatalf("archive folderSummary = %#v", archive.FolderSummary)
+	}
+}
+
+func TestDownloadContentDispositionPreservesUnicodeFilenames(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store, err := db.NewTreeLocal(filepath.Join(root, "metadata"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	if err := store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	objects, err := blob.NewLocal(filepath.Join(root, "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := New(store, objects, nil, "", "").Handler()
+
+	for _, test := range []struct {
+		name        string
+		filename    string
+		disposition string
+	}{
+		{name: "ASCII attachment", filename: "annual-report.pdf", disposition: "attachment"},
+		{name: "Chinese attachment", filename: "俊男美女.rar", disposition: "attachment"},
+		{name: "Japanese inline", filename: "日本語の資料.txt", disposition: "inline"},
+		{name: "emoji attachment", filename: "photo 😀.jpg", disposition: "attachment"},
+		{name: "kaomoji attachment", filename: "report (╯°□°)╯︵ ┻━┻.txt", disposition: "attachment"},
+		{name: "quoted escaped percent attachment", filename: "quote\" slash\\ percent%.txt", disposition: "attachment"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			logicPath := "/downloads/" + test.filename
+			physicalHash := "objects/" + test.name
+			if err := store.UpsertFile(ctx, logicPath, physicalHash, int64(len("download body"))); err != nil {
+				t.Fatal(err)
+			}
+			writer, err := objects.NewWriter(ctx, physicalHash)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := io.WriteString(writer, "download body"); err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			query := url.Values{"path": {logicPath}}
+			if test.disposition == "inline" {
+				query.Set("disposition", "inline")
+			}
+			request := httptest.NewRequest(http.MethodGet, "/api/download?"+query.Encode(), nil)
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("download status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			if got := recorder.Body.String(); got != "download body" {
+				t.Errorf("download body=%q, want %q", got, "download body")
+			}
+
+			header := recorder.Header().Get("Content-Disposition")
+			if strings.ContainsAny(header, "\r\n") {
+				t.Fatalf("Content-Disposition contains a raw line break: %q", header)
+			}
+			disposition, params, err := mime.ParseMediaType(header)
+			if err != nil {
+				t.Fatalf("mime.ParseMediaType(%q) error = %v", header, err)
+			}
+			if disposition != test.disposition {
+				t.Errorf("disposition=%q, want %q", disposition, test.disposition)
+			}
+			if got := params["filename"]; got != test.filename {
+				t.Errorf("filename=%q, want %q (header %q)", got, test.filename, header)
+			}
+		})
 	}
 }

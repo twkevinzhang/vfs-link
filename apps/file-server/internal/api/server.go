@@ -309,7 +309,9 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
-	w.Header().Set("Content-Disposition", fmt.Sprintf("%s; filename=%q", disposition, path.Base(record.LogicPath)))
+	w.Header().Set("Content-Disposition", mime.FormatMediaType(disposition, map[string]string{
+		"filename": path.Base(record.LogicPath),
+	}))
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", record.Size))
 	if _, err := io.Copy(w, reader); err != nil {
