@@ -1,4 +1,4 @@
-import { AlertCircle, Check, RotateCcw, Upload, X } from 'lucide-react';
+import { AlertCircle, Check, RotateCcw, Upload } from 'lucide-react';
 import { useCallback, useRef, useState } from 'react';
 
 import {
@@ -15,6 +15,12 @@ import {
 import { formatBytes, normalizePath } from '../lib/format';
 import { cn } from '../lib/utils';
 import { Button } from './ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from './ui/dialog';
 
 type UploadState = 'queued' | 'uploading' | 'complete' | 'failed';
 
@@ -28,16 +34,18 @@ type UploadItem = {
   sessionId?: string;
 };
 
-export function UploadPanel({
+export function UploadDialog({
   currentPath,
   existingNames,
   onComplete,
-  onClose,
+  open,
+  onOpenChange,
 }: {
   currentPath: string;
   existingNames: Set<string>;
   onComplete: () => void;
-  onClose: () => void;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
 }) {
   const [items, setItems] = useState<UploadItem[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -141,170 +149,192 @@ export function UploadPanel({
     [run]
   );
 
-  return (
-    <section
-      className="rounded-lg border border-border bg-white p-4 shadow-sm"
-      aria-label="Upload files"
-    >
-      <div className="mb-3 flex items-start justify-between gap-3">
-        <div>
-          <h2 className="font-semibold">Upload files</h2>
-          <p className="text-sm text-muted-foreground">
-            Destination: <span className="font-mono">{currentPath}</span>
-          </p>
-        </div>
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={onClose}
-          aria-label="Close upload panel"
-        >
-          <X aria-hidden="true" className="h-4 w-4" />
-        </Button>
-      </div>
+  const hasPendingUploads = items.some(
+    (item) => item.state === 'queued' || item.state === 'uploading'
+  );
 
-      <button
-        type="button"
-        className={cn(
-          'grid w-full place-items-center gap-2 rounded-lg border border-dashed border-border bg-muted/25 px-4 py-6 text-center transition-colors',
-          dragging && 'border-accent bg-accent/10'
-        )}
-        onClick={() => inputRef.current?.click()}
-        onDragEnter={(event) => {
-          event.preventDefault();
-          setDragging(true);
+  const handleOpenChange = useCallback(
+    (nextOpen: boolean) => {
+      if (!nextOpen && hasPendingUploads) return;
+      if (!nextOpen) {
+        setItems([]);
+        setDragging(false);
+        setSelectionError(undefined);
+      }
+      onOpenChange(nextOpen);
+    },
+    [hasPendingUploads, onOpenChange]
+  );
+
+  return (
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogContent
+        className="max-w-2xl"
+        onEscapeKeyDown={(event) => {
+          if (hasPendingUploads) event.preventDefault();
         }}
-        onDragOver={(event) => event.preventDefault()}
-        onDragLeave={() => setDragging(false)}
-        onDrop={(event) => {
-          event.preventDefault();
-          setDragging(false);
-          void collectDroppedFiles(event.dataTransfer)
-            .then(addFiles)
-            .catch((error: unknown) => {
-              setSelectionError(
-                error instanceof Error
-                  ? error.message
-                  : 'Unable to read the dropped folder.'
-              );
-            });
+        onPointerDownOutside={(event) => {
+          if (hasPendingUploads) event.preventDefault();
         }}
       >
-        <Upload aria-hidden="true" className="h-6 w-6 text-accent" />
-        <span className="font-medium">
-          Drop files or folders here, or choose files
-        </span>
-        <span className="text-xs text-muted-foreground">
-          Files upload directly without being loaded into browser memory.
-        </span>
-      </button>
-      <input
-        ref={inputRef}
-        type="file"
-        multiple
-        className="sr-only"
-        onChange={(event) => {
-          if (event.target.files) {
-            addFiles(filesToUploadCandidates(event.target.files));
-          }
-          event.target.value = '';
-        }}
-      />
-      <input
-        ref={(node) => {
-          folderInputRef.current = node;
-          node?.setAttribute('webkitdirectory', '');
-        }}
-        type="file"
-        multiple
-        className="sr-only"
-        onChange={(event) => {
-          if (event.target.files) {
-            addFiles(filesToUploadCandidates(event.target.files));
-          }
-          event.target.value = '';
-        }}
-      />
-      <div className="mt-2 flex justify-end">
-        <Button
+        <div className="mb-3 flex items-start justify-between gap-3">
+          <div>
+            <DialogTitle className="font-semibold">Upload files</DialogTitle>
+            <DialogDescription className="text-sm text-muted-foreground">
+              Destination: <span className="font-mono">{currentPath}</span>
+            </DialogDescription>
+          </div>
+        </div>
+
+        {hasPendingUploads && (
+          <p className="text-sm text-muted-foreground" role="status">
+            Uploads are in progress. Keep this dialog open until they finish.
+          </p>
+        )}
+
+        <button
           type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => folderInputRef.current?.click()}
+          className={cn(
+            'grid w-full place-items-center gap-2 rounded-lg border border-dashed border-border bg-muted/25 px-4 py-6 text-center transition-colors',
+            dragging && 'border-accent bg-accent/10'
+          )}
+          onClick={() => inputRef.current?.click()}
+          onDragEnter={(event) => {
+            event.preventDefault();
+            setDragging(true);
+          }}
+          onDragOver={(event) => event.preventDefault()}
+          onDragLeave={() => setDragging(false)}
+          onDrop={(event) => {
+            event.preventDefault();
+            setDragging(false);
+            void collectDroppedFiles(event.dataTransfer)
+              .then(addFiles)
+              .catch((error: unknown) => {
+                setSelectionError(
+                  error instanceof Error
+                    ? error.message
+                    : 'Unable to read the dropped folder.'
+                );
+              });
+          }}
         >
-          Choose folder
-        </Button>
-      </div>
+          <Upload aria-hidden="true" className="h-6 w-6 text-accent" />
+          <span className="font-medium">
+            Drop files or folders here, or choose files
+          </span>
+          <span className="text-xs text-muted-foreground">
+            Files upload directly without being loaded into browser memory.
+          </span>
+        </button>
+        <input
+          ref={inputRef}
+          type="file"
+          multiple
+          className="sr-only"
+          onChange={(event) => {
+            if (event.target.files) {
+              addFiles(filesToUploadCandidates(event.target.files));
+            }
+            event.target.value = '';
+          }}
+        />
+        <input
+          ref={(node) => {
+            folderInputRef.current = node;
+            node?.setAttribute('webkitdirectory', '');
+          }}
+          type="file"
+          multiple
+          className="sr-only"
+          onChange={(event) => {
+            if (event.target.files) {
+              addFiles(filesToUploadCandidates(event.target.files));
+            }
+            event.target.value = '';
+          }}
+        />
+        <div className="mt-2 flex justify-end">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => folderInputRef.current?.click()}
+          >
+            Choose folder
+          </Button>
+        </div>
 
-      {selectionError && (
-        <p className="mt-2 text-sm text-destructive" role="alert">
-          {selectionError}
-        </p>
-      )}
+        {selectionError && (
+          <p className="mt-2 text-sm text-destructive" role="alert">
+            {selectionError}
+          </p>
+        )}
 
-      {items.length > 0 && (
-        <ul
-          className="mt-3 grid max-h-56 gap-2 overflow-y-auto"
-          aria-live="polite"
-        >
-          {items.map((item) => (
-            <li
-              key={item.key}
-              className="grid gap-1 rounded-md border border-border p-3"
-            >
-              <div className="flex items-center gap-2 text-sm">
-                {item.state === 'complete' ? (
-                  <Check
-                    className="h-4 w-4 shrink-0 text-[#11615a]"
-                    aria-hidden="true"
-                  />
-                ) : item.state === 'failed' ? (
-                  <AlertCircle
-                    className="h-4 w-4 shrink-0 text-destructive"
-                    aria-hidden="true"
-                  />
-                ) : (
-                  <Upload
-                    className="h-4 w-4 shrink-0 text-accent"
-                    aria-hidden="true"
-                  />
-                )}
-                <span
-                  className="min-w-0 flex-1 truncate font-medium"
-                  title={item.relativePath}
-                >
-                  {item.relativePath}
-                </span>
-                <span className="shrink-0 text-xs text-muted-foreground">
-                  {formatBytes(item.file.size)}
-                </span>
-                {item.state === 'failed' && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => void run(item)}
-                  >
-                    <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />{' '}
-                    Retry
-                  </Button>
-                )}
-              </div>
-              <div
-                className="h-1.5 overflow-hidden rounded-full bg-muted"
-                aria-label={`${Math.round(item.progress)}% uploaded`}
+        {items.length > 0 && (
+          <ul
+            className="mt-3 grid max-h-56 gap-2 overflow-y-auto"
+            aria-live="polite"
+          >
+            {items.map((item) => (
+              <li
+                key={item.key}
+                className="grid gap-1 rounded-md border border-border p-3"
               >
+                <div className="flex items-center gap-2 text-sm">
+                  {item.state === 'complete' ? (
+                    <Check
+                      className="h-4 w-4 shrink-0 text-[#11615a]"
+                      aria-hidden="true"
+                    />
+                  ) : item.state === 'failed' ? (
+                    <AlertCircle
+                      className="h-4 w-4 shrink-0 text-destructive"
+                      aria-hidden="true"
+                    />
+                  ) : (
+                    <Upload
+                      className="h-4 w-4 shrink-0 text-accent"
+                      aria-hidden="true"
+                    />
+                  )}
+                  <span
+                    className="min-w-0 flex-1 truncate font-medium"
+                    title={item.relativePath}
+                  >
+                    {item.relativePath}
+                  </span>
+                  <span className="shrink-0 text-xs text-muted-foreground">
+                    {formatBytes(item.file.size)}
+                  </span>
+                  {item.state === 'failed' && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void run(item)}
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />{' '}
+                      Retry
+                    </Button>
+                  )}
+                </div>
                 <div
-                  className="h-full bg-accent transition-[width]"
-                  style={{ width: `${item.progress}%` }}
-                />
-              </div>
-              {item.error && (
-                <p className="text-xs text-destructive">{item.error}</p>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
+                  className="h-1.5 overflow-hidden rounded-full bg-muted"
+                  aria-label={`${Math.round(item.progress)}% uploaded`}
+                >
+                  <div
+                    className="h-full bg-accent transition-[width]"
+                    style={{ width: `${item.progress}%` }}
+                  />
+                </div>
+                {item.error && (
+                  <p className="text-xs text-destructive">{item.error}</p>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </DialogContent>
+    </Dialog>
   );
 }

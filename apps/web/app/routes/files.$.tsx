@@ -26,11 +26,12 @@ import {
 } from 'react-router';
 
 import { Alert } from '../components/ui/alert';
+import { ActivityDock } from '../components/activity-dock';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Skeleton } from '../components/ui/skeleton';
-import { UploadPanel } from '../components/upload-panel';
+import { UploadDialog } from '../components/upload-panel';
 import {
   ConfirmPermanentDelete,
   ConfirmTrashDialog,
@@ -469,6 +470,14 @@ export default function FileBrowserRoute() {
     }
   }, []);
 
+  const hasActivityDock = Boolean(
+    state.error ||
+      shareError ||
+      actionError ||
+      activeOperation ||
+      selection.selected.size > 0
+  );
+
   return (
     <main className="min-h-screen bg-background text-foreground lg:h-screen lg:min-h-0 lg:overflow-hidden">
       <div className="mx-auto flex min-h-screen w-full max-w-[1440px] flex-col gap-3 px-4 py-4 sm:px-6 lg:h-full lg:min-h-0 lg:px-8">
@@ -555,84 +564,6 @@ export default function FileBrowserRoute() {
           </div>
         </header>
 
-        {state.error && (
-          <Alert className="border-destructive/35 bg-white text-destructive">
-            <div className="flex items-start gap-3">
-              <AlertCircle
-                aria-hidden="true"
-                className="mt-0.5 h-5 w-5 shrink-0"
-              />
-              <div className="grid gap-1">
-                <p className="font-semibold">API unavailable</p>
-                <p className="text-sm text-foreground">{state.error}</p>
-              </div>
-            </div>
-          </Alert>
-        )}
-
-        {shareError && (
-          <Alert className="border-destructive/35 bg-white text-destructive">
-            <div className="flex items-start gap-3">
-              <AlertCircle
-                aria-hidden="true"
-                className="mt-0.5 h-5 w-5 shrink-0"
-              />
-              <div className="grid gap-1">
-                <p className="font-semibold">Share unavailable</p>
-                <p className="text-sm text-foreground">{shareError}</p>
-              </div>
-            </div>
-          </Alert>
-        )}
-
-        {actionError && (
-          <Alert className="border-destructive/35 bg-white text-destructive">
-            <div className="flex items-start gap-3">
-              <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
-              <div className="grid gap-1">
-                <p className="font-semibold">Action unavailable</p>
-                <p className="text-sm text-foreground">{actionError}</p>
-              </div>
-            </div>
-          </Alert>
-        )}
-
-        {activeOperation && (
-          <Alert className="border-primary/30 bg-primary/5 text-foreground">
-            <div className="flex items-start gap-3">
-              <LoaderCircle
-                aria-hidden="true"
-                className="mt-0.5 h-5 w-5 shrink-0 animate-spin text-primary"
-              />
-              <div className="grid gap-1">
-                <p className="font-semibold">
-                  {activeOperation.type === 'move'
-                    ? 'Move in progress'
-                    : activeOperation.type === 'trash'
-                    ? 'Moving to trash'
-                    : activeOperation.type === 'restore'
-                    ? 'Restore in progress'
-                    : 'Permanent deletion in progress'}
-                </p>
-                <p className="text-sm text-muted-foreground">
-                  {activeOperation.total > 0
-                    ? `${activeOperation.progress.toLocaleString()} of ${activeOperation.total.toLocaleString()} metadata records`
-                    : 'Preparing metadata operation…'}
-                </p>
-              </div>
-            </div>
-          </Alert>
-        )}
-
-        {view === 'files' && showUpload && (
-          <UploadPanel
-            currentPath={currentPath}
-            existingNames={existingNames}
-            onComplete={refresh}
-            onClose={() => setShowUpload(false)}
-          />
-        )}
-
         <section className="flex min-w-0 flex-col gap-4 lg:min-h-0 lg:flex-1">
           <div className="overflow-x-auto rounded-lg border border-border bg-white p-4">
             <div className="min-w-max">
@@ -650,63 +581,6 @@ export default function FileBrowserRoute() {
               )}
             </div>
           </div>
-
-          {selection.selected.size > 0 && (
-            <div
-              className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-white p-3"
-              role="toolbar"
-              aria-label="Selected item actions"
-            >
-              <Badge variant="secondary">
-                {selection.selected.size} selected
-              </Badge>
-              {view === 'files' ? (
-                <>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => beginMove(selection.selectedPaths)}
-                  >
-                    <FolderInput className="h-4 w-4" />
-                    Move
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="destructive"
-                    onClick={() => beginTrash(selection.selectedPaths)}
-                  >
-                    <Trash2 className="h-4 w-4" />
-                    Move to trash
-                  </Button>
-                </>
-              ) : (
-                <>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => void runRestore()}
-                  >
-                    <RotateCcw className="h-4 w-4" />
-                    Restore
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="destructive"
-                    onClick={() => {
-                      setActionTrashIds(selectedTrashIds);
-                      setShowPermanentConfirm(true);
-                    }}
-                  >
-                    <Trash2 className="h-4 w-4" />
-                    Delete permanently
-                  </Button>
-                </>
-              )}
-              <Button size="sm" variant="ghost" onClick={selection.clear}>
-                Clear
-              </Button>
-            </div>
-          )}
 
           {view === 'trash' &&
             trashEntries.length > 0 &&
@@ -793,6 +667,7 @@ export default function FileBrowserRoute() {
                     }
                   }}
                   onShareFile={shareFile}
+                  activityDockVisible={hasActivityDock}
                 />
               )}
             </div>
@@ -808,6 +683,141 @@ export default function FileBrowserRoute() {
             )}
           </section>
         </section>
+        <ActivityDock
+          visible={hasActivityDock}
+          className={selectedFile ? 'hidden xl:flex' : undefined}
+        >
+          <div className="divide-y divide-border">
+            {state.error && (
+              <Alert className="rounded-none border-0 text-destructive">
+                <div className="flex items-start gap-3">
+                  <AlertCircle
+                    aria-hidden="true"
+                    className="mt-0.5 h-5 w-5 shrink-0"
+                  />
+                  <div className="grid gap-1">
+                    <p className="font-semibold">API unavailable</p>
+                    <p className="text-sm text-foreground">{state.error}</p>
+                  </div>
+                </div>
+              </Alert>
+            )}
+            {shareError && (
+              <Alert className="rounded-none border-0 text-destructive">
+                <div className="flex items-start gap-3">
+                  <AlertCircle
+                    aria-hidden="true"
+                    className="mt-0.5 h-5 w-5 shrink-0"
+                  />
+                  <div className="grid gap-1">
+                    <p className="font-semibold">Share unavailable</p>
+                    <p className="text-sm text-foreground">{shareError}</p>
+                  </div>
+                </div>
+              </Alert>
+            )}
+            {actionError && (
+              <Alert className="rounded-none border-0 text-destructive">
+                <div className="flex items-start gap-3">
+                  <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
+                  <div className="grid gap-1">
+                    <p className="font-semibold">Action unavailable</p>
+                    <p className="text-sm text-foreground">{actionError}</p>
+                  </div>
+                </div>
+              </Alert>
+            )}
+            {activeOperation && (
+              <Alert className="rounded-none border-0 bg-primary/5 text-foreground">
+                <div className="flex items-start gap-3">
+                  <LoaderCircle
+                    aria-hidden="true"
+                    className="mt-0.5 h-5 w-5 shrink-0 animate-spin text-primary"
+                  />
+                  <div className="grid gap-1">
+                    <p className="font-semibold">
+                      {activeOperation.type === 'move'
+                        ? 'Move in progress'
+                        : activeOperation.type === 'trash'
+                        ? 'Moving to trash'
+                        : activeOperation.type === 'restore'
+                        ? 'Restore in progress'
+                        : 'Permanent deletion in progress'}
+                    </p>
+                    <p className="text-sm text-muted-foreground">
+                      {activeOperation.total > 0
+                        ? `${activeOperation.progress.toLocaleString()} of ${activeOperation.total.toLocaleString()} metadata records`
+                        : 'Preparing metadata operation…'}
+                    </p>
+                  </div>
+                </div>
+              </Alert>
+            )}
+            {selection.selected.size > 0 && (
+              <div
+                className="flex flex-wrap items-center gap-2 p-3"
+                role="toolbar"
+                aria-label="Selected item actions"
+              >
+                <Badge variant="secondary">
+                  {selection.selected.size} selected
+                </Badge>
+                {view === 'files' ? (
+                  <>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => beginMove(selection.selectedPaths)}
+                    >
+                      <FolderInput className="h-4 w-4" />
+                      Move
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      onClick={() => beginTrash(selection.selectedPaths)}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      Move to trash
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void runRestore()}
+                    >
+                      <RotateCcw className="h-4 w-4" />
+                      Restore
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      onClick={() => {
+                        setActionTrashIds(selectedTrashIds);
+                        setShowPermanentConfirm(true);
+                      }}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      Delete permanently
+                    </Button>
+                  </>
+                )}
+                <Button size="sm" variant="ghost" onClick={selection.clear}>
+                  Clear
+                </Button>
+              </div>
+            )}
+          </div>
+        </ActivityDock>
+        <UploadDialog
+          currentPath={currentPath}
+          existingNames={existingNames}
+          onComplete={refresh}
+          open={showUpload}
+          onOpenChange={setShowUpload}
+        />
         <MoveDialog
           open={showMove}
           count={actionPaths.length}
@@ -985,6 +995,7 @@ function FileTable({
   onRestore,
   onPermanentDelete,
   onShareFile,
+  activityDockVisible,
 }: {
   entries: FileEntry[];
   pagination?: Pagination;
@@ -1005,6 +1016,7 @@ function FileTable({
   onRestore: (entry: FileEntry) => void;
   onPermanentDelete: (entry: FileEntry) => void;
   onShareFile: (path: string) => void;
+  activityDockVisible: boolean;
 }) {
   const limit = pagination?.limit ?? FILE_PAGE_SIZE;
   const offset = pagination?.offset ?? 0;
@@ -1015,7 +1027,12 @@ function FileTable({
   const totalPages = Math.max(1, Math.ceil(total / limit));
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div
+      className={cn(
+        'flex h-full min-h-0 flex-col',
+        activityDockVisible && 'pb-28 sm:pb-24'
+      )}
+    >
       <div className="md:hidden">
         <MobileFileList
           entries={entries}
