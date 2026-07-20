@@ -1,5 +1,6 @@
 import {
   AlertCircle,
+  Check,
   Database,
   Download,
   File,
@@ -40,6 +41,10 @@ import {
 } from '../components/file-actions';
 import { Checkbox } from '../components/ui/checkbox';
 import { useFileSelection } from '../hooks/use-file-selection';
+import {
+  useBackgroundUploadQueue,
+  type UploadQueueItem,
+} from '../hooks/use-upload-queue';
 import { appPath } from '../lib/base-path';
 import {
   fileBrowserPath,
@@ -93,6 +98,7 @@ type LoadState = {
 
 const FILE_PAGE_SIZE = 100;
 const SEARCH_DEBOUNCE_MS = 250;
+const UPLOAD_REFRESH_DEBOUNCE_MS = 300;
 const TEXT_PREVIEW_LIMIT = 200_000;
 
 type TextPreviewState =
@@ -130,6 +136,16 @@ export default function FileBrowserRoute() {
   const [showPermanentConfirm, setShowPermanentConfirm] = useState(false);
   const [showEmptyConfirm, setShowEmptyConfirm] = useState(false);
   const filesRequestRef = useRef(0);
+  const uploadRefreshTimerRef = useRef<number | undefined>(undefined);
+  const completedUploadDestinationsRef = useRef(new Set<string>());
+  const handledCompletedUploadsRef = useRef(new Set<string>());
+  const uploadRouteRef = useRef({
+    currentPath,
+    fileQuery,
+    pageOffset,
+    view,
+  });
+  uploadRouteRef.current = { currentPath, fileQuery, pageOffset, view };
 
   useEffect(() => {
     const canonicalPath =
@@ -184,6 +200,59 @@ export default function FileBrowserRoute() {
     },
     []
   );
+
+  const handleUploadComplete = useCallback(
+    (item: UploadQueueItem) => {
+      completedUploadDestinationsRef.current.add(item.destinationPath);
+      if (uploadRefreshTimerRef.current !== undefined) {
+        window.clearTimeout(uploadRefreshTimerRef.current);
+      }
+      uploadRefreshTimerRef.current = window.setTimeout(() => {
+        uploadRefreshTimerRef.current = undefined;
+        const completedDestinations = new Set(
+          completedUploadDestinationsRef.current
+        );
+        completedUploadDestinationsRef.current.clear();
+        const activeRoute = uploadRouteRef.current;
+        void loadStatus();
+        if (
+          activeRoute.view === 'files' &&
+          completedDestinations.has(activeRoute.currentPath)
+        ) {
+          setPageOffset(0);
+          void loadFiles(activeRoute.currentPath, activeRoute.fileQuery, 0);
+        }
+      }, UPLOAD_REFRESH_DEBOUNCE_MS);
+    },
+    [loadFiles, loadStatus]
+  );
+
+  useEffect(
+    () => () => {
+      if (uploadRefreshTimerRef.current !== undefined) {
+        window.clearTimeout(uploadRefreshTimerRef.current);
+      }
+    },
+    []
+  );
+
+  const uploadQueue = useBackgroundUploadQueue();
+
+  useEffect(() => {
+    const activeKeys = new Set(uploadQueue.items.map((item) => item.key));
+    for (const key of handledCompletedUploadsRef.current) {
+      if (!activeKeys.has(key)) handledCompletedUploadsRef.current.delete(key);
+    }
+    for (const item of uploadQueue.items) {
+      if (
+        item.state === 'complete' &&
+        !handledCompletedUploadsRef.current.has(item.key)
+      ) {
+        handledCompletedUploadsRef.current.add(item.key);
+        handleUploadComplete(item);
+      }
+    }
+  }, [handleUploadComplete, uploadQueue.items]);
 
   const refresh = useCallback(() => {
     const nextOffset = 0;
@@ -475,6 +544,7 @@ export default function FileBrowserRoute() {
       shareError ||
       actionError ||
       activeOperation ||
+      uploadQueue.items.length > 0 ||
       selection.selected.size > 0
   );
 
@@ -688,6 +758,9 @@ export default function FileBrowserRoute() {
           className={selectedFile ? 'hidden xl:flex' : undefined}
         >
           <div className="divide-y divide-border">
+            {uploadQueue.items.length > 0 && (
+              <UploadActivity queue={uploadQueue} />
+            )}
             {state.error && (
               <Alert className="rounded-none border-0 text-destructive">
                 <div className="flex items-start gap-3">
@@ -813,8 +886,9 @@ export default function FileBrowserRoute() {
         </ActivityDock>
         <UploadDialog
           currentPath={currentPath}
-          existingNames={existingNames}
-          onComplete={refresh}
+          onAddFiles={(candidates) =>
+            uploadQueue.add(candidates, currentPath, existingNames)
+          }
           open={showUpload}
           onOpenChange={setShowUpload}
         />
@@ -855,6 +929,176 @@ export default function FileBrowserRoute() {
         />
       </div>
     </main>
+  );
+}
+
+function UploadActivity({
+  queue,
+}: {
+  queue: Pick<
+    ReturnType<typeof useBackgroundUploadQueue>,
+    'items' | 'summary' | 'retry' | 'dismiss'
+  >;
+}) {
+  const { items, summary } = queue;
+  const roundedProgress = Math.round(summary.progress);
+  const headline =
+    summary.uploading > 0
+      ? `Uploading ${summary.uploading} ${
+          summary.uploading === 1 ? 'file' : 'files'
+        }`
+      : summary.queued > 0
+      ? 'Preparing uploads'
+      : summary.failed > 0
+      ? 'Uploads need attention'
+      : 'Uploads complete';
+
+  return (
+    <section className="grid gap-3 p-3" aria-label="Background uploads">
+      <div className="grid gap-1.5">
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+          <div className="flex min-w-0 items-center gap-2">
+            {summary.queued + summary.uploading > 0 ? (
+              <LoaderCircle
+                aria-hidden="true"
+                className="h-4 w-4 shrink-0 animate-spin text-accent"
+              />
+            ) : summary.failed > 0 ? (
+              <AlertCircle
+                aria-hidden="true"
+                className="h-4 w-4 shrink-0 text-destructive"
+              />
+            ) : (
+              <Check
+                aria-hidden="true"
+                className="h-4 w-4 shrink-0 text-[#11615a]"
+              />
+            )}
+            <p className="truncate text-sm font-semibold">{headline}</p>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {formatBytes(summary.uploadedBytes)} of{' '}
+            {formatBytes(summary.totalBytes)} · {roundedProgress}%
+          </p>
+        </div>
+        <UploadProgress value={roundedProgress} label="Overall upload" />
+        <p className="text-xs text-muted-foreground" aria-live="polite">
+          {summary.complete} complete · {summary.queued} queued
+          {summary.failed > 0 ? ` · ${summary.failed} failed` : ''}
+        </p>
+      </div>
+
+      <ul className="grid gap-2" aria-label="Upload queue">
+        {items.map((item) => (
+          <UploadActivityItem
+            key={item.key}
+            item={item}
+            onRetry={() => queue.retry(item.key)}
+            onDismiss={() => queue.dismiss(item.key)}
+          />
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function UploadActivityItem({
+  item,
+  onRetry,
+  onDismiss,
+}: {
+  item: UploadQueueItem;
+  onRetry: () => void;
+  onDismiss: () => void;
+}) {
+  const roundedProgress = Math.round(item.progress);
+  const statusLabel =
+    item.state === 'queued'
+      ? 'Queued'
+      : item.state === 'uploading'
+      ? `${roundedProgress}%`
+      : item.state === 'complete'
+      ? 'Complete'
+      : 'Failed';
+
+  return (
+    <li className="grid gap-1.5 rounded-lg border border-border bg-muted/20 p-2.5">
+      <div className="flex min-w-0 items-center gap-2">
+        {item.state === 'complete' ? (
+          <Check
+            aria-hidden="true"
+            className="h-4 w-4 shrink-0 text-[#11615a]"
+          />
+        ) : item.state === 'failed' ? (
+          <AlertCircle
+            aria-hidden="true"
+            className="h-4 w-4 shrink-0 text-destructive"
+          />
+        ) : item.state === 'uploading' ? (
+          <LoaderCircle
+            aria-hidden="true"
+            className="h-4 w-4 shrink-0 animate-spin text-accent"
+          />
+        ) : (
+          <Upload aria-hidden="true" className="h-4 w-4 shrink-0 text-accent" />
+        )}
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium" title={item.relativePath}>
+            {item.relativePath}
+          </p>
+          <p
+            className="truncate text-xs text-muted-foreground"
+            title={`Destination: ${item.destinationPath}`}
+          >
+            {formatBytes(item.file.size)} · to {item.destinationPath}
+          </p>
+        </div>
+        <span className="shrink-0 text-xs text-muted-foreground">
+          {statusLabel}
+        </span>
+        {item.state === 'failed' && (
+          <div className="flex shrink-0 items-center gap-1">
+            <Button variant="outline" size="sm" onClick={onRetry}>
+              <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+              Retry
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={onDismiss}
+              aria-label={`Dismiss ${item.relativePath}`}
+            >
+              <X className="h-4 w-4" aria-hidden="true" />
+            </Button>
+          </div>
+        )}
+      </div>
+      <UploadProgress value={roundedProgress} label={item.relativePath} />
+      {item.error && (
+        <p className="text-xs text-destructive" role="alert">
+          {item.error}
+        </p>
+      )}
+    </li>
+  );
+}
+
+function UploadProgress({ value, label }: { value: number; label: string }) {
+  return (
+    <div
+      className="h-1.5 overflow-hidden rounded-full bg-muted"
+      role="progressbar"
+      aria-label={label}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={value}
+    >
+      <div
+        className="h-full bg-accent transition-[width]"
+        style={{ width: `${value}%` }}
+      />
+    </div>
   );
 }
 

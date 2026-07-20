@@ -1,18 +1,11 @@
-import { AlertCircle, Check, RotateCcw, Upload } from 'lucide-react';
+import { Upload } from 'lucide-react';
 import { useCallback, useRef, useState } from 'react';
 
-import {
-  cancelUpload,
-  completeUpload,
-  createUpload,
-  putUpload,
-} from '../lib/api';
 import {
   collectDroppedFiles,
   filesToUploadCandidates,
   type UploadCandidate,
 } from '../lib/folder-upload';
-import { formatBytes, normalizePath } from '../lib/format';
 import { cn } from '../lib/utils';
 import { Button } from './ui/button';
 import {
@@ -22,161 +15,49 @@ import {
   DialogTitle,
 } from './ui/dialog';
 
-type UploadState = 'queued' | 'uploading' | 'complete' | 'failed';
-
-type UploadItem = {
-  key: string;
-  file: File;
-  relativePath: string;
-  progress: number;
-  state: UploadState;
-  error?: string;
-  sessionId?: string;
-};
-
 export function UploadDialog({
   currentPath,
-  existingNames,
-  onComplete,
+  onAddFiles,
   open,
   onOpenChange,
 }: {
   currentPath: string;
-  existingNames: Set<string>;
-  onComplete: () => void;
+  onAddFiles: (candidates: UploadCandidate[]) => void;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const [items, setItems] = useState<UploadItem[]>([]);
   const [dragging, setDragging] = useState(false);
   const [selectionError, setSelectionError] = useState<string>();
   const inputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
 
-  const update = useCallback((key: string, patch: Partial<UploadItem>) => {
-    setItems((current) =>
-      current.map((item) => (item.key === key ? { ...item, ...patch } : item))
-    );
-  }, []);
-
-  const run = useCallback(
-    async (item: UploadItem) => {
-      let overwrite =
-        !item.relativePath.includes('/') &&
-        existingNames.has(item.relativePath);
-      if (
-        overwrite &&
-        !window.confirm(`${item.relativePath} already exists. Replace it?`)
-      ) {
-        update(item.key, {
-          state: 'failed',
-          error: 'Existing file was not replaced',
-        });
-        return;
+  const handleOpenChange = useCallback(
+    (nextOpen: boolean) => {
+      if (!nextOpen) {
+        setDragging(false);
+        setSelectionError(undefined);
       }
-      update(item.key, { state: 'uploading', progress: 0, error: undefined });
-      let sessionId: string | undefined;
-      try {
-        const logicPath = normalizePath(
-          `${currentPath === '/' ? '' : currentPath}/${item.relativePath}`
-        );
-        const createInput = {
-          path: logicPath,
-          size: item.file.size,
-          contentType: item.file.type || 'application/octet-stream',
-          overwrite,
-        };
-        let session;
-        try {
-          session = await createUpload(createInput);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : '';
-          if (
-            !overwrite &&
-            message.toLowerCase().includes('already exists') &&
-            window.confirm(`${item.relativePath} already exists. Replace it?`)
-          ) {
-            overwrite = true;
-            session = await createUpload({ ...createInput, overwrite: true });
-          } else {
-            throw error;
-          }
-        }
-        sessionId = session.id;
-        update(item.key, { sessionId });
-        await putUpload(session, item.file, (uploaded, total) => {
-          update(item.key, {
-            progress: total > 0 ? Math.min(100, (uploaded / total) * 100) : 0,
-          });
-        });
-        await completeUpload(session);
-        update(item.key, { state: 'complete', progress: 100 });
-        onComplete();
-      } catch (error) {
-        update(item.key, {
-          state: 'failed',
-          error: error instanceof Error ? error.message : 'Upload failed',
-        });
-        if (sessionId) {
-          void cancelUpload(sessionId);
-        }
-      }
+      onOpenChange(nextOpen);
     },
-    [currentPath, existingNames, onComplete, update]
+    [onOpenChange]
   );
 
-  const addFiles = useCallback(
+  const addCandidates = useCallback(
     (candidates: UploadCandidate[]) => {
       setSelectionError(undefined);
       if (candidates.length === 0) {
         setSelectionError('The selected folder contains no files.');
         return;
       }
-      const added = candidates.map(({ file, relativePath }) => ({
-        key: `${relativePath}-${file.size}-${
-          file.lastModified
-        }-${crypto.randomUUID()}`,
-        file,
-        relativePath,
-        progress: 0,
-        state: 'queued' as const,
-      }));
-      setItems((current) => [...current, ...added]);
-      for (const item of added) {
-        void run(item);
-      }
+      onAddFiles(candidates);
+      handleOpenChange(false);
     },
-    [run]
-  );
-
-  const hasPendingUploads = items.some(
-    (item) => item.state === 'queued' || item.state === 'uploading'
-  );
-
-  const handleOpenChange = useCallback(
-    (nextOpen: boolean) => {
-      if (!nextOpen && hasPendingUploads) return;
-      if (!nextOpen) {
-        setItems([]);
-        setDragging(false);
-        setSelectionError(undefined);
-      }
-      onOpenChange(nextOpen);
-    },
-    [hasPendingUploads, onOpenChange]
+    [handleOpenChange, onAddFiles]
   );
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent
-        className="max-w-2xl"
-        onEscapeKeyDown={(event) => {
-          if (hasPendingUploads) event.preventDefault();
-        }}
-        onPointerDownOutside={(event) => {
-          if (hasPendingUploads) event.preventDefault();
-        }}
-      >
+      <DialogContent className="max-w-2xl">
         <div className="mb-3 flex items-start justify-between gap-3">
           <div>
             <DialogTitle className="font-semibold">Upload files</DialogTitle>
@@ -185,12 +66,6 @@ export function UploadDialog({
             </DialogDescription>
           </div>
         </div>
-
-        {hasPendingUploads && (
-          <p className="text-sm text-muted-foreground" role="status">
-            Uploads are in progress. Keep this dialog open until they finish.
-          </p>
-        )}
 
         <button
           type="button"
@@ -209,7 +84,7 @@ export function UploadDialog({
             event.preventDefault();
             setDragging(false);
             void collectDroppedFiles(event.dataTransfer)
-              .then(addFiles)
+              .then(addCandidates)
               .catch((error: unknown) => {
                 setSelectionError(
                   error instanceof Error
@@ -234,7 +109,7 @@ export function UploadDialog({
           className="sr-only"
           onChange={(event) => {
             if (event.target.files) {
-              addFiles(filesToUploadCandidates(event.target.files));
+              addCandidates(filesToUploadCandidates(event.target.files));
             }
             event.target.value = '';
           }}
@@ -249,7 +124,7 @@ export function UploadDialog({
           className="sr-only"
           onChange={(event) => {
             if (event.target.files) {
-              addFiles(filesToUploadCandidates(event.target.files));
+              addCandidates(filesToUploadCandidates(event.target.files));
             }
             event.target.value = '';
           }}
@@ -269,70 +144,6 @@ export function UploadDialog({
           <p className="mt-2 text-sm text-destructive" role="alert">
             {selectionError}
           </p>
-        )}
-
-        {items.length > 0 && (
-          <ul
-            className="mt-3 grid max-h-56 gap-2 overflow-y-auto"
-            aria-live="polite"
-          >
-            {items.map((item) => (
-              <li
-                key={item.key}
-                className="grid gap-1 rounded-md border border-border p-3"
-              >
-                <div className="flex items-center gap-2 text-sm">
-                  {item.state === 'complete' ? (
-                    <Check
-                      className="h-4 w-4 shrink-0 text-[#11615a]"
-                      aria-hidden="true"
-                    />
-                  ) : item.state === 'failed' ? (
-                    <AlertCircle
-                      className="h-4 w-4 shrink-0 text-destructive"
-                      aria-hidden="true"
-                    />
-                  ) : (
-                    <Upload
-                      className="h-4 w-4 shrink-0 text-accent"
-                      aria-hidden="true"
-                    />
-                  )}
-                  <span
-                    className="min-w-0 flex-1 truncate font-medium"
-                    title={item.relativePath}
-                  >
-                    {item.relativePath}
-                  </span>
-                  <span className="shrink-0 text-xs text-muted-foreground">
-                    {formatBytes(item.file.size)}
-                  </span>
-                  {item.state === 'failed' && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => void run(item)}
-                    >
-                      <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />{' '}
-                      Retry
-                    </Button>
-                  )}
-                </div>
-                <div
-                  className="h-1.5 overflow-hidden rounded-full bg-muted"
-                  aria-label={`${Math.round(item.progress)}% uploaded`}
-                >
-                  <div
-                    className="h-full bg-accent transition-[width]"
-                    style={{ width: `${item.progress}%` }}
-                  />
-                </div>
-                {item.error && (
-                  <p className="text-xs text-destructive">{item.error}</p>
-                )}
-              </li>
-            ))}
-          </ul>
         )}
       </DialogContent>
     </Dialog>
