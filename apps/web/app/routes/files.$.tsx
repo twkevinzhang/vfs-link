@@ -4,18 +4,15 @@ import {
   ChevronUp,
   Check,
   Copy,
-  Database,
   Download,
   File,
   Folder,
   FolderInput,
-  HardDrive,
   LoaderCircle,
   Play,
   RefreshCcw,
   RotateCcw,
   Search,
-  Server,
   Share2,
   Trash2,
   Upload,
@@ -583,26 +580,6 @@ export default function FileBrowserRoute() {
             <h1 className="mr-1 text-2xl font-semibold tracking-normal sm:text-3xl">
               vfs-link file browser
             </h1>
-            <HeaderMetricBadge
-              icon={<Database aria-hidden="true" className="h-3.5 w-3.5" />}
-              label="Files"
-              value={state.status ? String(state.status.stats.fileCount) : '-'}
-              detail={`${state.status?.stats.directoryCount ?? 0} folders`}
-            />
-            <HeaderMetricBadge
-              icon={<HardDrive aria-hidden="true" className="h-3.5 w-3.5" />}
-              label="Logical bytes"
-              shortLabel="Bytes"
-              value={formatBytes(state.status?.stats.totalBytes ?? 0)}
-              detail="Logical file records"
-            />
-            <HeaderMetricBadge
-              icon={<Server aria-hidden="true" className="h-3.5 w-3.5" />}
-              label="Stored objects"
-              shortLabel="Objects"
-              value={String(state.status?.stats.objectCount ?? 0)}
-              detail={formatBytes(state.status?.stats.objectBytes ?? 0)}
-            />
           </div>
           <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-end xl:shrink-0">
             {view === 'files' && (
@@ -1226,37 +1203,6 @@ function UploadProgress({ value, label }: { value: number; label: string }) {
         style={{ width: `${value}%` }}
       />
     </div>
-  );
-}
-
-function HeaderMetricBadge({
-  icon,
-  label,
-  shortLabel,
-  value,
-  detail,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  shortLabel?: string;
-  value: string;
-  detail: string;
-}) {
-  return (
-    <Badge
-      variant="outline"
-      className="h-8 max-w-full gap-1.5 bg-white px-2.5 py-1.5 text-foreground shadow-sm"
-      title={`${label}: ${value} (${detail})`}
-    >
-      <span className="shrink-0 text-muted-foreground">{icon}</span>
-      <span className="truncate text-muted-foreground">
-        {shortLabel ?? label}
-      </span>
-      <span className="shrink-0 font-semibold">{value}</span>
-      <span className="hidden truncate font-normal text-muted-foreground 2xl:inline">
-        {detail}
-      </span>
-    </Badge>
   );
 }
 
