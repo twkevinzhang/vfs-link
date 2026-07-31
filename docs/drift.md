@@ -48,9 +48,23 @@ retry or another Cloud Run instance can resume without overwriting an unrelated
 target. Custom source object metadata is preserved; action markers remain on
 the reconciled object to make ambiguous copy retries safe.
 
-The estimate includes regional Archive retrieval, estimated Class A/Class B
-operations, and an object-age-based upper bound for Archive early deletion.
+The snapshot and plan estimates expose an auditable, storage-class-specific
+breakdown. The minimum is data retrieval plus estimated Class A and Class B
+operations. The maximum adds an object-age-based early-deletion upper bound:
+
+```text
+minimum = retrieval + Class A operations + Class B operations
+maximum = minimum + early deletion upper bound
+```
+
+Each calculation row includes its units, list rate, formula, USD range, pricing
+date, and storage class. The estimator currently assumes regional,
+flat-namespace list pricing and links to the official
+[Cloud Storage pricing](https://cloud.google.com/storage/pricing) and
+[storage classes](https://cloud.google.com/storage/docs/storage-classes)
+documentation.
+
 It is not a bill. Soft-delete retention storage, taxes, free tiers, negotiated
-pricing, network topology, and later pricing changes are called out but not all
-can be bounded from the object listing. Always review the plan immediately
-before starting an action.
+pricing, network topology, bucket namespace, Autoclass, and later pricing
+changes are called out but cannot all be bounded from the object listing.
+Always review the estimate immediately before starting an action.

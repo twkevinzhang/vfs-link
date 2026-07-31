@@ -12,7 +12,7 @@ import (
 	driftdomain "github.com/twkevinzhang/vfs-link/apps/file-server/internal/drift"
 )
 
-const driftPricingAsOf = "2026-08-01"
+const driftPricingAsOf = driftdomain.PricingAsOf
 
 type driftItemResponse struct {
 	LogicPath        string  `json:"logicPath,omitempty"`
@@ -30,14 +30,17 @@ type driftItemResponse struct {
 }
 
 type driftSummaryResponse struct {
-	Total            int     `json:"total"`
-	Aligned          int     `json:"aligned"`
-	Drifted          int     `json:"drifted"`
-	Missing          int     `json:"missing"`
-	Failed           int     `json:"failed"`
-	TotalBytes       int64   `json:"totalBytes"`
-	EstimatedCostMin float64 `json:"estimatedCostUsdMin"`
-	EstimatedCostMax float64 `json:"estimatedCostUsdMax"`
+	Total            int                     `json:"total"`
+	Aligned          int                     `json:"aligned"`
+	Drifted          int                     `json:"drifted"`
+	Missing          int                     `json:"missing"`
+	Failed           int                     `json:"failed"`
+	TotalBytes       int64                   `json:"totalBytes"`
+	EstimatedCostMin float64                 `json:"estimatedCostUsdMin"`
+	EstimatedCostMax float64                 `json:"estimatedCostUsdMax"`
+	CostBreakdown    []driftdomain.CostItem  `json:"costBreakdown"`
+	CostFormula      driftdomain.CostFormula `json:"costFormula"`
+	Warnings         []string                `json:"warnings"`
 }
 
 type driftPaginationResponse struct {
@@ -50,18 +53,20 @@ type driftPaginationResponse struct {
 }
 
 type driftSnapshotResponse struct {
-	Available      bool                    `json:"available"`
-	Enabled        bool                    `json:"enabled"`
-	ReadOnly       bool                    `json:"readOnly"`
-	StorageDriver  string                  `json:"storageDriver"`
-	SnapshotStatus string                  `json:"snapshotStatus"`
-	Scanning       bool                    `json:"scanning"`
-	Summary        driftSummaryResponse    `json:"summary"`
-	Items          []driftItemResponse     `json:"items"`
-	Pagination     driftPaginationResponse `json:"pagination"`
-	PricingAsOf    string                  `json:"pricingAsOf"`
-	GeneratedAt    string                  `json:"generatedAt,omitempty"`
-	Error          string                  `json:"error,omitempty"`
+	Available      bool                        `json:"available"`
+	Enabled        bool                        `json:"enabled"`
+	ReadOnly       bool                        `json:"readOnly"`
+	StorageDriver  string                      `json:"storageDriver"`
+	SnapshotStatus string                      `json:"snapshotStatus"`
+	Scanning       bool                        `json:"scanning"`
+	Summary        driftSummaryResponse        `json:"summary"`
+	Items          []driftItemResponse         `json:"items"`
+	Pagination     driftPaginationResponse     `json:"pagination"`
+	PricingAsOf    string                      `json:"pricingAsOf"`
+	PricingModel   string                      `json:"pricingModel"`
+	PricingSources []driftdomain.PricingSource `json:"pricingSources"`
+	GeneratedAt    string                      `json:"generatedAt,omitempty"`
+	Error          string                      `json:"error,omitempty"`
 }
 
 func (s *Server) driftMutationReady(w http.ResponseWriter) bool {
@@ -173,13 +178,15 @@ func (s *Server) handleDrift(w http.ResponseWriter, r *http.Request) {
 	for _, entry := range filtered[offset:end] {
 		items = append(items, driftResponseItem(entry, gcs))
 	}
-	summary := driftSummaryResponse{Total: len(snapshot.Entries)}
+	cost := driftdomain.CostEstimate{}
+	if gcs {
+		cost = driftdomain.EstimateEntries(snapshot.Entries)
+	}
+	summary := driftSummaryResponse{
+		Total: len(snapshot.Entries), EstimatedCostMin: cost.USDMin, EstimatedCostMax: cost.USDMax,
+		CostBreakdown: cost.Breakdown, CostFormula: cost.Formula, Warnings: cost.Warnings,
+	}
 	for _, entry := range snapshot.Entries {
-		if gcs {
-			cost := driftdomain.EstimateEntry(entry)
-			summary.EstimatedCostMin += cost.USDMin
-			summary.EstimatedCostMax += cost.USDMax
-		}
 		if entry.Actionable && gcs {
 			summary.TotalBytes += entry.Size
 		}
@@ -198,7 +205,8 @@ func (s *Server) handleDrift(w http.ResponseWriter, r *http.Request) {
 		Available: true, Enabled: s.driftEnabled, ReadOnly: !s.driftEnabled,
 		StorageDriver: s.objects.Driver(), SnapshotStatus: "ready", Summary: summary, Items: items,
 		Pagination:  driftPaginationResponse{Limit: limit, Offset: offset, Total: total, Query: query, HasNext: end < total, HasPrev: offset > 0},
-		PricingAsOf: driftPricingAsOf, GeneratedAt: snapshot.GeneratedAt.Format(time.RFC3339),
+		PricingAsOf: cost.PricingAsOf, PricingModel: cost.PricingModel, PricingSources: cost.Sources,
+		GeneratedAt: snapshot.GeneratedAt.Format(time.RFC3339),
 	})
 }
 

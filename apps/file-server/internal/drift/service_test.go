@@ -5,6 +5,7 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/blob"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/db"
@@ -81,11 +82,46 @@ func TestEstimateCostUsesListedStorageClassRetrievalRate(t *testing.T) {
 	}
 	standard := estimateCost([]PlanEntry{entry("STANDARD")})
 	archive := estimateCost([]PlanEntry{entry("ARCHIVE")})
-	operationCost := 0.05/1000 + 3*0.05/1000
-	if math.Abs(standard.USDMin-operationCost) > 1e-12 {
-		t.Fatalf("standard minimum = %f, want operations only %f", standard.USDMin, operationCost)
+	standardOperations := 0.005/1000 + 3*0.0004/1000
+	archiveOperations := 0.05/1000 + 3*0.05/1000
+	if math.Abs(standard.USDMin-standardOperations) > 1e-12 {
+		t.Fatalf("standard minimum = %f, want operations only %f", standard.USDMin, standardOperations)
 	}
-	if math.Abs(archive.USDMin-(operationCost+0.05)) > 1e-12 {
+	if math.Abs(archive.USDMin-(archiveOperations+0.05)) > 1e-12 {
 		t.Fatalf("archive minimum = %f, want retrieval plus operations", archive.USDMin)
+	}
+}
+
+func TestEstimateEntriesReturnsAuditableSnapshotBreakdown(t *testing.T) {
+	entries := []Entry{
+		{
+			LogicPath: "archive.bin", Actionable: true, Status: Drifted,
+			Object: blob.DriftObject{Size: 2 << 30, StorageClass: "ARCHIVE", Created: time.Now().UTC().Add(-24 * time.Hour)},
+		},
+		{
+			LogicPath: "aligned.bin", Actionable: false, Status: Aligned,
+			Object: blob.DriftObject{Size: 100 << 30, StorageClass: "ARCHIVE"},
+		},
+	}
+	estimate := EstimateEntries(entries)
+	if estimate.USDMin <= 0 || estimate.USDMax <= estimate.USDMin {
+		t.Fatalf("estimate range = %f–%f, want positive early-deletion upper bound", estimate.USDMin, estimate.USDMax)
+	}
+	if len(estimate.Breakdown) != 4 {
+		t.Fatalf("breakdown length = %d, want four Archive calculation rows", len(estimate.Breakdown))
+	}
+	var minimum, maximum float64
+	for _, item := range estimate.Breakdown {
+		minimum += item.USDMin
+		maximum += item.USDMax
+		if item.StorageClass != "ARCHIVE" || item.UnitLabel == "" || item.RateUnit == "" || item.Formula == "" {
+			t.Fatalf("incomplete cost item: %+v", item)
+		}
+	}
+	if math.Abs(minimum-estimate.USDMin) > 1e-12 || math.Abs(maximum-estimate.USDMax) > 1e-12 {
+		t.Fatalf("breakdown %f–%f does not reconcile total %f–%f", minimum, maximum, estimate.USDMin, estimate.USDMax)
+	}
+	if estimate.Formula.Minimum == "" || estimate.Formula.Maximum == "" || len(estimate.Sources) != 2 || estimate.PricingModel == "" {
+		t.Fatalf("missing explanation metadata: %+v", estimate)
 	}
 }

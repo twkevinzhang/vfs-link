@@ -12,6 +12,12 @@ const emptyResponse = {
     totalBytes: 0,
     estimatedCostUsdMin: 0,
     estimatedCostUsdMax: 0,
+    costBreakdown: [],
+    costFormula: {
+      minimum: 'Data retrieval + Class A operations + Class B operations',
+      maximum: 'Minimum estimate + early deletion upper bound',
+    },
+    warnings: [],
   },
   items: [],
   pagination: {
@@ -23,6 +29,13 @@ const emptyResponse = {
     hasPrev: false,
   },
   pricingAsOf: '2026-08-01',
+  pricingModel: 'Google Cloud Storage regional flat-namespace list pricing',
+  pricingSources: [
+    {
+      label: 'Google Cloud Storage pricing',
+      url: 'https://cloud.google.com/storage/pricing',
+    },
+  ],
   generatedAt: '2026-08-01T00:00:00Z',
 };
 
@@ -63,6 +76,53 @@ describe('drift API query contract', () => {
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/drift?limit=50&offset=0&refresh=true',
       expect.any(Object)
+    );
+  });
+
+  it('preserves the snapshot cost formula, calculation rows, and sources', async () => {
+    const response = {
+      ...emptyResponse,
+      summary: {
+        ...emptyResponse.summary,
+        estimatedCostUsdMin: 0.1,
+        estimatedCostUsdMax: 0.2,
+        costBreakdown: [
+          {
+            name: 'Data retrieval',
+            storageClass: 'ARCHIVE',
+            units: 2,
+            unitLabel: 'GiB',
+            rate: 0.05,
+            rateUnit: 'USD/GiB',
+            formula: 'stored GiB × retrieval rate',
+            usdMin: 0.1,
+            usdMax: 0.1,
+            details: 'Retrieval estimate.',
+          },
+        ],
+        warnings: ['Not a bill.'],
+      },
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(response), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      )
+    );
+
+    const result = await getDrift({ limit: 50 });
+
+    expect(result.summary.costBreakdown[0]).toMatchObject({
+      storageClass: 'ARCHIVE',
+      units: 2,
+      rate: 0.05,
+    });
+    expect(result.summary.costFormula.minimum).toContain('Data retrieval');
+    expect(result.pricingSources[0].url).toBe(
+      'https://cloud.google.com/storage/pricing'
     );
   });
 

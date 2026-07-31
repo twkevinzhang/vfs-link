@@ -25,6 +25,9 @@ export type DriftSummary = {
   totalBytes: number;
   estimatedCostUsdMin: number;
   estimatedCostUsdMax: number;
+  costBreakdown: DriftCostItem[];
+  costFormula: DriftCostFormula;
+  warnings: string[];
 };
 
 export type DriftResponse = {
@@ -37,6 +40,8 @@ export type DriftResponse = {
   items: DriftItem[];
   pagination: Pagination;
   pricingAsOf: string;
+  pricingModel: string;
+  pricingSources: DriftPricingSource[];
   generatedAt: string;
 };
 
@@ -61,10 +66,25 @@ export type DriftPlan = {
 
 export type DriftCostItem = {
   name: string;
+  storageClass?: string;
   units: number;
+  unitLabel: string;
+  rate: number;
+  rateUnit: string;
+  formula: string;
   usdMin: number;
   usdMax: number;
   details: string;
+};
+
+export type DriftCostFormula = {
+  minimum: string;
+  maximum: string;
+};
+
+export type DriftPricingSource = {
+  label: string;
+  url: string;
 };
 
 export type DriftActionResult = {

@@ -256,7 +256,12 @@ type RawDriftPlan = {
     pricingAsOf: string;
     breakdown?: Array<{
       name: string;
+      storageClass?: string;
       units: number;
+      unitLabel: string;
+      rate: number;
+      rateUnit: string;
+      formula: string;
       usdMin: number;
       usdMax: number;
       details: string;
@@ -314,6 +319,9 @@ function normalizeDriftSnapshot(
       totalBytes: Number.NaN,
       estimatedCostUsdMin: Number.NaN,
       estimatedCostUsdMax: Number.NaN,
+      costBreakdown: [],
+      costFormula: { minimum: '', maximum: '' },
+      warnings: [],
     },
     items,
     pagination: {
@@ -325,6 +333,8 @@ function normalizeDriftSnapshot(
       hasPrev: raw.offset > 0,
     },
     pricingAsOf: '',
+    pricingModel: '',
+    pricingSources: [],
     generatedAt: raw.generatedAt ?? '',
   };
 }

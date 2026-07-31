@@ -59,21 +59,39 @@ type Snapshot struct {
 }
 
 type CostItem struct {
-	Name    string  `json:"name"`
-	Units   float64 `json:"units"`
-	USDMin  float64 `json:"usdMin"`
-	USDMax  float64 `json:"usdMax"`
-	Details string  `json:"details"`
+	Name         string  `json:"name"`
+	StorageClass string  `json:"storageClass,omitempty"`
+	Units        float64 `json:"units"`
+	UnitLabel    string  `json:"unitLabel"`
+	Rate         float64 `json:"rate"`
+	RateUnit     string  `json:"rateUnit"`
+	Formula      string  `json:"formula"`
+	USDMin       float64 `json:"usdMin"`
+	USDMax       float64 `json:"usdMax"`
+	Details      string  `json:"details"`
+}
+
+type CostFormula struct {
+	Minimum string `json:"minimum"`
+	Maximum string `json:"maximum"`
+}
+
+type PricingSource struct {
+	Label string `json:"label"`
+	URL   string `json:"url"`
 }
 
 type CostEstimate struct {
-	Currency    string     `json:"currency"`
-	USDMin      float64    `json:"usdMin"`
-	USDMax      float64    `json:"usdMax"`
-	Breakdown   []CostItem `json:"breakdown"`
-	PricingAsOf string     `json:"pricingAsOf"`
-	Estimate    bool       `json:"estimate"`
-	Warnings    []string   `json:"warnings"`
+	Currency     string          `json:"currency"`
+	USDMin       float64         `json:"usdMin"`
+	USDMax       float64         `json:"usdMax"`
+	Breakdown    []CostItem      `json:"breakdown"`
+	Formula      CostFormula     `json:"formula"`
+	PricingAsOf  string          `json:"pricingAsOf"`
+	PricingModel string          `json:"pricingModel"`
+	Sources      []PricingSource `json:"sources"`
+	Estimate     bool            `json:"estimate"`
+	Warnings     []string        `json:"warnings"`
 }
 
 type PlanEntry struct {
@@ -319,56 +337,184 @@ func (s *Service) CreatePlan(ctx context.Context, paths []string) (Plan, error) 
 	return plan, nil
 }
 
+const PricingAsOf = "2026-08-01"
+
+var pricingSources = []PricingSource{
+	{Label: "Google Cloud Storage pricing", URL: "https://cloud.google.com/storage/pricing"},
+	{Label: "Google Cloud Storage classes", URL: "https://cloud.google.com/storage/docs/storage-classes"},
+}
+
+type storageClassPricing struct {
+	name               string
+	minimumDays        int
+	retrievalPerGiB    float64
+	storagePerGiBMonth float64
+	classAPerThousand  float64
+	classBPerThousand  float64
+}
+
+type storageClassCostGroup struct {
+	pricing             storageClassPricing
+	bytes               int64
+	objects             int
+	earlyDeleteGiBMonth float64
+}
+
 func estimateCost(entries []PlanEntry) CostEstimate {
-	var bytes int64
-	var retrieval float64
-	var earlyDelete float64
+	groups := make(map[string]*storageClassCostGroup)
+	unknownClasses := make(map[string]struct{})
 	now := time.Now().UTC()
-	for _, e := range entries {
-		bytes += e.Source.Size
-		gib := float64(e.Source.Size) / (1 << 30)
-		minimumDays, retrievalRate, storageRate := storageClassRates(e.Source.StorageClass)
-		retrieval += gib * retrievalRate
-		if minimumDays > 0 && !e.Source.Created.IsZero() {
-			remaining := time.Duration(minimumDays)*24*time.Hour - now.Sub(e.Source.Created)
-			if remaining > 0 {
-				// Regional list pricing is used only to bound the
-				// early-deletion portion. Bucket location can change it.
-				earlyDelete += gib * remaining.Hours() / (24 * 30) * storageRate
-			}
+	for _, entry := range entries {
+		pricing, known := pricingForStorageClass(entry.Source.StorageClass)
+		if !known {
+			unknownClasses[pricing.name] = struct{}{}
+		}
+		group := groups[pricing.name]
+		if group == nil {
+			group = &storageClassCostGroup{pricing: pricing}
+			groups[pricing.name] = group
+		}
+		group.bytes += entry.Source.Size
+		group.objects++
+		if pricing.minimumDays == 0 || entry.Source.Created.IsZero() {
+			continue
+		}
+		remaining := time.Duration(pricing.minimumDays)*24*time.Hour - now.Sub(entry.Source.Created)
+		if remaining > 0 {
+			gib := float64(entry.Source.Size) / (1 << 30)
+			group.earlyDeleteGiBMonth += gib * remaining.Hours() / (24 * 30)
 		}
 	}
-	gib := float64(bytes) / (1 << 30)
-	classA := float64(len(entries)) * 0.05 / 1000
-	classB := float64(len(entries)*3) * 0.05 / 1000
-	items := []CostItem{
-		{Name: "Data retrieval", Units: gib, USDMin: retrieval, USDMax: retrieval, Details: "listed storage class estimate: Standard $0, Nearline $0.01, Coldline $0.02, Archive $0.05 per GiB"},
-		{Name: "Class A operations", Units: float64(len(entries)), USDMin: classA, USDMax: classA, Details: "$0.05/1,000 operations; copy/rewrite estimate"},
-		{Name: "Class B operations", Units: float64(len(entries) * 3), USDMin: classB, USDMax: classB, Details: "$0.05/1,000 operations; verification/stat estimate"},
-		{Name: "Early deletion", Units: gib, USDMin: 0, USDMax: earlyDelete, Details: "up to the remaining Nearline 30-day, Coldline 90-day, or Archive 365-day minimum; object age based"},
+
+	classNames := make([]string, 0, len(groups))
+	for name := range groups {
+		classNames = append(classNames, name)
 	}
-	return CostEstimate{Currency: "USD", USDMin: retrieval + classA + classB, USDMax: retrieval + classA + classB + earlyDelete, Breakdown: items, PricingAsOf: "2026-08-01", Estimate: true, Warnings: []string{
-		"This is an estimate, not a bill; region, free tier, taxes, and negotiated pricing are not included.",
+	sort.Slice(classNames, func(i, j int) bool {
+		return storageClassSortKey(classNames[i]) < storageClassSortKey(classNames[j])
+	})
+
+	items := make([]CostItem, 0, len(classNames)*4)
+	var minimum, earlyDelete float64
+	for _, name := range classNames {
+		group := groups[name]
+		gib := float64(group.bytes) / (1 << 30)
+		retrieval := gib * group.pricing.retrievalPerGiB
+		classA := float64(group.objects) * group.pricing.classAPerThousand / 1000
+		classBUnits := float64(group.objects * 3)
+		classB := classBUnits * group.pricing.classBPerThousand / 1000
+		minimum += retrieval + classA + classB
+		earlyDeleteForClass := group.earlyDeleteGiBMonth * group.pricing.storagePerGiBMonth
+		earlyDelete += earlyDeleteForClass
+		items = append(items,
+			CostItem{
+				Name: "Data retrieval", StorageClass: name, Units: gib, UnitLabel: "GiB",
+				Rate: group.pricing.retrievalPerGiB, RateUnit: "USD/GiB",
+				Formula: "stored GiB × retrieval rate", USDMin: retrieval, USDMax: retrieval,
+				Details: "Retrieval applies when Cloud Storage reads, copies, moves, or rewrites non-Standard data.",
+			},
+			CostItem{
+				Name: "Class A operations", StorageClass: name, Units: float64(group.objects), UnitLabel: "operations",
+				Rate: group.pricing.classAPerThousand, RateUnit: "USD/1,000 operations",
+				Formula: "object count × Class A rate ÷ 1,000", USDMin: classA, USDMax: classA,
+				Details: "One copy or rewrite operation is estimated per object.",
+			},
+			CostItem{
+				Name: "Class B operations", StorageClass: name, Units: classBUnits, UnitLabel: "operations",
+				Rate: group.pricing.classBPerThousand, RateUnit: "USD/1,000 operations",
+				Formula: "estimated verification operations × Class B rate ÷ 1,000", USDMin: classB, USDMax: classB,
+				Details: "Three metadata or verification operations are estimated per object.",
+			},
+		)
+		if group.pricing.minimumDays > 0 {
+			items = append(items, CostItem{
+				Name: "Early deletion", StorageClass: name, Units: group.earlyDeleteGiBMonth, UnitLabel: "GiB-month",
+				Rate: group.pricing.storagePerGiBMonth, RateUnit: "USD/GiB-month",
+				Formula: "Σ(object GiB × remaining minimum-storage days ÷ 30) × storage rate",
+				USDMin:  0, USDMax: earlyDeleteForClass,
+				Details: fmt.Sprintf("Upper bound based on object age and the %d-day minimum storage duration.", group.pricing.minimumDays),
+			})
+		}
+	}
+
+	warnings := []string{
+		"This is an estimate, not a bill; free tier, taxes, and negotiated pricing are not included.",
+		"Regional flat-namespace list pricing is assumed; bucket location, namespace type, Autoclass, and network topology can change the bill.",
 		"Soft delete is enabled: retained source generations may continue to incur storage charges; retention duration is not available in this snapshot and is not priced here.",
-	}}
+	}
+	if len(unknownClasses) > 0 {
+		unknown := make([]string, 0, len(unknownClasses))
+		for name := range unknownClasses {
+			unknown = append(unknown, name)
+		}
+		sort.Strings(unknown)
+		warnings = append(warnings, "Unknown storage classes use conservative Archive operation rates and no retrieval or early-deletion rate: "+strings.Join(unknown, ", ")+".")
+	}
+	return CostEstimate{
+		Currency: "USD", USDMin: minimum, USDMax: minimum + earlyDelete, Breakdown: items,
+		Formula: CostFormula{
+			Minimum: "Data retrieval + Class A operations + Class B operations",
+			Maximum: "Minimum estimate + early deletion upper bound",
+		},
+		PricingAsOf:  PricingAsOf,
+		PricingModel: "Google Cloud Storage regional flat-namespace list pricing",
+		Sources:      append([]PricingSource(nil), pricingSources...), Estimate: true, Warnings: warnings,
+	}
+}
+
+func pricingForStorageClass(storageClass string) (storageClassPricing, bool) {
+	name := strings.ToUpper(strings.TrimSpace(storageClass))
+	switch name {
+	case "STANDARD":
+		return storageClassPricing{name: name, classAPerThousand: 0.005, classBPerThousand: 0.0004}, true
+	case "NEARLINE":
+		return storageClassPricing{name: name, minimumDays: 30, retrievalPerGiB: 0.01, storagePerGiBMonth: 0.01, classAPerThousand: 0.01, classBPerThousand: 0.001}, true
+	case "COLDLINE":
+		return storageClassPricing{name: name, minimumDays: 90, retrievalPerGiB: 0.02, storagePerGiBMonth: 0.004, classAPerThousand: 0.02, classBPerThousand: 0.01}, true
+	case "ARCHIVE":
+		return storageClassPricing{name: name, minimumDays: 365, retrievalPerGiB: 0.05, storagePerGiBMonth: 0.0012, classAPerThousand: 0.05, classBPerThousand: 0.05}, true
+	default:
+		if name == "" {
+			name = "UNKNOWN"
+		}
+		return storageClassPricing{name: name, classAPerThousand: 0.05, classBPerThousand: 0.05}, false
+	}
+}
+
+func storageClassSortKey(storageClass string) string {
+	switch storageClass {
+	case "STANDARD":
+		return "0"
+	case "NEARLINE":
+		return "1"
+	case "COLDLINE":
+		return "2"
+	case "ARCHIVE":
+		return "3"
+	default:
+		return "4" + storageClass
+	}
 }
 
 func storageClassRates(storageClass string) (minimumDays int, retrievalPerGiB, storagePerGiBMonth float64) {
-	switch strings.ToUpper(strings.TrimSpace(storageClass)) {
-	case "NEARLINE":
-		return 30, 0.01, 0.01
-	case "COLDLINE":
-		return 90, 0.02, 0.004
-	case "ARCHIVE":
-		return 365, 0.05, 0.0012
-	default:
-		return 0, 0, 0
+	pricing, _ := pricingForStorageClass(storageClass)
+	return pricing.minimumDays, pricing.retrievalPerGiB, pricing.storagePerGiBMonth
+}
+
+func EstimateEntries(entries []Entry) CostEstimate {
+	planEntries := make([]PlanEntry, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.Actionable {
+			continue
+		}
+		planEntries = append(planEntries, PlanEntry{LogicPath: entry.LogicPath, Source: entry.Object, TargetKey: entry.TargetKey, Shared: entry.Status == SharedObject})
 	}
+	return estimateCost(planEntries)
 }
 
 func EstimateEntry(entry Entry) CostEstimate {
 	if !entry.Actionable {
-		return CostEstimate{Currency: "USD", PricingAsOf: "2026-08-01", Estimate: true}
+		return CostEstimate{Currency: "USD", PricingAsOf: PricingAsOf, Estimate: true}
 	}
-	return estimateCost([]PlanEntry{{LogicPath: entry.LogicPath, Source: entry.Object, TargetKey: entry.TargetKey, Shared: entry.Status == SharedObject}})
+	return EstimateEntries([]Entry{entry})
 }
