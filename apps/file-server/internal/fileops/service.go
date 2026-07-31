@@ -33,6 +33,11 @@ type MoveResult struct {
 	Operation *db.OperationRecord
 }
 
+type RenameResult struct {
+	Records   []db.FileRecord
+	Operation *db.OperationRecord
+}
+
 type RecordsResult struct {
 	Records   []db.FileRecord
 	Operation *db.OperationRecord
@@ -89,6 +94,46 @@ func (s *Service) Move(ctx context.Context, paths []string, destination string) 
 
 	records, err := s.store.BatchMove(ctx, paths, destination)
 	return MoveResult{Records: records}, err
+}
+
+// Rename changes one active item's final path. Tree-backed directory renames
+// run as durable operations because every descendant is an individual object.
+func (s *Service) Rename(ctx context.Context, logicPath, name string) (RenameResult, error) {
+	from, to, err := db.RenameTarget(logicPath, name)
+	if err != nil {
+		return RenameResult{}, err
+	}
+	record, found, err := s.store.Find(ctx, from)
+	if err != nil {
+		return RenameResult{}, err
+	}
+	if !found {
+		return RenameResult{}, fmt.Errorf("%w: %s", db.ErrNotFound, from)
+	}
+	if _, exists, err := s.store.Find(ctx, to); err != nil {
+		return RenameResult{}, err
+	} else if exists {
+		return RenameResult{}, fmt.Errorf("%w: %s", db.ErrPathConflict, to)
+	}
+	if operations, ok := s.store.(db.TreeOperationStore); ok && record.IsDirectory {
+		operation, err := operations.CreateRenameOperation(ctx, from, name)
+		if err != nil {
+			return RenameResult{}, err
+		}
+		s.kickOperation(operation.ID)
+		return RenameResult{Operation: &operation}, nil
+	}
+	if err := s.store.RenamePath(ctx, from, to); err != nil {
+		return RenameResult{}, err
+	}
+	renamed, found, err := s.store.Find(ctx, to)
+	if err != nil {
+		return RenameResult{}, err
+	}
+	if !found {
+		return RenameResult{}, fmt.Errorf("%w: %s", db.ErrNotFound, to)
+	}
+	return RenameResult{Records: []db.FileRecord{renamed}}, nil
 }
 
 func (s *Service) Operation(ctx context.Context, id string) (db.OperationRecord, bool, error) {

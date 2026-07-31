@@ -45,6 +45,25 @@ func normalizeRoots(paths []string) ([]string, error) {
 	return result, nil
 }
 
+// RenameTarget validates a single-item rename and returns its canonical source
+// and target paths. A name is deliberately a single path segment: callers
+// cannot turn rename into a move by supplying a slash.
+func RenameTarget(logicPath, name string) (string, string, error) {
+	from := pathpkg.Clean("/" + strings.TrimSpace(logicPath))
+	if from == "/" {
+		return "", "", fmt.Errorf("root path cannot be renamed")
+	}
+	name = strings.TrimSpace(name)
+	if name == "" || name == "." || name == ".." || strings.Contains(name, "/") {
+		return "", "", fmt.Errorf("name must be a non-empty path segment")
+	}
+	to := pathpkg.Join(pathpkg.Dir(from), name)
+	if to == from {
+		return "", "", fmt.Errorf("new name must differ from the current name")
+	}
+	return from, to, nil
+}
+
 func moveRecords(active []FileRecord, paths []string, destination string, now time.Time) ([]FileRecord, error) {
 	roots, err := normalizeRoots(paths)
 	if err != nil {

@@ -34,6 +34,7 @@ type OperationRecord struct {
 
 type TreeOperationStore interface {
 	CreateMoveOperation(context.Context, []string, string) (OperationRecord, error)
+	CreateRenameOperation(context.Context, string, string) (OperationRecord, error)
 	CreateTrashOperation(context.Context, []TrashPath) (OperationRecord, error)
 	CreateRestoreOperation(context.Context, []string) (OperationRecord, error)
 	CreateDeleteTrashOperation(context.Context, []string) (OperationRecord, error)
@@ -166,6 +167,13 @@ func (s *TreeStore) CreateMoveOperation(ctx context.Context, paths []string, des
 	e = s.saveOperation(ctx, op)
 	return op, e
 }
+func (s *TreeStore) CreateRenameOperation(ctx context.Context, logicPath, name string) (OperationRecord, error) {
+	from, to, e := RenameTarget(logicPath, name)
+	if e != nil {
+		return OperationRecord{}, e
+	}
+	return s.createOperation(ctx, OperationRecord{Type: "rename", Paths: []string{from}, Destination: to})
+}
 func (s *TreeStore) CreateTrashOperation(ctx context.Context, items []TrashPath) (OperationRecord, error) {
 	if len(items) == 0 {
 		return OperationRecord{}, fmt.Errorf("at least one trash path is required")
@@ -254,6 +262,11 @@ func (s *TreeStore) RunOperation(ctx context.Context, id string) (op OperationRe
 	switch op.Type {
 	case "move":
 		records, e = s.runMove(ctx, op.Paths, op.Destination, &op)
+	case "rename":
+		if len(op.Paths) != 1 || op.Destination == "" {
+			return op, fmt.Errorf("invalid rename operation")
+		}
+		records, e = s.runRename(ctx, op.Paths[0], op.Destination, &op)
 	case "trash":
 		if op.Total == 0 {
 			for _, item := range op.TrashItems {
@@ -418,6 +431,18 @@ func (s *TreeStore) BatchMove(ctx context.Context, paths []string, destination s
 	return op.Result, e
 }
 func (s *TreeStore) runMove(ctx context.Context, paths []string, destination string, op *OperationRecord) ([]FileRecord, error) {
+	return s.runRelocate(ctx, paths, destination, "", op)
+}
+
+func (s *TreeStore) runRename(ctx context.Context, from, to string, op *OperationRecord) ([]FileRecord, error) {
+	return s.runRelocate(ctx, []string{from}, "", to, op)
+}
+
+// runRelocate persists each node before removing its source. This ordering lets
+// a later runner recognize an already-written target after a worker crash.
+// explicitTarget is used only by rename; ordinary moves derive one target per
+// source root below the requested destination directory.
+func (s *TreeStore) runRelocate(ctx context.Context, paths []string, destination, explicitTarget string, op *OperationRecord) ([]FileRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	release, renewLease, e := s.acquireTreeMutationLease(ctx)
@@ -429,7 +454,12 @@ func (s *TreeStore) runMove(ctx context.Context, paths []string, destination str
 	if e != nil {
 		return nil, e
 	}
-	destination = pathpkg.Clean("/" + strings.TrimSpace(destination))
+	if explicitTarget == "" {
+		destination = pathpkg.Clean("/" + strings.TrimSpace(destination))
+	} else {
+		explicitTarget = pathpkg.Clean("/" + strings.TrimSpace(explicitTarget))
+		destination = pathpkg.Dir(explicitTarget)
+	}
 	if destination != "/" {
 		r, ok, e := s.Find(ctx, destination)
 		if e != nil {
@@ -439,10 +469,16 @@ func (s *TreeStore) runMove(ctx context.Context, paths []string, destination str
 			return nil, fmt.Errorf("destination directory not found: %s", destination)
 		}
 	}
+	targetForRoot := func(rootPath string) string {
+		if explicitTarget != "" {
+			return explicitTarget
+		}
+		return pathpkg.Join(destination, pathpkg.Base(rootPath))
+	}
 	var results []FileRecord
 	targetRoots := map[string]string{}
 	for _, rootPath := range roots {
-		targetRoot := pathpkg.Join(destination, pathpkg.Base(rootPath))
+		targetRoot := targetForRoot(rootPath)
 		if previous, exists := targetRoots[targetRoot]; exists && previous != rootPath {
 			return nil, fmt.Errorf("%w: %s", ErrPathConflict, targetRoot)
 		}
@@ -494,7 +530,7 @@ func (s *TreeStore) runMove(ctx context.Context, paths []string, destination str
 		if e != nil {
 			return nil, e
 		}
-		targetRoot := pathpkg.Join(destination, pathpkg.Base(rootPath))
+		targetRoot := targetForRoot(rootPath)
 		if !ok {
 			if existing, found, e := s.Find(ctx, targetRoot); e == nil && found {
 				old := existing
@@ -567,7 +603,7 @@ func (s *TreeStore) runMove(ctx context.Context, paths []string, destination str
 	var rebuild, propagate []string
 	for _, rootPath := range roots {
 		propagate = append(propagate, pathpkg.Dir(rootPath))
-		targetRoot := pathpkg.Join(destination, pathpkg.Base(rootPath))
+		targetRoot := targetForRoot(rootPath)
 		if target, found, findErr := s.Find(ctx, targetRoot); findErr != nil {
 			return nil, findErr
 		} else if found && target.IsDirectory {

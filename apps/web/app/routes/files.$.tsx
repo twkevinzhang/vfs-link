@@ -9,6 +9,7 @@ import {
   Folder,
   FolderInput,
   LoaderCircle,
+  Pencil,
   Play,
   RefreshCcw,
   RotateCcw,
@@ -46,6 +47,7 @@ import {
   ConfirmTrashDialog,
   FileActionMenu,
   MoveDialog,
+  RenameDialog,
 } from '../components/file-actions';
 import { Checkbox } from '../components/ui/checkbox';
 import { useFileSelection } from '../hooks/use-file-selection';
@@ -71,6 +73,7 @@ import {
   getTrash,
   moveFiles,
   moveFilesToTrash,
+  renameFile,
   restoreTrash,
 } from '../lib/api';
 import {
@@ -140,6 +143,7 @@ export default function FileBrowserRoute() {
   const [actionPaths, setActionPaths] = useState<string[]>([]);
   const [actionTrashIds, setActionTrashIds] = useState<string[]>([]);
   const [showMove, setShowMove] = useState(false);
+  const [renameEntry, setRenameEntry] = useState<FileEntry>();
   const [showTrashConfirm, setShowTrashConfirm] = useState(false);
   const [showPermanentConfirm, setShowPermanentConfirm] = useState(false);
   const [showEmptyConfirm, setShowEmptyConfirm] = useState(false);
@@ -419,6 +423,32 @@ export default function FileBrowserRoute() {
   const beginTrash = (paths: string[]) => {
     setActionPaths(paths);
     setShowTrashConfirm(true);
+  };
+  const beginRename = (entry: FileEntry) => {
+    setActionError(undefined);
+    setRenameEntry(entry);
+  };
+  const runRename = async (name: string) => {
+    const entry = renameEntry;
+    if (!entry) return;
+
+    try {
+      const result = await renameFile(entry.path, name);
+      setRenameEntry(undefined);
+      selection.clear();
+      setSelectedFile(undefined);
+      if ('operationId' in result) {
+        setActiveOperation(result);
+        void watchOperation(result.operationId);
+        return;
+      }
+      refresh();
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Unable to rename item';
+      setActionError(message);
+      throw error instanceof Error ? error : new Error(message);
+    }
   };
   const runMove = async (destination: string) => {
     try {
@@ -717,6 +747,7 @@ export default function FileBrowserRoute() {
                     );
                   }}
                   onMove={(entry) => beginMove([entry.path])}
+                  onRename={beginRename}
                   onTrash={(entry) => beginTrash([entry.path])}
                   onRestore={(entry) => {
                     if (entry.trashId)
@@ -751,6 +782,7 @@ export default function FileBrowserRoute() {
                 onClear={() => setSelectedFile(undefined)}
                 onShareFile={shareFile}
                 onMove={(file) => beginMove([file.path])}
+                onRename={beginRename}
                 onTrash={(file) => beginTrash([file.path])}
               />
             )}
@@ -819,6 +851,8 @@ export default function FileBrowserRoute() {
                     <p className="font-semibold">
                       {activeOperation.type === 'move'
                         ? 'Move in progress'
+                        : activeOperation.type === 'rename'
+                        ? 'Rename in progress'
                         : activeOperation.type === 'trash'
                         ? 'Moving to trash'
                         : activeOperation.type === 'restore'
@@ -906,6 +940,14 @@ export default function FileBrowserRoute() {
           initialPath={currentPath}
           onOpenChange={setShowMove}
           onMove={runMove}
+        />
+        <RenameDialog
+          open={Boolean(renameEntry)}
+          entry={renameEntry}
+          onOpenChange={(open) => {
+            if (!open) setRenameEntry(undefined);
+          }}
+          onRename={runRename}
         />
         <ConfirmTrashDialog
           open={showTrashConfirm}
@@ -1359,6 +1401,7 @@ function FileTable({
   onSelectFile,
   onSelect,
   onMove,
+  onRename,
   onTrash,
   onRestore,
   onPermanentDelete,
@@ -1379,6 +1422,7 @@ function FileTable({
     options: { toggle?: boolean; range?: boolean }
   ) => void;
   onMove: (entry: FileEntry) => void;
+  onRename: (entry: FileEntry) => void;
   onTrash: (entry: FileEntry) => void;
   onRestore: (entry: FileEntry) => void;
   onPermanentDelete: (entry: FileEntry) => void;
@@ -1403,6 +1447,7 @@ function FileTable({
           onOpenFolder={onOpenFolder}
           onSelectFile={onSelectFile}
           onMove={onMove}
+          onRename={onRename}
           onTrash={onTrash}
           onRestore={onRestore}
           onPermanentDelete={onPermanentDelete}
@@ -1538,6 +1583,7 @@ function FileTable({
                             : onSelectFile(entry)
                         }
                         onShare={() => onShareFile(entry.path)}
+                        onRename={() => onRename(entry)}
                         onMove={() => onMove(entry)}
                         onTrash={() => onTrash(entry)}
                       />
@@ -1592,6 +1638,7 @@ function MobileFileList({
   onOpenFolder,
   onSelectFile,
   onMove,
+  onRename,
   onTrash,
   onRestore,
   onPermanentDelete,
@@ -1604,6 +1651,7 @@ function MobileFileList({
   onOpenFolder: (path: string) => void;
   onSelectFile: (entry: FileEntry) => void;
   onMove: (entry: FileEntry) => void;
+  onRename: (entry: FileEntry) => void;
   onTrash: (entry: FileEntry) => void;
   onRestore: (entry: FileEntry) => void;
   onPermanentDelete: (entry: FileEntry) => void;
@@ -1686,6 +1734,7 @@ function MobileFileList({
                     isDirectory ? onOpenFolder(entry.path) : onSelectFile(entry)
                   }
                   onShare={() => onShareFile(entry.path)}
+                  onRename={() => onRename(entry)}
                   onMove={() => onMove(entry)}
                   onTrash={() => onTrash(entry)}
                 />
@@ -1704,6 +1753,7 @@ function FileInspector({
   onClear,
   onShareFile,
   onMove,
+  onRename,
   onTrash,
 }: {
   file?: FileEntry;
@@ -1711,6 +1761,7 @@ function FileInspector({
   onClear: () => void;
   onShareFile: (path: string) => void;
   onMove: (file: FileEntry) => void;
+  onRename: (file: FileEntry) => void;
   onTrash: (file: FileEntry) => void;
 }) {
   if (!file) {
@@ -1799,6 +1850,14 @@ function FileInspector({
               <Button variant="outline" size="sm" onClick={() => onMove(file)}>
                 <FolderInput className="h-4 w-4" />
                 Move
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => onRename(file)}
+              >
+                <Pencil className="h-4 w-4" />
+                Rename
               </Button>
               <Button
                 variant="destructive"
@@ -1910,6 +1969,14 @@ function FileInspector({
               <Button variant="outline" size="sm" onClick={() => onMove(file)}>
                 <FolderInput className="h-4 w-4" />
                 Move
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => onRename(file)}
+              >
+                <Pencil className="h-4 w-4" />
+                Rename
               </Button>
               <Button
                 variant="destructive"

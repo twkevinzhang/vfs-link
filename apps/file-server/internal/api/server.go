@@ -151,6 +151,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/files", s.handleFiles)
 	mux.HandleFunc("/api/files/move", s.handleMoveFiles)
+	mux.HandleFunc("/api/files/rename", s.handleRenameFile)
 	mux.HandleFunc("/api/operations/", s.handleOperation)
 	mux.HandleFunc("/api/files/trash", s.handleTrashFiles)
 	mux.HandleFunc("/api/trash", s.handleTrash)

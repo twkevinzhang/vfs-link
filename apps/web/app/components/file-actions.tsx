@@ -3,12 +3,14 @@ import {
   ExternalLink,
   FolderInput,
   MoreHorizontal,
+  Pencil,
   Share2,
   Trash2,
 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { getDownloadUrl, getTree } from '../lib/api';
+import { validateFileName } from '../lib/file-name';
 import type { FileEntry, TreeNode } from '../types/files';
 import {
   AlertDialog,
@@ -21,7 +23,6 @@ import {
 import { Button } from './ui/button';
 import {
   Dialog,
-  DialogClose,
   DialogContent,
   DialogDescription,
   DialogTitle,
@@ -39,6 +40,7 @@ export function FileActionMenu({
   sharing,
   onOpen,
   onShare,
+  onRename,
   onMove,
   onTrash,
 }: {
@@ -46,6 +48,7 @@ export function FileActionMenu({
   sharing?: boolean;
   onOpen: () => void;
   onShare: () => void;
+  onRename: () => void;
   onMove: () => void;
   onTrash: () => void;
 }) {
@@ -81,6 +84,10 @@ export function FileActionMenu({
           </DropdownMenuItem>
         )}
         <DropdownMenuSeparator className="my-1 h-px bg-border" />
+        <DropdownMenuItem onSelect={onRename}>
+          <Pencil className="h-4 w-4" />
+          Rename
+        </DropdownMenuItem>
         <DropdownMenuItem onSelect={onMove}>
           <FolderInput className="h-4 w-4" />
           Move
@@ -94,6 +101,108 @@ export function FileActionMenu({
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+export function RenameDialog({
+  open,
+  entry,
+  onOpenChange,
+  onRename,
+}: {
+  open: boolean;
+  entry?: FileEntry;
+  onOpenChange: (open: boolean) => void;
+  onRename: (name: string) => Promise<void>;
+}) {
+  const [name, setName] = useState('');
+  const [error, setError] = useState<string>();
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
+
+  useEffect(() => {
+    if (!open || !entry) return;
+    setName(entry.name);
+    setError(undefined);
+    setSubmitting(false);
+    submittingRef.current = false;
+  }, [entry, open]);
+
+  const submit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (submittingRef.current) return;
+
+    const result = validateFileName(name);
+    if (result.error) {
+      setError(result.error);
+      return;
+    }
+
+    submittingRef.current = true;
+    setSubmitting(true);
+    setError(undefined);
+    try {
+      await onRename(result.name);
+    } catch (reason) {
+      setError(
+        reason instanceof Error ? reason.message : 'Unable to rename item'
+      );
+      submittingRef.current = false;
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!submittingRef.current) onOpenChange(nextOpen);
+      }}
+    >
+      <DialogContent>
+        <form className="grid gap-4" onSubmit={(event) => void submit(event)}>
+          <div className="grid gap-1 pr-7">
+            <DialogTitle className="text-lg font-semibold">Rename</DialogTitle>
+            <DialogDescription className="text-sm text-muted-foreground">
+              Enter a new name for {entry?.name ?? 'this item'}.
+            </DialogDescription>
+          </div>
+          <div className="grid gap-2">
+            <label className="text-sm font-medium" htmlFor="rename-name">
+              Name
+            </label>
+            <input
+              id="rename-name"
+              autoFocus
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              disabled={submitting}
+              aria-invalid={Boolean(error)}
+              aria-describedby={error ? 'rename-name-error' : undefined}
+              className="flex h-10 w-full rounded-md border border-input bg-white px-3 py-2 text-sm text-foreground shadow-sm outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/25 disabled:cursor-not-allowed disabled:opacity-50"
+            />
+            {error && (
+              <p id="rename-name-error" className="text-sm text-destructive">
+                {error}
+              </p>
+            )}
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+              disabled={submitting}
+            >
+              Cancel
+            </Button>
+            <Button type="submit" disabled={submitting}>
+              {submitting ? 'Renaming…' : 'Rename'}
+            </Button>
+          </div>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -199,9 +308,9 @@ export function MoveDialog({
           </div>
         </div>
         <div className="flex justify-end gap-2">
-          <DialogClose asChild>
-            <Button variant="outline">Cancel</Button>
-          </DialogClose>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
           <Button
             disabled={loading || !!error}
             onClick={() => void onMove(current)}

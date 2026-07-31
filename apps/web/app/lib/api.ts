@@ -114,6 +114,13 @@ export function moveFiles(paths: string[], destination: string) {
   );
 }
 
+export function renameFile(path: string, name: string) {
+  return postJson<FileMutationResponse | FileOperationResponse>(
+    '/api/files/rename',
+    { path, name }
+  );
+}
+
 export function getFileOperation(id: string) {
   return requestJson<FileOperationResponse>(
     `/api/operations/${encodeURIComponent(id)}`

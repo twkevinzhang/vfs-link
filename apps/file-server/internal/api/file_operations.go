@@ -15,6 +15,10 @@ type pathsRequest struct {
 	Paths       []string `json:"paths"`
 	Destination string   `json:"destination,omitempty"`
 }
+type renameRequest struct {
+	Path string `json:"path"`
+	Name string `json:"name"`
+}
 type trashIDsRequest struct {
 	TrashIDs []string `json:"trashIds"`
 }
@@ -72,6 +76,28 @@ func (s *Server) handleMoveFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := s.files.Move(r.Context(), request.Paths, request.Destination)
+	if err != nil {
+		writeFileOperationError(w, err)
+		return
+	}
+	if result.Operation != nil {
+		writeAcceptedOperation(w, *result.Operation)
+		return
+	}
+	writeJSON(w, entriesResponse{Entries: recordsToEntries(result.Records), GeneratedAt: time.Now().Format(time.RFC3339)})
+}
+
+func (s *Server) handleRenameFile(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var request renameRequest
+	if decodeBody(r, &request) != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	result, err := s.files.Rename(r.Context(), request.Path, request.Name)
 	if err != nil {
 		writeFileOperationError(w, err)
 		return

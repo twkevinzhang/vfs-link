@@ -208,6 +208,111 @@ func TestTreeFileMoveRemainsSynchronous(t *testing.T) {
 	}
 }
 
+func TestFileRenameAPIValidatesNamesConflictsAndTrimsUnicode(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store, err := db.NewTreeLocal(filepath.Join(root, "tree"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	if err := store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertDirectory(ctx, "/folder"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertFile(ctx, "/folder/old.txt", "object-old", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertFile(ctx, "/folder/taken.txt", "object-taken", 1); err != nil {
+		t.Fatal(err)
+	}
+	objects, err := blob.NewLocal(filepath.Join(root, "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := New(store, objects, nil, "", "").Handler()
+
+	var renamed entriesResponse
+	requestJSON(t, handler, http.MethodPost, "/api/files/rename", map[string]any{
+		"path": "/folder/old.txt", "name": "  \u6e2c\u8a66\u6a94\u6848.txt  ",
+	}, http.StatusOK, &renamed)
+	if len(renamed.Entries) != 1 || renamed.Entries[0].Path != "/folder/\u6e2c\u8a66\u6a94\u6848.txt" {
+		t.Fatalf("renamed entries = %#v", renamed.Entries)
+	}
+	if renamed.Entries[0].PhysicalHash != "object-old" {
+		t.Fatalf("rename changed physical hash = %q", renamed.Entries[0].PhysicalHash)
+	}
+	if _, found, err := store.Find(ctx, "/folder/old.txt"); err != nil || found {
+		t.Fatalf("old entry remains found=%v err=%v", found, err)
+	}
+
+	requestJSON(t, handler, http.MethodPost, "/api/files/rename", map[string]any{
+		"path": "/folder/\u6e2c\u8a66\u6a94\u6848.txt", "name": "taken.txt",
+	}, http.StatusConflict, nil)
+	requestJSON(t, handler, http.MethodPost, "/api/files/rename", map[string]any{
+		"path": "/missing.txt", "name": "renamed.txt",
+	}, http.StatusNotFound, nil)
+	requestJSON(t, handler, http.MethodPost, "/api/files/rename", map[string]any{
+		"path": "/folder/\u6e2c\u8a66\u6a94\u6848.txt", "name": "\u6e2c\u8a66\u6a94\u6848.txt",
+	}, http.StatusBadRequest, nil)
+	for _, name := range []string{"", " ", ".", "..", "nested/name"} {
+		requestJSON(t, handler, http.MethodPost, "/api/files/rename", map[string]any{
+			"path": "/folder/\u6e2c\u8a66\u6a94\u6848.txt", "name": name,
+		}, http.StatusBadRequest, nil)
+	}
+	requestJSON(t, handler, http.MethodPost, "/api/files/rename", map[string]any{
+		"path": "/", "name": "not-root",
+	}, http.StatusBadRequest, nil)
+}
+
+func TestTreeDirectoryRenameReturnsAcceptedOperationAndCanBePolled(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store, err := db.NewTreeLocal(filepath.Join(root, "tree"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	if err := store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertDirectory(ctx, "/source"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertDirectory(ctx, "/source/nested"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertFile(ctx, "/source/nested/a.txt", "object-a", 1); err != nil {
+		t.Fatal(err)
+	}
+	objects, err := blob.NewLocal(filepath.Join(root, "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := New(store, objects, nil, "", "").Handler()
+
+	var accepted operationResponse
+	requestJSON(t, handler, http.MethodPost, "/api/files/rename", map[string]any{
+		"path": "/source", "name": "renamed",
+	}, http.StatusAccepted, &accepted)
+	if accepted.OperationID == "" || accepted.Type != "rename" || accepted.Status != "pending" {
+		t.Fatalf("accepted rename operation = %#v", accepted)
+	}
+	completed := pollOperation(t, handler, accepted.OperationID)
+	if completed.Type != "rename" || len(completed.Entries) != 1 || completed.Entries[0].Path != "/renamed" {
+		t.Fatalf("completed rename operation = %#v", completed)
+	}
+	if _, found, err := store.Find(ctx, "/renamed/nested/a.txt"); err != nil || !found {
+		t.Fatalf("renamed descendant found=%v err=%v", found, err)
+	}
+	descendant, found, err := store.Find(ctx, "/renamed/nested/a.txt")
+	if err != nil || !found || descendant.PhysicalHash != "object-a" {
+		t.Fatalf("renamed descendant mapping=%+v found=%v err=%v", descendant, found, err)
+	}
+}
+
 func TestTreeDirectoryTrashAndRestoreReturnAcceptedOperations(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

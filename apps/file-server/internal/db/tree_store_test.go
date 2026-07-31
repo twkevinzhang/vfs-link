@@ -564,6 +564,72 @@ func TestMoveOperationResumesWithoutInflatingTotal(t *testing.T) {
 	}
 }
 
+func TestRenameOperationResumesWithoutInflatingTotal(t *testing.T) {
+	ctx := context.Background()
+	s := newTestTree(t)
+	if e := s.UpsertDirectory(ctx, "/src"); e != nil {
+		t.Fatal(e)
+	}
+	for i := 0; i < 20; i++ {
+		if e := s.UpsertFile(ctx, fmt.Sprintf("/src/%02d.txt", i), fmt.Sprintf("h%d", i), 1); e != nil {
+			t.Fatal(e)
+		}
+	}
+	op, e := s.CreateRenameOperation(ctx, "/src", "renamed")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if op.Type != "rename" || op.Destination != "/renamed" {
+		t.Fatalf("operation=%+v", op)
+	}
+
+	// Simulate a crash after a target node and its index were persisted, but
+	// before the source node was removed from the operation manifest.
+	old, ok, e := s.Find(ctx, "/src/00.txt")
+	if e != nil || !ok {
+		t.Fatal(e)
+	}
+	renamed := old
+	renamed.LogicPath = "/renamed/00.txt"
+	if e = s.putNode(ctx, renamed, true); e != nil {
+		t.Fatal(e)
+	}
+	if e = s.deleteNode(ctx, old); e != nil {
+		t.Fatal(e)
+	}
+	_ = s.updateIndexRecord(ctx, "/src", old, true)
+	_ = s.updateIndexRecord(ctx, "/renamed", renamed, false)
+	stored, g, _, e := s.loadOperation(ctx, op.ID)
+	if e != nil {
+		t.Fatal(e)
+	}
+	expired := time.Now().Add(-time.Minute)
+	stored.Status = "running"
+	stored.Progress = 1
+	stored.Total = 21
+	stored.LeaseUntil = &expired
+	if _, e = s.saveOperationCAS(ctx, stored, g); e != nil {
+		t.Fatal(e)
+	}
+	done, e := s.RunOperation(ctx, op.ID)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if done.Status != "completed" || done.Total != 21 || done.Progress != 21 || len(done.Result) != 1 {
+		t.Fatalf("operation=%+v", done)
+	}
+	if _, ok, e = s.Find(ctx, "/renamed/19.txt"); e != nil || !ok {
+		t.Fatalf("renamed=%v err=%v", ok, e)
+	}
+	if _, ok, e = s.Find(ctx, "/src"); e != nil || ok {
+		t.Fatalf("source remains=%v err=%v", ok, e)
+	}
+	page, e := s.ListDirectChildren(ctx, "/", DirectChildrenOptions{Limit: 10})
+	if e != nil || page.FolderSummary != (FolderSummary{Files: 20, Directories: 1, Bytes: 20}) {
+		t.Fatalf("resume aggregate=%+v err=%v", page.FolderSummary, e)
+	}
+}
+
 func TestMoveOperationSupportsMultipleRootsWithSummaryOnly(t *testing.T) {
 	ctx := context.Background()
 	s := newTestTree(t)

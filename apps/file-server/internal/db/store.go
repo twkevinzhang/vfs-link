@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -803,12 +804,27 @@ WHERE "logicPath" = $1
 		return err
 	}
 
+	var targetExists bool
+	if err := tx.QueryRow(ctx, `
+SELECT EXISTS(
+  SELECT 1
+  FROM "File"
+  WHERE "logicPath" = $1
+    AND "trashedAt" IS NULL
+)
+`, toPath).Scan(&targetExists); err != nil {
+		return err
+	}
+	if targetExists {
+		return fmt.Errorf("%w: %s", ErrPathConflict, toPath)
+	}
+
 	if _, err := tx.Exec(ctx, `
 UPDATE "File"
 SET "logicPath" = $1, "updatedAt" = now()
 WHERE id = $2
 `, toPath, id); err != nil {
-		return err
+		return postgresRenameError(err, toPath)
 	}
 
 	if isDirectory {
@@ -849,12 +865,20 @@ UPDATE "File"
 SET "logicPath" = $1, "updatedAt" = now()
 WHERE id = $2
 `, newChildPath, child.id); err != nil {
-				return err
+				return postgresRenameError(err, newChildPath)
 			}
 		}
 	}
 
 	return tx.Commit(ctx)
+}
+
+func postgresRenameError(err error, targetPath string) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return fmt.Errorf("%w: %s", ErrPathConflict, targetPath)
+	}
+	return err
 }
 
 func (s *PostgresStore) DeletePath(ctx context.Context, logicPath string) error {
