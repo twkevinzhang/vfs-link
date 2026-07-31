@@ -229,8 +229,8 @@ func rebuildMapping(ctx context.Context, cfg config.Config, store db.Store, obje
 			continue
 		}
 		isDir := strings.HasSuffix(object.Name, "/")
-		logicPath := "/" + strings.TrimPrefix(strings.TrimSuffix(object.Name, "/"), "/")
-		if logicPath == "/" {
+		logicPath := strings.Trim(strings.TrimSpace(object.Name), "/")
+		if logicPath == "" {
 			continue
 		}
 

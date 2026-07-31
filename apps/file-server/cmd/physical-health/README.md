@@ -28,7 +28,7 @@ STORAGE_DRIVER=local
 DB_DRIVER=json
 METADATA_STORAGE_DRIVER=local
 METADATA_LOCAL_ROOT=./data/metadata
-METADATA_PREFIX=_vfs-link
+METADATA_PREFIX=_vfs-link-v3
 STORAGE_DRIVER=local
 ```
 
@@ -65,12 +65,12 @@ GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
 | `-metadata-driver` | `METADATA_STORAGE_DRIVER`，未設定時為 `local` | JSON tree storage driver：`local` 或 `gcs` |
 | `-metadata-local-root` | `METADATA_LOCAL_ROOT`，未設定時為 `./data/metadata` | 本機 JSON tree root |
 | `-metadata-gcs-bucket` | `METADATA_GCS_BUCKET` | JSON tree 專用 GCS bucket |
-| `-metadata-prefix` | `METADATA_PREFIX`，未設定時為 `_vfs-link` | JSON tree prefix：`_vfs-link` 或 `_vfs-link-v2` |
+| `-metadata-prefix` | `METADATA_PREFIX`，未設定時為 `_vfs-link` | JSON tree prefix：`_vfs-link`、`_vfs-link-v2` 或 `_vfs-link-v3` |
 | `-storage-driver` | `STORAGE_DRIVER`，未設定時為 `local` | active storage driver：`local` 或 `gcs` |
 | `-local-root` | `LOCAL_STORAGE_ROOT`，未設定時為 `./data/objects` | local object root |
 | `-gcs-bucket` | `GCS_BUCKET` | active GCS bucket 名稱 |
 | `-google-credentials` | `GOOGLE_APPLICATION_CREDENTIALS` | service account JSON 路徑 |
-| `-prefix` | `/` | 僅檢查此 logical path 與其子路徑 |
+| `-prefix` | 空字串 | 僅檢查此相對 logical path 與其子路徑 |
 | `-csv` | 空 | 將逐檔結果寫入指定 CSV |
 | `-fail-on-unhealthy` | `false` | 有 unhealthy 檔案時以 exit code 2 結束 |
 | `-check-metadata-aggregates` | `false` | 比對 active records、`stats.json` 與 root folder summary；不一致時失敗 |
@@ -120,7 +120,7 @@ GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
   -db-driver json \
   -metadata-driver gcs \
   -metadata-gcs-bucket PROJECT_ID-vfs-link-metadata \
-  -metadata-prefix _vfs-link-v2 \
+  -metadata-prefix _vfs-link-v3 \
   -storage-driver gcs \
   -gcs-bucket PROJECT_ID-archive \
   -check-metadata-aggregates

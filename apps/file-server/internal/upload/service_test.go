@@ -28,7 +28,7 @@ func (unusedStorage) Cancel(context.Context, Session) error       { panic("unexp
 
 func TestCreateRejectsFileOverMaxBytesBeforeAllocatingSession(t *testing.T) {
 	service := New(nil, nil, unusedStorage{}, WithMaxBytes(10))
-	_, err := service.Create(context.Background(), CreateInput{LogicPath: "/large.bin", Size: 11})
+	_, err := service.Create(context.Background(), CreateInput{LogicPath: "large.bin", Size: 11})
 	if err == nil || !strings.Contains(err.Error(), "exceeds maximum") {
 		t.Fatalf("Create() error = %v, want maximum size error", err)
 	}
@@ -57,7 +57,7 @@ func TestLocalUploadCreateWriteComplete(t *testing.T) {
 	}
 	service := NewWithBlob(store, objects)
 
-	session, err := service.Create(ctx, CreateInput{LogicPath: "/report.txt", Size: 4, ContentType: "text/plain"})
+	session, err := service.Create(ctx, CreateInput{LogicPath: "report.txt", Size: 4, ContentType: "text/plain"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestLocalUploadCreateWriteComplete(t *testing.T) {
 	if completed.Status != StatusComplete {
 		t.Fatalf("status = %q", completed.Status)
 	}
-	record, found, err := store.Find(ctx, "/report.txt")
+	record, found, err := store.Find(ctx, "report.txt")
 	if err != nil || !found || record.Size != 4 {
 		t.Fatalf("file mapping = %#v, %t, %v", record, found, err)
 	}
@@ -100,7 +100,7 @@ func TestLocalFolderUploadCreatesParentDirectories(t *testing.T) {
 	}
 	service := NewWithBlob(store, objects)
 
-	session, err := service.Create(ctx, CreateInput{LogicPath: "/photos/trip/day-1/image.txt", Size: 4, ContentType: "text/plain"})
+	session, err := service.Create(ctx, CreateInput{LogicPath: "photos/trip/day-1/image.txt", Size: 4, ContentType: "text/plain"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,13 +111,13 @@ func TestLocalFolderUploadCreatesParentDirectories(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, logicPath := range []string{"/photos", "/photos/trip", "/photos/trip/day-1"} {
+	for _, logicPath := range []string{"photos", "photos/trip", "photos/trip/day-1"} {
 		record, found, err := store.Find(ctx, logicPath)
 		if err != nil || !found || !record.IsDirectory {
 			t.Fatalf("directory %q = %#v, %t, %v", logicPath, record, found, err)
 		}
 	}
-	record, found, err := store.Find(ctx, "/photos/trip/day-1/image.txt")
+	record, found, err := store.Find(ctx, "photos/trip/day-1/image.txt")
 	if err != nil || !found || record.IsDirectory || record.Size != 4 {
 		t.Fatalf("file = %#v, %t, %v", record, found, err)
 	}
@@ -139,7 +139,7 @@ func TestLocalUploadRejectsMoreThanDeclaredSize(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := NewWithBlob(store, objects)
-	session, err := service.Create(ctx, CreateInput{LogicPath: "/short.txt", Size: 4})
+	session, err := service.Create(ctx, CreateInput{LogicPath: "short.txt", Size: 4})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestLocalOversizedOverwritePreservesExistingFinalObject(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := NewWithBlob(store, objects)
-	first, err := service.Create(ctx, CreateInput{LogicPath: "/report.txt", Size: 4})
+	first, err := service.Create(ctx, CreateInput{LogicPath: "report.txt", Size: 4})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ func TestLocalOversizedOverwritePreservesExistingFinalObject(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	overwrite, err := service.Create(ctx, CreateInput{LogicPath: "/report.txt", Size: 4, Overwrite: true})
+	overwrite, err := service.Create(ctx, CreateInput{LogicPath: "report.txt", Size: 4, Overwrite: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +249,7 @@ func (*completeStorage) Cancel(context.Context, Session) error { panic("unused")
 func TestAlignedOverwriteCompleteRetriesMetadataWithoutDeletingFinalObject(t *testing.T) {
 	key := "docs/report.txt"
 	repository := &singleSessionRepository{session: Session{
-		ID: "upload", LogicPath: "/docs/report.txt", PhysicalHash: key, Size: 4,
+		ID: "upload", LogicPath: "docs/report.txt", PhysicalHash: key, Size: 4,
 		Status: StatusPending, ExpectedPhysicalHash: &key, ExpiresAt: time.Now().Add(time.Hour),
 	}}
 	publisher := &retryPublisher{}

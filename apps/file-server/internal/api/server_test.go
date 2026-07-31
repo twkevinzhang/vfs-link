@@ -58,7 +58,7 @@ func TestStatusUsesMetadataStatsWithoutListingPhysicalBucket(t *testing.T) {
 	if err := store.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertFile(ctx, "/a.txt", "object-a", 3); err != nil {
+	if err := store.UpsertFile(ctx, "a.txt", "object-a", 3); err != nil {
 		t.Fatal(err)
 	}
 	objects, err := blob.NewLocal(filepath.Join(root, "objects"))
@@ -75,11 +75,11 @@ func TestStatusUsesMetadataStatsWithoutListingPhysicalBucket(t *testing.T) {
 
 func TestFolderSummaryJSONKeepsRecursiveAndVisibleTotalsDistinct(t *testing.T) {
 	response := FilesResponse{
-		Path: "/",
+		Path: "",
 		Entries: []Entry{
 			{
-				Name: "/archive",
-				Path: "/archive",
+				Name: "archive",
+				Path: "archive",
 				Kind: "directory",
 				FolderSummary: &FolderSummary{
 					Files:       8,
@@ -122,7 +122,7 @@ func TestFolderSummaryJSONKeepsRecursiveAndVisibleTotalsDistinct(t *testing.T) {
 
 func TestEntryFromRecordMapsDirectoryFolderSummary(t *testing.T) {
 	record := db.FileRecord{
-		LogicPath:   "/archive",
+		LogicPath:   "archive",
 		IsDirectory: true,
 		FolderSummary: &db.FolderSummary{
 			Files:       8,
@@ -151,7 +151,7 @@ func TestFilesReturnsRecursiveFolderSummaryIndependentOfQuery(t *testing.T) {
 	if err := store.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
-	for _, directory := range []string{"/archive", "/archive/nested"} {
+	for _, directory := range []string{"archive", "archive/nested"} {
 		if err := store.UpsertDirectory(ctx, directory); err != nil {
 			t.Fatal(err)
 		}
@@ -160,9 +160,9 @@ func TestFilesReturnsRecursiveFolderSummaryIndependentOfQuery(t *testing.T) {
 		path string
 		size int64
 	}{
-		{path: "/root.txt", size: 2},
-		{path: "/archive/a.txt", size: 3},
-		{path: "/archive/nested/b.txt", size: 5},
+		{path: "root.txt", size: 2},
+		{path: "archive/a.txt", size: 3},
+		{path: "archive/nested/b.txt", size: 5},
 	} {
 		if err := store.UpsertFile(ctx, file.path, "object"+file.path, file.size); err != nil {
 			t.Fatal(err)
@@ -175,7 +175,7 @@ func TestFilesReturnsRecursiveFolderSummaryIndependentOfQuery(t *testing.T) {
 	handler := New(store, objects, nil, "", "").Handler()
 
 	var filtered FilesResponse
-	requestJSON(t, handler, http.MethodGet, "/api/files?path=%2F&q=root", nil, http.StatusOK, &filtered)
+	requestJSON(t, handler, http.MethodGet, "/api/files?path=&q=root", nil, http.StatusOK, &filtered)
 	if filtered.FolderSummary != (FolderSummary{Files: 3, Directories: 2, Bytes: 10}) {
 		t.Fatalf("filtered folderSummary = %#v", filtered.FolderSummary)
 	}
@@ -184,10 +184,10 @@ func TestFilesReturnsRecursiveFolderSummaryIndependentOfQuery(t *testing.T) {
 	}
 
 	var unfiltered FilesResponse
-	requestJSON(t, handler, http.MethodGet, "/api/files?path=%2F", nil, http.StatusOK, &unfiltered)
+	requestJSON(t, handler, http.MethodGet, "/api/files?path=", nil, http.StatusOK, &unfiltered)
 	var archive *Entry
 	for i := range unfiltered.Entries {
-		if unfiltered.Entries[i].Path == "/archive" {
+		if unfiltered.Entries[i].Path == "archive" {
 			archive = &unfiltered.Entries[i]
 			break
 		}
@@ -197,6 +197,27 @@ func TestFilesReturnsRecursiveFolderSummaryIndependentOfQuery(t *testing.T) {
 	}
 	if *archive.FolderSummary != (FolderSummary{Files: 2, Directories: 1, Bytes: 8}) {
 		t.Fatalf("archive folderSummary = %#v", archive.FolderSummary)
+	}
+}
+
+func TestFilesRejectsLegacyAbsoluteLogicalPath(t *testing.T) {
+	store, err := db.NewTreeLocal(t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	if err := store.EnsureSchema(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	objects, err := blob.NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/files?path=%2Farchive", nil)
+	New(store, objects, nil, "", "").Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "must not start with a slash") {
+		t.Fatalf("legacy absolute path response = %d %s", response.Code, response.Body.String())
 	}
 }
 
@@ -230,7 +251,7 @@ func TestDownloadContentDispositionPreservesUnicodeFilenames(t *testing.T) {
 		{name: "quoted escaped percent attachment", filename: "quote\" slash\\ percent%.txt", disposition: "attachment"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			logicPath := "/downloads/" + test.filename
+			logicPath := "downloads/" + test.filename
 			physicalHash := "objects/" + test.name
 			if err := store.UpsertFile(ctx, logicPath, physicalHash, int64(len("download body"))); err != nil {
 				t.Fatal(err)
@@ -296,7 +317,7 @@ func TestDownloadStreamsLargeFilesWithChunkedHTTP1Response(t *testing.T) {
 
 	const downloadSize = 33 * 1024 * 1024
 	payload := bytes.Repeat([]byte("vfs-link-large-download\n"), downloadSize/len("vfs-link-large-download\n")+1)[:downloadSize]
-	const logicPath = "/downloads/large-file.zip"
+	const logicPath = "downloads/large-file.zip"
 	const physicalHash = "large-download"
 	if err := store.UpsertFile(ctx, logicPath, physicalHash, int64(len(payload))); err != nil {
 		t.Fatal(err)

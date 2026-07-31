@@ -11,7 +11,7 @@ GCS_BUCKET=your-vfs-link-production-bucket
 DB_DRIVER=json
 METADATA_STORAGE_DRIVER=gcs
 METADATA_GCS_BUCKET=your-vfs-link-metadata-bucket
-METADATA_PREFIX=_vfs-link-v2
+METADATA_PREFIX=_vfs-link-v3
 HTTP_BASIC_AUTH_ENABLED=true
 PUB_SUB_DRIVER=pubsub
 GCP_PROJECT_ID=your-project-id
@@ -52,7 +52,7 @@ The Cloud Run filesystem is not persistent. Never select local file or metadata
 storage for the production service; local remains supported for development
 and persistent single-instance self-hosting.
 
-For a v1-to-v2 prefix rollout, keep `_vfs-link` unchanged, migrate into
-`_vfs-link-v2`, and deploy the v2 configuration as a no-traffic revision before
+For a v2-to-v3 prefix rollout, keep `_vfs-link-v2` unchanged, migrate into
+`_vfs-link-v3`, and deploy the v3 configuration as a no-traffic revision before
 cutting over. See [metadata-migration.md](metadata-migration.md) for the
 maintenance, validation, and rollback sequence.

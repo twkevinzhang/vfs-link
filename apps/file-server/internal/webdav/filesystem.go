@@ -8,6 +8,7 @@ import (
 
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/blob"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/db"
+	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/logicpath"
 	xwebdav "golang.org/x/net/webdav"
 )
 
@@ -40,12 +41,13 @@ func (fs *FileSystem) Mkdir(ctx context.Context, name string, _ os.FileMode) err
 	if err := fs.requireDirectory(ctx, path.Dir(name)); err != nil {
 		return err
 	}
-	if _, found, err := fs.store.Find(ctx, name); err != nil {
+	domainPath := logicpath.FromProtocol(name)
+	if _, found, err := fs.store.Find(ctx, domainPath); err != nil {
 		return err
 	} else if found {
 		return os.ErrExist
 	}
-	return fs.store.UpsertDirectory(ctx, name)
+	return fs.store.UpsertDirectory(ctx, domainPath)
 }
 
 func (fs *FileSystem) OpenFile(ctx context.Context, name string, flag int, _ os.FileMode) (xwebdav.File, error) {
@@ -57,12 +59,13 @@ func (fs *FileSystem) OpenFile(ctx context.Context, name string, flag int, _ os.
 		if err := fs.requireDirectory(ctx, path.Dir(name)); err != nil {
 			return nil, err
 		}
-		if record, found, err := fs.store.Find(ctx, name); err != nil {
+		domainPath := logicpath.FromProtocol(name)
+		if record, found, err := fs.store.Find(ctx, domainPath); err != nil {
 			return nil, err
 		} else if found && record.IsDirectory {
 			return nil, os.ErrPermission
 		}
-		return newUploadFile(ctx, fs.store, fs.objects, name)
+		return newUploadFile(ctx, fs.store, fs.objects, domainPath)
 	}
 	if name == "/" {
 		entries, err := fs.listDirectory(ctx, name)
@@ -71,7 +74,7 @@ func (fs *FileSystem) OpenFile(ctx context.Context, name string, flag int, _ os.
 		}
 		return &directoryFile{name: name, info: rootInfo(), entries: entries}, nil
 	}
-	record, found, err := fs.store.Find(ctx, name)
+	record, found, err := fs.store.Find(ctx, logicpath.FromProtocol(name))
 	if err != nil {
 		return nil, err
 	}
@@ -94,7 +97,8 @@ func (fs *FileSystem) RemoveAll(ctx context.Context, name string) error {
 	if name == "/" {
 		return os.ErrPermission
 	}
-	record, found, err := fs.store.Find(ctx, name)
+	domainPath := logicpath.FromProtocol(name)
+	record, found, err := fs.store.Find(ctx, domainPath)
 	if err != nil {
 		return err
 	}
@@ -102,20 +106,21 @@ func (fs *FileSystem) RemoveAll(ctx context.Context, name string) error {
 		return os.ErrNotExist
 	}
 	if !record.IsDirectory {
-		if err := fs.store.DeletePath(ctx, name); err != nil {
+		if err := fs.store.DeletePath(ctx, domainPath); err != nil {
 			return err
 		}
 		_ = fs.objects.Delete(ctx, record.PhysicalHash)
 		return nil
 	}
-	children, err := fs.store.ListPrefix(ctx, withTrailingSlash(name))
+	prefix := logicpath.WithTrailingSlash(domainPath)
+	children, err := fs.store.ListPrefix(ctx, prefix)
 	if err != nil {
 		return err
 	}
-	if err := fs.store.DeletePrefix(ctx, withTrailingSlash(name)); err != nil {
+	if err := fs.store.DeletePrefix(ctx, prefix); err != nil {
 		return err
 	}
-	if err := fs.store.DeletePath(ctx, name); err != nil {
+	if err := fs.store.DeletePath(ctx, domainPath); err != nil {
 		return err
 	}
 	for _, child := range children {
@@ -137,7 +142,7 @@ func (fs *FileSystem) Rename(ctx context.Context, oldName, newName string) error
 	if err := fs.requireDirectory(ctx, path.Dir(newName)); err != nil {
 		return err
 	}
-	return fs.store.RenamePath(ctx, oldName, newName)
+	return fs.store.RenamePath(ctx, logicpath.FromProtocol(oldName), logicpath.FromProtocol(newName))
 }
 
 func (fs *FileSystem) Stat(ctx context.Context, name string) (os.FileInfo, error) {
@@ -145,7 +150,7 @@ func (fs *FileSystem) Stat(ctx context.Context, name string) (os.FileInfo, error
 	if name == "/" {
 		return rootInfo(), nil
 	}
-	record, found, err := fs.store.Find(ctx, name)
+	record, found, err := fs.store.Find(ctx, logicpath.FromProtocol(name))
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +164,7 @@ func (fs *FileSystem) requireDirectory(ctx context.Context, name string) error {
 	if name == "/" {
 		return nil
 	}
-	record, found, err := fs.store.Find(ctx, name)
+	record, found, err := fs.store.Find(ctx, logicpath.FromProtocol(name))
 	if err != nil {
 		return err
 	}
@@ -170,7 +175,7 @@ func (fs *FileSystem) requireDirectory(ctx context.Context, name string) error {
 }
 
 func (fs *FileSystem) listDirectory(ctx context.Context, name string) ([]os.FileInfo, error) {
-	page, err := fs.store.ListDirectChildren(ctx, name, db.DirectChildrenOptions{})
+	page, err := fs.store.ListDirectChildren(ctx, logicpath.FromProtocol(name), db.DirectChildrenOptions{})
 	if err != nil {
 		return nil, err
 	}

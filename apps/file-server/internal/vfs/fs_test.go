@@ -42,7 +42,7 @@ func TestCreatePublishesSanitizedFinalObjectKey(t *testing.T) {
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
 	}
-	record, found, err := store.Find(ctx, "/docs/A:B.txt")
+	record, found, err := store.Find(ctx, "docs/A:B.txt")
 	if err != nil || !found {
 		t.Fatalf("Find() = found %t, error %v", found, err)
 	}
@@ -84,7 +84,7 @@ func TestCreateRejectsSanitizerCollisionWithoutSuffixOrOverwrite(t *testing.T) {
 	if _, err := colliding.Write([]byte("second")); err == nil {
 		t.Fatal("colliding Write() error = nil")
 	}
-	record, found, err := store.Find(ctx, "/docs/A?B.txt")
+	record, found, err := store.Find(ctx, "docs/A?B.txt")
 	if err != nil || !found || record.PhysicalHash != "docs/A_B.txt" {
 		t.Fatalf("original record = %#v, found %t, error %v", record, found, err)
 	}

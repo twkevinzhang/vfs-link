@@ -26,10 +26,10 @@ func TestNewMetadataStoreJSONLocal(t *testing.T) {
 	if err := store.EnsureSchema(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertFile(context.Background(), "/report.txt", "object.txt", 4); err != nil {
+	if err := store.UpsertFile(context.Background(), "report.txt", "object.txt", 4); err != nil {
 		t.Fatal(err)
 	}
-	if record, found, err := store.Find(context.Background(), "/report.txt"); err != nil || !found || record.Size != 4 {
+	if record, found, err := store.Find(context.Background(), "report.txt"); err != nil || !found || record.Size != 4 {
 		t.Fatalf("Find() = %#v, %t, %v", record, found, err)
 	}
 	if _, err := os.Stat(filepath.Join(root, "_vfs-link", "stats.json")); err != nil {

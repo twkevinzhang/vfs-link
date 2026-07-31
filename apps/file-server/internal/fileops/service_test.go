@@ -47,11 +47,11 @@ func TestDeletePermanentlyDeletesObjectBeforeMetadata(t *testing.T) {
 	if err = writer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := metadata.UpsertFile(ctx, "/a.txt", "object-a", 1); err != nil {
+	if err := metadata.UpsertFile(ctx, "a.txt", "object-a", 1); err != nil {
 		t.Fatal(err)
 	}
 	service := New(metadata, objects)
-	trashResult, err := service.Trash(ctx, []string{"/a.txt"})
+	trashResult, err := service.Trash(ctx, []string{"a.txt"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,12 +90,12 @@ func TestDeletePermanentlyCanRetryAfterObjectFailure(t *testing.T) {
 	if err = writer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := metadata.UpsertFile(ctx, "/a.txt", "object-a", 1); err != nil {
+	if err := metadata.UpsertFile(ctx, "a.txt", "object-a", 1); err != nil {
 		t.Fatal(err)
 	}
 	store := &failDeleteOnceStore{Store: objects}
 	service := New(metadata, store)
-	trashResult, err := service.Trash(ctx, []string{"/a.txt"})
+	trashResult, err := service.Trash(ctx, []string{"a.txt"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,11 +135,11 @@ func TestDeletePermanentlyCanRetryAfterCheckpointFailure(t *testing.T) {
 	if err = writer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := metadata.UpsertFile(ctx, "/a.txt", "object-a", 1); err != nil {
+	if err := metadata.UpsertFile(ctx, "a.txt", "object-a", 1); err != nil {
 		t.Fatal(err)
 	}
 	service := New(metadata, objects)
-	trashResult, err := service.Trash(ctx, []string{"/a.txt"})
+	trashResult, err := service.Trash(ctx, []string{"a.txt"})
 	if err != nil {
 		t.Fatal(err)
 	}

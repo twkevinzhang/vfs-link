@@ -1317,8 +1317,8 @@ function Breadcrumbs({
       ? entries
       : [
           {
-            path: '/',
-            name: formatPathDisplayName('/'),
+            path: '',
+            name: formatPathDisplayName(''),
             kind: 'directory' as const,
             size: 0,
             updatedAt: '',
@@ -1373,7 +1373,7 @@ function Breadcrumbs({
                   size="sm"
                   className="max-w-none shrink-0 whitespace-nowrap"
                   onClick={() => onSelectPath(path)}
-                  title={path === '/' ? label : path}
+                  title={path === '' ? label : path}
                 >
                   {label}
                 </Button>

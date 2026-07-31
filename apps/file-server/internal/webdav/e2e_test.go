@@ -54,7 +54,7 @@ func TestWebDAVFileLifecycle(t *testing.T) {
 	if putResponse.Code != http.StatusCreated {
 		t.Fatalf("PUT status = %d, body = %s", putResponse.Code, putResponse.Body.String())
 	}
-	if record, found, err := store.Find(context.Background(), "/docs/a.txt"); err != nil || !found || record.PhysicalHash != "docs/a.txt" {
+	if record, found, err := store.Find(context.Background(), "docs/a.txt"); err != nil || !found || record.PhysicalHash != "docs/a.txt" {
 		t.Fatalf("PUT physical mapping = %#v, found=%v err=%v", record, found, err)
 	}
 	response := request(http.MethodGet, "/dav/docs/a.txt", nil, map[string]string{"Range": "bytes=1-3"})
@@ -113,7 +113,7 @@ func TestFailedPUTAndCOPYDoNotPublishObjects(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := newMemoryStore()
-	if err := store.UpsertDirectory(context.Background(), "/docs"); err != nil {
+	if err := store.UpsertDirectory(context.Background(), "docs"); err != nil {
 		t.Fatal(err)
 	}
 	writeObject := func(logicPath, physicalHash, content string) {
@@ -132,7 +132,7 @@ func TestFailedPUTAndCOPYDoNotPublishObjects(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	writeObject("/docs/existing.txt", "existing-object", "original")
+	writeObject("docs/existing.txt", "existing-object", "original")
 
 	fs := NewFileSystem(store, objects)
 	dav := &xwebdav.Handler{Prefix: "/dav/", FileSystem: fs, LockSystem: xwebdav.NewMemLS()}
@@ -158,7 +158,7 @@ func TestFailedPUTAndCOPYDoNotPublishObjects(t *testing.T) {
 		t.Fatalf("GET after failed PUT = (%d, %q), want original", response.Code, response.Body.String())
 	}
 
-	writeObject("/docs/missing-source.txt", "missing-object", "source")
+	writeObject("docs/missing-source.txt", "missing-object", "source")
 	if err := objects.Delete(context.Background(), "missing-object"); err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestFailedPUTAndCOPYDoNotPublishObjects(t *testing.T) {
 	if response.Code >= 200 && response.Code < 300 {
 		t.Fatalf("failed COPY status = %d, want failure", response.Code)
 	}
-	if _, found, err := store.Find(context.Background(), "/docs/copied.txt"); err != nil || found {
+	if _, found, err := store.Find(context.Background(), "docs/copied.txt"); err != nil || found {
 		t.Fatalf("failed COPY published destination: found=%v err=%v", found, err)
 	}
 }

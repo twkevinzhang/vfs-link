@@ -237,7 +237,7 @@ DB_DRIVER=json
 METADATA_STORAGE_DRIVER=gcs
 METADATA_GCS_BUCKET=your-vfs-link-metadata-bucket
 # Select the prefix appropriate for your deployed version and migration state.
-METADATA_PREFIX=_vfs-link
+METADATA_PREFIX=_vfs-link-v3
 
 STORAGE_DRIVER=gcs
 GCS_BUCKET=your-vfs-link-primary-bucket

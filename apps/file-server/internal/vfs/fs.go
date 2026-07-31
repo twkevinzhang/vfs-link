@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/afero"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/blob"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/db"
+	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/logicpath"
 )
 
 type FS struct {
@@ -47,13 +48,13 @@ func (fs *FS) Mkdir(name string, _ os.FileMode) error {
 
 func (fs *FS) MkdirAll(name string, perm os.FileMode) error {
 	cleaned := cleanPath(name)
-	if cleaned == "/" {
+	if cleaned == "" {
 		return nil
 	}
 
 	current := ""
-	for _, part := range strings.Split(strings.Trim(cleaned, "/"), "/") {
-		current += "/" + part
+	for _, part := range strings.Split(cleaned, "/") {
+		current = logicpath.Join(current, part)
 		if err := fs.Mkdir(current, perm); err != nil {
 			return err
 		}
@@ -130,8 +131,8 @@ func (fs *FS) Chtimes(name string, _, _ time.Time) error {
 }
 
 func (fs *FS) statRecord(ctx context.Context, logicPath string) (os.FileInfo, db.FileRecord, error) {
-	if logicPath == "/" {
-		return rootInfo(), db.FileRecord{LogicPath: "/", IsDirectory: true, UpdatedAt: time.Now()}, nil
+	if logicPath == "" {
+		return rootInfo(), db.FileRecord{LogicPath: "", IsDirectory: true, UpdatedAt: time.Now()}, nil
 	}
 
 	record, found, err := fs.store.Find(ctx, logicPath)
@@ -195,22 +196,12 @@ func (fs *FS) removePath(ctx context.Context, logicPath string) error {
 }
 
 func cleanPath(name string) string {
-	if name == "" || name == "." {
-		return "/"
-	}
-	if !strings.HasPrefix(name, "/") {
-		name = "/" + name
-	}
-	cleaned := path.Clean(name)
-	if cleaned == "." {
-		return "/"
-	}
-	return cleaned
+	return logicpath.FromProtocol(name)
 }
 
 func withTrailingSlash(value string) string {
-	if value == "/" {
-		return "/"
+	if value == "" {
+		return ""
 	}
 	if strings.HasSuffix(value, "/") {
 		return value
@@ -219,7 +210,7 @@ func withTrailingSlash(value string) string {
 }
 
 func pathBase(value string) string {
-	if value == "/" {
+	if value == "" {
 		return "/"
 	}
 	return path.Base(value)

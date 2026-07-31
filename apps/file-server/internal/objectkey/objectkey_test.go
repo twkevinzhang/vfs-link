@@ -7,7 +7,7 @@ import (
 )
 
 func TestFromLogicalPathSanitizesPortableSegments(t *testing.T) {
-	got, err := FromLogicalPath("/docs/A:B/CON.txt/trailing. /cafe\u0301.txt")
+	got, err := FromLogicalPath("docs/A:B/CON.txt/trailing. /cafe\u0301.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -17,7 +17,7 @@ func TestFromLogicalPathSanitizesPortableSegments(t *testing.T) {
 }
 
 func TestFromLogicalPathSanitizesDotControlsAndDeviceNames(t *testing.T) {
-	got, err := FromLogicalPath("/./../NUL/COM1.log/LPT9/a\x00b\x7fc")
+	got, err := FromLogicalPath("./../NUL/COM1.log/LPT9/a\x00b\x7fc")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,11 +27,11 @@ func TestFromLogicalPathSanitizesDotControlsAndDeviceNames(t *testing.T) {
 }
 
 func TestFromLogicalPathCollisionIsNotDisambiguated(t *testing.T) {
-	first, err := FromLogicalPath("/docs/A:B.txt")
+	first, err := FromLogicalPath("docs/A:B.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := FromLogicalPath("/docs/A?B.txt")
+	second, err := FromLogicalPath("docs/A?B.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,21 +41,21 @@ func TestFromLogicalPathCollisionIsNotDisambiguated(t *testing.T) {
 }
 
 func TestFromLogicalPathRejectsTooLongKey(t *testing.T) {
-	_, err := FromLogicalPath("/" + strings.Repeat("a", MaxBytes+1))
+	_, err := FromLogicalPath("" + strings.Repeat("a", MaxBytes+1))
 	if !errors.Is(err, ErrTooLong) {
 		t.Fatalf("FromLogicalPath() error = %v, want ErrTooLong", err)
 	}
 }
 
 func TestFromLogicalPathRejectsEmptySegment(t *testing.T) {
-	_, err := FromLogicalPath("/docs//report.txt")
+	_, err := FromLogicalPath("docs//report.txt")
 	if !errors.Is(err, ErrEmptySegment) {
 		t.Fatalf("FromLogicalPath() error = %v, want ErrEmptySegment", err)
 	}
 }
 
 func TestFromLogicalPathRejectsReservedFirstSegment(t *testing.T) {
-	for _, input := range []string{"/_vfs-link/file", "/_vfs-link-v2/file", "/_VFS-LINK-future/file"} {
+	for _, input := range []string{"_vfs-link/file", "_vfs-link-v2/file", "_VFS-LINK-future/file"} {
 		if _, err := FromLogicalPath(input); !errors.Is(err, ErrReservedPrefix) {
 			t.Errorf("FromLogicalPath(%q) error = %v, want ErrReservedPrefix", input, err)
 		}
@@ -63,7 +63,7 @@ func TestFromLogicalPathRejectsReservedFirstSegment(t *testing.T) {
 }
 
 func TestFromLogicalPathMakesDotSegmentsNonNavigational(t *testing.T) {
-	got, err := FromLogicalPath("/docs/.././report.txt")
+	got, err := FromLogicalPath("docs/.././report.txt")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/db"
+	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/logicpath"
 )
 
 const legacySchemaVersion = 1
@@ -109,4 +110,32 @@ func validateLegacy(snapshot legacySnapshot) (snapshotSummary, error) {
 	summary.DAVLocks = len(snapshot.DAVLocks)
 	summary.Uploads = len(snapshot.Uploads)
 	return summary, nil
+}
+
+// canonicalizeImportSnapshot is the schema boundary between absolute v1/v2
+// metadata and relative NFC v3 metadata. Active-path collisions are reported
+// before any target objects are written.
+func canonicalizeImportSnapshot(snapshot db.TreeImportSnapshot) (db.TreeImportSnapshot, error) {
+	active := make(map[string]string, len(snapshot.Records))
+	for index := range snapshot.Records {
+		record := &snapshot.Records[index]
+		legacy := record.LogicPath
+		record.LogicPath = logicpath.Clean(record.LogicPath)
+		if record.LogicPath == "" {
+			return db.TreeImportSnapshot{}, fmt.Errorf("record id %d resolves to the logical root", record.ID)
+		}
+		if record.TrashedAt == nil {
+			if previous, exists := active[record.LogicPath]; exists {
+				return db.TreeImportSnapshot{}, fmt.Errorf("canonical path collision %q: %q and %q", record.LogicPath, previous, legacy)
+			}
+			active[record.LogicPath] = legacy
+		}
+	}
+	for index := range snapshot.Shares {
+		snapshot.Shares[index].LogicPath = logicpath.Clean(snapshot.Shares[index].LogicPath)
+	}
+	for index := range snapshot.Uploads {
+		snapshot.Uploads[index].LogicPath = logicpath.Clean(snapshot.Uploads[index].LogicPath)
+	}
+	return snapshot, nil
 }

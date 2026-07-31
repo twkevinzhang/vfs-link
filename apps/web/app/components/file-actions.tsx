@@ -250,10 +250,10 @@ export function MoveDialog({
   }, [current, open]);
 
   const goUp = () => {
-    if (current === '/') return;
+    if (current === '') return;
     const parts = current.split('/').filter(Boolean);
     parts.pop();
-    setCurrent(parts.length ? `/${parts.join('/')}` : '/');
+    setCurrent(parts.join('/'));
   };
 
   return (
@@ -274,12 +274,12 @@ export function MoveDialog({
               variant="ghost"
               size="sm"
               onClick={goUp}
-              disabled={current === '/'}
+              disabled={current === ''}
             >
               Up
             </Button>
             <span className="min-w-0 truncate text-sm font-medium">
-              {current}
+              {current || '/'}
             </span>
           </div>
           <div className="max-h-64 min-h-40 overflow-auto p-2">

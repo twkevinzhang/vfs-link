@@ -116,7 +116,7 @@ func TestGCSServiceCancelUsesPersistedSessionURL(t *testing.T) {
 	objects := &directStoreStub{}
 	service := NewWithBlob(metadata, objects)
 
-	session, err := service.Create(ctx, CreateInput{LogicPath: "/docs/report.txt", Size: 4})
+	session, err := service.Create(ctx, CreateInput{LogicPath: "docs/report.txt", Size: 4})
 	if err != nil {
 		t.Fatal(err)
 	}

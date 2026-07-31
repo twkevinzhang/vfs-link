@@ -13,11 +13,11 @@ func TestPostgresDescendantPatternEscapesLIKEWildcards(t *testing.T) {
 		path string
 		want string
 	}{
-		{name: "root", path: "/", want: "/%"},
-		{name: "directory", path: "/archive", want: "/archive/%"},
-		{name: "percent", path: "/100%", want: `/100\%/%`},
-		{name: "underscore", path: "/a_b", want: `/a\_b/%`},
-		{name: "backslash", path: `/a\b`, want: `/a\\b/%`},
+		{name: "root", path: "", want: "%"},
+		{name: "directory", path: "archive", want: "archive/%"},
+		{name: "percent", path: "100%", want: `100\%/%`},
+		{name: "underscore", path: "a_b", want: `a\_b/%`},
+		{name: "backslash", path: `a\b`, want: `a\\b/%`},
 	}
 
 	for _, tt := range tests {
@@ -30,7 +30,7 @@ func TestPostgresDescendantPatternEscapesLIKEWildcards(t *testing.T) {
 }
 
 func TestPostgresRenameErrorMapsUniqueConstraintToPathConflict(t *testing.T) {
-	err := postgresRenameError(&pgconn.PgError{Code: "23505"}, "/taken.txt")
+	err := postgresRenameError(&pgconn.PgError{Code: "23505"}, "taken.txt")
 	if !errors.Is(err, ErrPathConflict) {
 		t.Fatalf("postgresRenameError() = %v, want ErrPathConflict", err)
 	}

@@ -16,8 +16,11 @@ func normalizeRoots(paths []string) ([]string, error) {
 	seen := map[string]bool{}
 	var roots []string
 	for _, value := range paths {
-		value = pathpkg.Clean("/" + strings.TrimSpace(value))
-		if value == "/" {
+		if strings.HasPrefix(strings.TrimSpace(value), "/") {
+			return nil, fmt.Errorf("logical path must not start with a slash: %s", value)
+		}
+		value = cleanLogicPath(value)
+		if value == "" {
 			return nil, fmt.Errorf("root path cannot be modified")
 		}
 		if !seen[value] {
@@ -49,15 +52,18 @@ func normalizeRoots(paths []string) ([]string, error) {
 // and target paths. A name is deliberately a single path segment: callers
 // cannot turn rename into a move by supplying a slash.
 func RenameTarget(logicPath, name string) (string, string, error) {
-	from := pathpkg.Clean("/" + strings.TrimSpace(logicPath))
-	if from == "/" {
+	if strings.HasPrefix(strings.TrimSpace(logicPath), "/") {
+		return "", "", fmt.Errorf("logical path must not start with a slash")
+	}
+	from := cleanLogicPath(logicPath)
+	if from == "" {
 		return "", "", fmt.Errorf("root path cannot be renamed")
 	}
 	name = strings.TrimSpace(name)
 	if name == "" || name == "." || name == ".." || strings.Contains(name, "/") {
 		return "", "", fmt.Errorf("name must be a non-empty path segment")
 	}
-	to := pathpkg.Join(pathpkg.Dir(from), name)
+	to := joinLogicPath(parentLogicPath(from), name)
 	if to == from {
 		return "", "", fmt.Errorf("new name must differ from the current name")
 	}
@@ -69,12 +75,15 @@ func moveRecords(active []FileRecord, paths []string, destination string, now ti
 	if err != nil {
 		return nil, err
 	}
-	destination = pathpkg.Clean("/" + strings.TrimSpace(destination))
+	if strings.HasPrefix(strings.TrimSpace(destination), "/") {
+		return nil, fmt.Errorf("logical path must not start with a slash: %s", destination)
+	}
+	destination = cleanLogicPath(destination)
 	existing := map[string]FileRecord{}
 	for _, record := range active {
 		existing[record.LogicPath] = record
 	}
-	if destination != "/" {
+	if destination != "" {
 		dir, ok := existing[destination]
 		if !ok || !dir.IsDirectory {
 			return nil, fmt.Errorf("destination directory not found: %s", destination)
@@ -86,7 +95,7 @@ func moveRecords(active []FileRecord, paths []string, destination string, now ti
 		if !ok {
 			return nil, fmt.Errorf("%w: %s", ErrNotFound, root)
 		}
-		to := pathpkg.Join(destination, pathpkg.Base(root))
+		to := joinLogicPath(destination, pathpkg.Base(root))
 		if to == root || (record.IsDirectory && strings.HasPrefix(to, withTrailingSlash(root))) {
 			return nil, ErrInvalidMove
 		}
@@ -130,7 +139,7 @@ func trashRecords(files []FileRecord, items []TrashPath, now time.Time) ([]FileR
 		if strings.TrimSpace(item.TrashID) == "" {
 			return nil, fmt.Errorf("trash id is required")
 		}
-		ids[pathpkg.Clean("/"+strings.TrimSpace(item.Path))] = item.TrashID
+		ids[cleanLogicPath(item.Path)] = item.TrashID
 	}
 	roots, err := normalizeRoots(paths)
 	if err != nil {
@@ -241,7 +250,7 @@ func (s *PostgresStore) BatchMove(ctx context.Context, paths []string, destinati
 	}
 	token := uuid.NewString()
 	for _, r := range updated {
-		if _, err := tx.Exec(ctx, `UPDATE "File" SET "logicPath"=$1 WHERE id=$2`, `/.vfs-moving/`+token+fmt.Sprint(r.ID), r.ID); err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE "File" SET "logicPath"=$1 WHERE id=$2`, `.vfs-moving/`+token+fmt.Sprint(r.ID), r.ID); err != nil {
 			return nil, err
 		}
 	}

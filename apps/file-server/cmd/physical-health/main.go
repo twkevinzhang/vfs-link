@@ -237,9 +237,9 @@ func openMetadataStore(ctx context.Context, driver string, databaseURL string, m
 		return db.NewPostgres(ctx, databaseURL)
 	case "json":
 		metadataDriver = strings.ToLower(firstNonEmpty(metadataDriver, os.Getenv("METADATA_STORAGE_DRIVER"), storageDriverLocal))
-		metadataPrefix = firstNonEmpty(metadataPrefix, os.Getenv("METADATA_PREFIX"), "_vfs-link")
-		if metadataPrefix != "_vfs-link" && metadataPrefix != "_vfs-link-v2" {
-			return nil, errors.New("METADATA_PREFIX must be _vfs-link or _vfs-link-v2")
+		metadataPrefix = firstNonEmpty(metadataPrefix, os.Getenv("METADATA_PREFIX"), "_vfs-link-v3")
+		if metadataPrefix != "_vfs-link" && metadataPrefix != "_vfs-link-v2" && metadataPrefix != "_vfs-link-v3" {
+			return nil, errors.New("METADATA_PREFIX must be _vfs-link, _vfs-link-v2, or _vfs-link-v3")
 		}
 		switch metadataDriver {
 		case storageDriverLocal:
@@ -292,7 +292,7 @@ func validateMetadataAggregates(ctx context.Context, store db.Store, records []d
 			actual.LogicalFiles, actual.LogicalDirs, actual.LogicalBytes, actual.PhysicalObjects, actual.PhysicalBytes,
 			expected.LogicalFiles, expected.LogicalDirs, expected.LogicalBytes, expected.PhysicalObjects, expected.PhysicalBytes)
 	}
-	page, err := store.ListDirectChildren(ctx, "/", db.DirectChildrenOptions{Limit: 1})
+	page, err := store.ListDirectChildren(ctx, "", db.DirectChildrenOptions{Limit: 1})
 	if err != nil {
 		return db.FolderSummary{}, fmt.Errorf("read root folder summary: %w", err)
 	}
@@ -561,16 +561,13 @@ func sortedKeys[V any](values map[string]V) []string {
 func cleanLogicPath(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" || value == "." {
-		return "/"
+		return ""
 	}
-	if !strings.HasPrefix(value, "/") {
-		value = "/" + value
-	}
-	return path.Clean(value)
+	return strings.TrimPrefix(path.Clean("/"+strings.TrimPrefix(value, "/")), "/")
 }
 
 func inScope(logicPath string, prefix string) bool {
-	if prefix == "/" {
+	if prefix == "" {
 		return true
 	}
 	return logicPath == prefix || strings.HasPrefix(logicPath, prefix+"/")

@@ -1,9 +1,6 @@
 package db
 
-import (
-	"context"
-	pathpkg "path"
-)
+import "context"
 
 const directoryAggregateVersion = 2
 
@@ -86,8 +83,8 @@ func (s *TreeStore) hydrateDirectorySummaries(ctx context.Context, records []Fil
 // aggregate into its parent entry, then repeats to root. Absolute values make
 // retries idempotent after a partial propagation.
 func (s *TreeStore) propagateDirectorySummaryLeaseHeld(ctx context.Context, dir string) error {
-	dir = pathpkg.Clean("/" + dir)
-	if dir == "/" {
+	dir = cleanLogicPath(dir)
+	if dir == "" {
 		return nil
 	}
 	idx, _, ok, err := s.getIndexManifest(ctx, dir)
@@ -108,5 +105,5 @@ func (s *TreeStore) propagateDirectorySummaryLeaseHeld(ctx context.Context, dir 
 		return nil
 	}
 	record.FolderSummary = &summary
-	return s.updateIndexRecordLeaseHeld(ctx, pathpkg.Dir(dir), record, false, true)
+	return s.updateIndexRecordLeaseHeld(ctx, parentLogicPath(dir), record, false, true)
 }

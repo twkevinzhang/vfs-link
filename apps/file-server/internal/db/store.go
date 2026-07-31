@@ -464,6 +464,11 @@ WHERE "heldBy" = $1
 }
 
 func (s *PostgresStore) Find(ctx context.Context, logicPath string) (FileRecord, bool, error) {
+	var err error
+	logicPath, err = parseLogicPath(logicPath)
+	if err != nil || logicPath == "" {
+		return FileRecord{}, false, err
+	}
 	row := s.pool.QueryRow(ctx, `
 SELECT id, "logicPath", "physicalHash", size, "isDirectory", "updatedAt"
 FROM "File"
@@ -482,6 +487,11 @@ WHERE "logicPath" = $1
 }
 
 func (s *PostgresStore) ListPrefix(ctx context.Context, prefix string) ([]FileRecord, error) {
+	var parseErr error
+	prefix, parseErr = parseLogicPrefix(prefix)
+	if parseErr != nil {
+		return nil, parseErr
+	}
 	rows, err := s.pool.Query(ctx, `
 SELECT id, "logicPath", "physicalHash", size, "isDirectory", "updatedAt"
 FROM "File"
@@ -529,6 +539,11 @@ ORDER BY "logicPath"
 }
 
 func (s *PostgresStore) ListDirectChildren(ctx context.Context, dirPath string, options DirectChildrenOptions) (DirectChildrenPage, error) {
+	var parseErr error
+	dirPath, parseErr = parseLogicPath(dirPath)
+	if parseErr != nil {
+		return DirectChildrenPage{}, parseErr
+	}
 	prefix := withTrailingSlash(dirPath)
 	filters := []string{`suffix <> ''`, `position('/' in suffix) = 0`}
 	args := []any{prefix, dirPath}
@@ -703,6 +718,14 @@ func postgresDescendantPattern(dirPath string) string {
 }
 
 func (s *PostgresStore) UpsertFile(ctx context.Context, logicPath, physicalHash string, size int64) error {
+	var parseErr error
+	logicPath, parseErr = parseLogicPath(logicPath)
+	if parseErr != nil {
+		return parseErr
+	}
+	if logicPath == "" {
+		return fmt.Errorf("file path is required")
+	}
 	_, err := s.pool.Exec(ctx, `
 INSERT INTO "File" ("logicPath", "physicalHash", size, "isDirectory", "updatedAt")
 VALUES ($1, $2, $3, false, now())
@@ -736,6 +759,14 @@ func (s *PostgresStore) ReplaceFileConditional(
 	expectedPhysicalHash *string,
 	requireAbsent bool,
 ) (string, bool, error) {
+	var parseErr error
+	logicPath, parseErr = parseLogicPath(logicPath)
+	if parseErr != nil {
+		return "", false, parseErr
+	}
+	if logicPath == "" {
+		return "", false, fmt.Errorf("file path is required")
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return "", false, err
@@ -797,6 +828,14 @@ WHERE "logicPath" = $3
 }
 
 func (s *PostgresStore) UpsertDirectory(ctx context.Context, logicPath string) error {
+	var parseErr error
+	logicPath, parseErr = parseLogicPath(logicPath)
+	if parseErr != nil {
+		return parseErr
+	}
+	if logicPath == "" {
+		return nil
+	}
 	_, err := s.pool.Exec(ctx, `
 INSERT INTO "File" ("logicPath", "physicalHash", size, "isDirectory", "updatedAt")
 VALUES ($1, '', 0, true, now())
@@ -1218,6 +1257,9 @@ func davPathIsAncestor(ancestor, descendant string) bool {
 }
 
 func withTrailingSlash(value string) string {
+	if value == "" {
+		return ""
+	}
 	if value == "/" {
 		return "/"
 	}

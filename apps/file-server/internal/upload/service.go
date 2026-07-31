@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/logicpath"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/objectkey"
 )
 
@@ -131,8 +132,11 @@ func New(repository Repository, files Publisher, storage Storage, options ...Opt
 }
 
 func (s *Service) Create(ctx context.Context, input CreateInput) (Session, error) {
-	logicPath := cleanPath(input.LogicPath)
-	if logicPath == "/" || path.Base(logicPath) == "." {
+	logicPath, err := logicpath.Parse(input.LogicPath)
+	if err != nil {
+		return Session{}, err
+	}
+	if logicPath == "" || path.Base(logicPath) == "." {
 		return Session{}, errors.New("a file path is required")
 	}
 	if input.Size < 0 {
@@ -280,12 +284,12 @@ func (s *Service) Complete(ctx context.Context, id string) (Session, error) {
 }
 
 func ensureParentDirectories(ctx context.Context, files Publisher, logicPath string) error {
-	parent := path.Dir(logicPath)
-	if parent == "." || parent == "/" {
+	parent := logicpath.Parent(logicPath)
+	if parent == "" {
 		return nil
 	}
 	parents := make([]string, 0, strings.Count(parent, "/"))
-	for current := parent; current != "." && current != "/"; current = path.Dir(current) {
+	for current := parent; current != ""; current = logicpath.Parent(current) {
 		parents = append(parents, current)
 	}
 	for i := len(parents) - 1; i >= 0; i-- {
@@ -307,11 +311,4 @@ func (s *Service) Cancel(ctx context.Context, id string) error {
 		}
 	}
 	return s.repository.DeleteUpload(ctx, id)
-}
-
-func cleanPath(value string) string {
-	if !strings.HasPrefix(value, "/") {
-		value = "/" + value
-	}
-	return path.Clean(value)
 }

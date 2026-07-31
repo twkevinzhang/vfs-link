@@ -10,25 +10,25 @@ import (
 func TestExportTreeSnapshotRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	source := newTestTree(t)
-	if err := source.UpsertDirectory(ctx, "/archive"); err != nil {
+	if err := source.UpsertDirectory(ctx, "archive"); err != nil {
 		t.Fatal(err)
 	}
-	if err := source.UpsertFile(ctx, "/archive/live.bin", "live", 11); err != nil {
+	if err := source.UpsertFile(ctx, "archive/live.bin", "live", 11); err != nil {
 		t.Fatal(err)
 	}
-	if err := source.UpsertFile(ctx, "/deleted.bin", "deleted", 7); err != nil {
+	if err := source.UpsertFile(ctx, "deleted.bin", "deleted", 7); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := source.TrashPaths(ctx, []TrashPath{{Path: "/deleted.bin", TrashID: "trash-export"}}); err != nil {
+	if _, err := source.TrashPaths(ctx, []TrashPath{{Path: "deleted.bin", TrashID: "trash-export"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := source.CreateShare(ctx, ShareRecord{ID: "share-export", LogicPath: "/archive/live.bin", Status: "pending"}); err != nil {
+	if _, err := source.CreateShare(ctx, ShareRecord{ID: "share-export", LogicPath: "archive/live.bin", Status: "pending"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := source.CreateDAVLock(ctx, DAVLockRecord{Token: "lock-export", Path: "/archive/live.bin", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+	if _, err := source.CreateDAVLock(ctx, DAVLockRecord{Token: "lock-export", Path: "archive/live.bin", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := source.CreateUpload(ctx, UploadRecord{ID: "upload-export", LogicPath: "/future.bin", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+	if _, err := source.CreateUpload(ctx, UploadRecord{ID: "upload-export", LogicPath: "future.bin", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -44,7 +44,7 @@ func TestExportTreeSnapshotRoundTrip(t *testing.T) {
 	if _, err := BulkImportTree(ctx, target, snapshot); err != nil {
 		t.Fatal(err)
 	}
-	page, err := target.ListDirectChildren(ctx, "/", DirectChildrenOptions{Limit: 10})
+	page, err := target.ListDirectChildren(ctx, "", DirectChildrenOptions{Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,11 +60,11 @@ func TestExportTreeSnapshotRoundTrip(t *testing.T) {
 func TestExportActiveRecordsReadsEveryNode(t *testing.T) {
 	ctx := context.Background()
 	source := newTestTree(t)
-	if err := source.UpsertDirectory(ctx, "/bulk"); err != nil {
+	if err := source.UpsertDirectory(ctx, "bulk"); err != nil {
 		t.Fatal(err)
 	}
 	for index := 0; index < 80; index++ {
-		path := fmt.Sprintf("/bulk/%03d.bin", index)
+		path := fmt.Sprintf("bulk/%03d.bin", index)
 		if err := source.UpsertFile(ctx, path, path, int64(index)); err != nil {
 			t.Fatal(err)
 		}

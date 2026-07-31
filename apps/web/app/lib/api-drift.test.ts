@@ -76,7 +76,7 @@ describe('drift API query contract', () => {
             scanning: false,
             entries: [
               {
-                logicPath: '/archive/report.pdf',
+                logicPath: 'archive/report.pdf',
                 physicalHash: 'legacy-key',
                 targetKey: 'archive/report.pdf',
                 size: 1024,
@@ -108,7 +108,7 @@ describe('drift API query contract', () => {
     expect(result.storageDriver).toBe('gcs');
     expect(result.summary.drifted).toBe(1);
     expect(result.items[0]).toMatchObject({
-      logicPath: '/archive/report.pdf',
+      logicPath: 'archive/report.pdf',
       currentKey: 'legacy-key',
       targetKey: 'archive/report.pdf',
       generation: '42',
@@ -165,7 +165,7 @@ describe('drift API query contract', () => {
             planId: 'plan-1',
             items: [
               {
-                logicPath: '/report.pdf',
+                logicPath: 'report.pdf',
                 currentKey: 'old',
                 targetKey: 'report.pdf',
                 status: 'planned',
@@ -188,8 +188,8 @@ describe('drift API query contract', () => {
       )
     );
 
-    const plan = await createDriftPlan(['/report.pdf']);
+    const plan = await createDriftPlan(['report.pdf']);
 
-    expect(plan.paths).toEqual(['/report.pdf']);
+    expect(plan.paths).toEqual(['report.pdf']);
   });
 });

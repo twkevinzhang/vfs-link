@@ -53,7 +53,7 @@ func TestFileOperationsAPITrashLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, directory := range []string{"/source", "/target"} {
+	for _, directory := range []string{"source", "target"} {
 		if err := store.UpsertDirectory(ctx, directory); err != nil {
 			t.Fatal(err)
 		}
@@ -68,27 +68,27 @@ func TestFileOperationsAPITrashLifecycle(t *testing.T) {
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertFile(ctx, "/source/a.txt", "object-a", 1); err != nil {
+	if err := store.UpsertFile(ctx, "source/a.txt", "object-a", 1); err != nil {
 		t.Fatal(err)
 	}
 
 	handler := New(store, objects, nil, "", "").Handler()
 	requestJSON(t, handler, http.MethodPost, "/api/files/move", map[string]any{
-		"paths": []string{"/source/a.txt"}, "destination": "/target",
+		"paths": []string{"source/a.txt"}, "destination": "target",
 	}, http.StatusOK, nil)
-	if _, found, err := store.Find(ctx, "/target/a.txt"); err != nil || !found {
+	if _, found, err := store.Find(ctx, "target/a.txt"); err != nil || !found {
 		t.Fatalf("moved file found=%v err=%v", found, err)
 	}
 
 	var trashed entriesResponse
 	requestJSON(t, handler, http.MethodPost, "/api/files/trash", map[string]any{
-		"paths": []string{"/target/a.txt"},
+		"paths": []string{"target/a.txt"},
 	}, http.StatusOK, &trashed)
 	if len(trashed.Entries) != 1 || trashed.Entries[0].TrashID == "" {
 		t.Fatalf("trashed entries = %#v", trashed.Entries)
 	}
 	trashID := trashed.Entries[0].TrashID
-	if _, found, err := store.Find(ctx, "/target/a.txt"); err != nil || found {
+	if _, found, err := store.Find(ctx, "target/a.txt"); err != nil || found {
 		t.Fatalf("trashed file leaked into active namespace: found=%v err=%v", found, err)
 	}
 
@@ -100,13 +100,13 @@ func TestFileOperationsAPITrashLifecycle(t *testing.T) {
 	requestJSON(t, handler, http.MethodPost, "/api/trash/restore", map[string]any{
 		"trashIds": []string{trashID},
 	}, http.StatusOK, nil)
-	if _, found, err := store.Find(ctx, "/target/a.txt"); err != nil || !found {
+	if _, found, err := store.Find(ctx, "target/a.txt"); err != nil || !found {
 		t.Fatalf("restored file found=%v err=%v", found, err)
 	}
 
 	trashed = entriesResponse{}
 	requestJSON(t, handler, http.MethodPost, "/api/files/trash", map[string]any{
-		"paths": []string{"/target/a.txt"},
+		"paths": []string{"target/a.txt"},
 	}, http.StatusOK, &trashed)
 	requestJSON(t, handler, http.MethodPost, "/api/trash/delete", map[string]any{
 		"trashIds": []string{trashed.Entries[0].TrashID},
@@ -134,19 +134,19 @@ func TestTreeDirectoryMoveReturnsAcceptedOperationAndCanBePolled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, directory := range []string{"/source", "/target"} {
+	for _, directory := range []string{"source", "target"} {
 		if err := store.UpsertDirectory(ctx, directory); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := store.UpsertFile(ctx, "/source/a.txt", "object-a", 1); err != nil {
+	if err := store.UpsertFile(ctx, "source/a.txt", "object-a", 1); err != nil {
 		t.Fatal(err)
 	}
 
 	handler := New(store, objects, nil, "", "").Handler()
 	var accepted operationResponse
 	requestJSON(t, handler, http.MethodPost, "/api/files/move", map[string]any{
-		"paths": []string{"/source"}, "destination": "/target",
+		"paths": []string{"source"}, "destination": "target",
 	}, http.StatusAccepted, &accepted)
 	if accepted.OperationID == "" || accepted.Status != "pending" {
 		t.Fatalf("accepted operation = %#v", accepted)
@@ -172,7 +172,7 @@ func TestTreeDirectoryMoveReturnsAcceptedOperationAndCanBePolled(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if _, found, err := store.Find(ctx, "/target/source/a.txt"); err != nil || !found {
+	if _, found, err := store.Find(ctx, "target/source/a.txt"); err != nil || !found {
 		t.Fatalf("moved descendant found=%v err=%v operation=%#v", found, err, completed)
 	}
 }
@@ -192,18 +192,18 @@ func TestTreeFileMoveRemainsSynchronous(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertDirectory(ctx, "/target"); err != nil {
+	if err := store.UpsertDirectory(ctx, "target"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertFile(ctx, "/a.txt", "object-a", 1); err != nil {
+	if err := store.UpsertFile(ctx, "a.txt", "object-a", 1); err != nil {
 		t.Fatal(err)
 	}
 
 	var moved entriesResponse
 	requestJSON(t, New(store, objects, nil, "", "").Handler(), http.MethodPost, "/api/files/move", map[string]any{
-		"paths": []string{"/a.txt"}, "destination": "/target",
+		"paths": []string{"a.txt"}, "destination": "target",
 	}, http.StatusOK, &moved)
-	if len(moved.Entries) != 1 || moved.Entries[0].Path != "/target/a.txt" {
+	if len(moved.Entries) != 1 || moved.Entries[0].Path != "target/a.txt" {
 		t.Fatalf("moved entries = %#v", moved.Entries)
 	}
 }
@@ -219,13 +219,13 @@ func TestFileRenameAPIValidatesNamesConflictsAndTrimsUnicode(t *testing.T) {
 	if err := store.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertDirectory(ctx, "/folder"); err != nil {
+	if err := store.UpsertDirectory(ctx, "folder"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertFile(ctx, "/folder/old.txt", "object-old", 1); err != nil {
+	if err := store.UpsertFile(ctx, "folder/old.txt", "object-old", 1); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertFile(ctx, "/folder/taken.txt", "object-taken", 1); err != nil {
+	if err := store.UpsertFile(ctx, "folder/taken.txt", "object-taken", 1); err != nil {
 		t.Fatal(err)
 	}
 	objects, err := blob.NewLocal(filepath.Join(root, "objects"))
@@ -236,34 +236,34 @@ func TestFileRenameAPIValidatesNamesConflictsAndTrimsUnicode(t *testing.T) {
 
 	var renamed entriesResponse
 	requestJSON(t, handler, http.MethodPost, "/api/files/rename", map[string]any{
-		"path": "/folder/old.txt", "name": "  \u6e2c\u8a66\u6a94\u6848.txt  ",
+		"path": "folder/old.txt", "name": "  \u6e2c\u8a66\u6a94\u6848.txt  ",
 	}, http.StatusOK, &renamed)
-	if len(renamed.Entries) != 1 || renamed.Entries[0].Path != "/folder/\u6e2c\u8a66\u6a94\u6848.txt" {
+	if len(renamed.Entries) != 1 || renamed.Entries[0].Path != "folder/\u6e2c\u8a66\u6a94\u6848.txt" {
 		t.Fatalf("renamed entries = %#v", renamed.Entries)
 	}
 	if renamed.Entries[0].PhysicalHash != "object-old" {
 		t.Fatalf("rename changed physical hash = %q", renamed.Entries[0].PhysicalHash)
 	}
-	if _, found, err := store.Find(ctx, "/folder/old.txt"); err != nil || found {
+	if _, found, err := store.Find(ctx, "folder/old.txt"); err != nil || found {
 		t.Fatalf("old entry remains found=%v err=%v", found, err)
 	}
 
 	requestJSON(t, handler, http.MethodPost, "/api/files/rename", map[string]any{
-		"path": "/folder/\u6e2c\u8a66\u6a94\u6848.txt", "name": "taken.txt",
+		"path": "folder/\u6e2c\u8a66\u6a94\u6848.txt", "name": "taken.txt",
 	}, http.StatusConflict, nil)
 	requestJSON(t, handler, http.MethodPost, "/api/files/rename", map[string]any{
-		"path": "/missing.txt", "name": "renamed.txt",
+		"path": "missing.txt", "name": "renamed.txt",
 	}, http.StatusNotFound, nil)
 	requestJSON(t, handler, http.MethodPost, "/api/files/rename", map[string]any{
-		"path": "/folder/\u6e2c\u8a66\u6a94\u6848.txt", "name": "\u6e2c\u8a66\u6a94\u6848.txt",
+		"path": "folder/\u6e2c\u8a66\u6a94\u6848.txt", "name": "\u6e2c\u8a66\u6a94\u6848.txt",
 	}, http.StatusBadRequest, nil)
 	for _, name := range []string{"", " ", ".", "..", "nested/name"} {
 		requestJSON(t, handler, http.MethodPost, "/api/files/rename", map[string]any{
-			"path": "/folder/\u6e2c\u8a66\u6a94\u6848.txt", "name": name,
+			"path": "folder/\u6e2c\u8a66\u6a94\u6848.txt", "name": name,
 		}, http.StatusBadRequest, nil)
 	}
 	requestJSON(t, handler, http.MethodPost, "/api/files/rename", map[string]any{
-		"path": "/", "name": "not-root",
+		"path": "", "name": "not-root",
 	}, http.StatusBadRequest, nil)
 }
 
@@ -278,13 +278,13 @@ func TestTreeDirectoryRenameReturnsAcceptedOperationAndCanBePolled(t *testing.T)
 	if err := store.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertDirectory(ctx, "/source"); err != nil {
+	if err := store.UpsertDirectory(ctx, "source"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertDirectory(ctx, "/source/nested"); err != nil {
+	if err := store.UpsertDirectory(ctx, "source/nested"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertFile(ctx, "/source/nested/a.txt", "object-a", 1); err != nil {
+	if err := store.UpsertFile(ctx, "source/nested/a.txt", "object-a", 1); err != nil {
 		t.Fatal(err)
 	}
 	objects, err := blob.NewLocal(filepath.Join(root, "objects"))
@@ -295,19 +295,19 @@ func TestTreeDirectoryRenameReturnsAcceptedOperationAndCanBePolled(t *testing.T)
 
 	var accepted operationResponse
 	requestJSON(t, handler, http.MethodPost, "/api/files/rename", map[string]any{
-		"path": "/source", "name": "renamed",
+		"path": "source", "name": "renamed",
 	}, http.StatusAccepted, &accepted)
 	if accepted.OperationID == "" || accepted.Type != "rename" || accepted.Status != "pending" {
 		t.Fatalf("accepted rename operation = %#v", accepted)
 	}
 	completed := pollOperation(t, handler, accepted.OperationID)
-	if completed.Type != "rename" || len(completed.Entries) != 1 || completed.Entries[0].Path != "/renamed" {
+	if completed.Type != "rename" || len(completed.Entries) != 1 || completed.Entries[0].Path != "renamed" {
 		t.Fatalf("completed rename operation = %#v", completed)
 	}
-	if _, found, err := store.Find(ctx, "/renamed/nested/a.txt"); err != nil || !found {
+	if _, found, err := store.Find(ctx, "renamed/nested/a.txt"); err != nil || !found {
 		t.Fatalf("renamed descendant found=%v err=%v", found, err)
 	}
-	descendant, found, err := store.Find(ctx, "/renamed/nested/a.txt")
+	descendant, found, err := store.Find(ctx, "renamed/nested/a.txt")
 	if err != nil || !found || descendant.PhysicalHash != "object-a" {
 		t.Fatalf("renamed descendant mapping=%+v found=%v err=%v", descendant, found, err)
 	}
@@ -324,10 +324,10 @@ func TestTreeDirectoryTrashAndRestoreReturnAcceptedOperations(t *testing.T) {
 	if err := store.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertDirectory(ctx, "/folder"); err != nil {
+	if err := store.UpsertDirectory(ctx, "folder"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertFile(ctx, "/folder/a.txt", "object-a", 1); err != nil {
+	if err := store.UpsertFile(ctx, "folder/a.txt", "object-a", 1); err != nil {
 		t.Fatal(err)
 	}
 	objects, err := blob.NewLocal(filepath.Join(root, "objects"))
@@ -338,7 +338,7 @@ func TestTreeDirectoryTrashAndRestoreReturnAcceptedOperations(t *testing.T) {
 
 	var accepted operationResponse
 	requestJSON(t, handler, http.MethodPost, "/api/files/trash", map[string]any{
-		"paths": []string{"/folder"},
+		"paths": []string{"folder"},
 	}, http.StatusAccepted, &accepted)
 	completed := pollOperation(t, handler, accepted.OperationID)
 	if len(completed.Entries) == 0 || completed.Entries[0].TrashID == "" {
@@ -350,7 +350,7 @@ func TestTreeDirectoryTrashAndRestoreReturnAcceptedOperations(t *testing.T) {
 		"trashIds": []string{completed.Entries[0].TrashID},
 	}, http.StatusAccepted, &accepted)
 	pollOperation(t, handler, accepted.OperationID)
-	if _, found, err := store.Find(ctx, "/folder/a.txt"); err != nil || !found {
+	if _, found, err := store.Find(ctx, "folder/a.txt"); err != nil || !found {
 		t.Fatalf("restored descendant found=%v err=%v", found, err)
 	}
 }
@@ -366,10 +366,10 @@ func TestTreeDirectoryPermanentDeleteRunsDurableOperation(t *testing.T) {
 	if err := store.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertDirectory(ctx, "/folder"); err != nil {
+	if err := store.UpsertDirectory(ctx, "folder"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertFile(ctx, "/folder/a.txt", "object-a", 1); err != nil {
+	if err := store.UpsertFile(ctx, "folder/a.txt", "object-a", 1); err != nil {
 		t.Fatal(err)
 	}
 	objects, err := blob.NewLocal(filepath.Join(root, "objects"))
@@ -390,7 +390,7 @@ func TestTreeDirectoryPermanentDeleteRunsDurableOperation(t *testing.T) {
 
 	var accepted operationResponse
 	requestJSON(t, handler, http.MethodPost, "/api/files/trash", map[string]any{
-		"paths": []string{"/folder"},
+		"paths": []string{"folder"},
 	}, http.StatusAccepted, &accepted)
 	trashed := pollOperation(t, handler, accepted.OperationID)
 	trashID := trashed.Entries[0].TrashID
@@ -441,10 +441,10 @@ func TestOperationPollsDoNotStartDuplicateInProcessWorkers(t *testing.T) {
 	if err := base.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := base.UpsertDirectory(ctx, "/source"); err != nil {
+	if err := base.UpsertDirectory(ctx, "source"); err != nil {
 		t.Fatal(err)
 	}
-	if err := base.UpsertDirectory(ctx, "/target"); err != nil {
+	if err := base.UpsertDirectory(ctx, "target"); err != nil {
 		t.Fatal(err)
 	}
 	treeOperations := base.(db.TreeOperationStore)
@@ -470,7 +470,7 @@ func TestOperationPollsDoNotStartDuplicateInProcessWorkers(t *testing.T) {
 	})
 	var accepted operationResponse
 	requestJSON(t, handler, http.MethodPost, "/api/files/move", map[string]any{
-		"paths": []string{"/source"}, "destination": "/target",
+		"paths": []string{"source"}, "destination": "target",
 	}, http.StatusAccepted, &accepted)
 	<-store.started
 	for range 5 {

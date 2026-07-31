@@ -410,9 +410,7 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
           relativePath,
           destinationPath: snappedDestination,
           logicPath: normalizePath(
-            `${
-              snappedDestination === '/' ? '' : snappedDestination
-            }/${relativePath}`
+            [snappedDestination, relativePath].filter(Boolean).join('/')
           ),
           progress: 0,
           state: existingDirectFile && !overwrite ? 'failed' : 'queued',

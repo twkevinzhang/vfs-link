@@ -52,11 +52,11 @@ func run(args []string, output io.Writer) error {
 	flags.StringVar(&o.sourceTreeDriver, "source-tree-driver", "", "distributed tree source: local or gcs")
 	flags.StringVar(&o.sourceTreeRoot, "source-tree-local-root", "./data/metadata", "local distributed tree root")
 	flags.StringVar(&o.sourceTreeBucket, "source-tree-gcs-bucket", "", "distributed tree GCS bucket")
-	flags.StringVar(&o.sourceTreePrefix, "source-tree-prefix", "_vfs-link", "existing distributed tree prefix; must be _vfs-link")
+	flags.StringVar(&o.sourceTreePrefix, "source-tree-prefix", "_vfs-link-v2", "existing distributed tree prefix: _vfs-link or _vfs-link-v2")
 	flags.StringVar(&o.targetDriver, "target-driver", "local", "tree metadata target: local or gcs")
 	flags.StringVar(&o.targetRoot, "target-local-root", "./data/metadata", "local tree metadata root")
 	flags.StringVar(&o.targetBucket, "target-gcs-bucket", "", "GCS tree metadata bucket")
-	flags.StringVar(&o.targetPrefix, "target-prefix", "_vfs-link-v2", "new tree metadata prefix; must be _vfs-link-v2")
+	flags.StringVar(&o.targetPrefix, "target-prefix", "_vfs-link-v3", "relative-path tree metadata prefix; must be _vfs-link-v3")
 	flags.BoolVar(&o.dryRun, "dry-run", false, "decode and validate without writing")
 	flags.BoolVar(&o.assumeYes, "yes", false, "confirm writing the tree target")
 	flags.DurationVar(&o.timeout, "timeout", 24*time.Hour, "migration timeout")
@@ -84,6 +84,10 @@ func run(args []string, output io.Writer) error {
 	importSnapshot, err := loadImportSnapshot(ctx, o, output)
 	if err != nil {
 		return err
+	}
+	importSnapshot, err = canonicalizeImportSnapshot(importSnapshot)
+	if err != nil {
+		return fmt.Errorf("canonicalize relative logical paths: %w", err)
 	}
 	preflight, err := db.ValidateTreeImport(o.targetPrefix, importSnapshot)
 	if err != nil {
@@ -164,8 +168,8 @@ func loadImportSnapshot(ctx context.Context, o options, output io.Writer) (db.Tr
 }
 
 func openTreeSource(ctx context.Context, o options) (db.Store, error) {
-	if o.sourceTreePrefix != "_vfs-link" {
-		return nil, errors.New("--source-tree-prefix must be the existing _vfs-link prefix")
+	if o.sourceTreePrefix != "_vfs-link" && o.sourceTreePrefix != "_vfs-link-v2" {
+		return nil, errors.New("--source-tree-prefix must be _vfs-link or _vfs-link-v2")
 	}
 	switch strings.ToLower(strings.TrimSpace(o.sourceTreeDriver)) {
 	case "local":
@@ -184,7 +188,11 @@ func openTreeSource(ctx context.Context, o options) (db.Store, error) {
 }
 
 func printImportSnapshotSummary(output io.Writer, source string, snapshot db.TreeImportSnapshot) {
-	validation, _ := db.ValidateTreeImport("_vfs-link-v2", snapshot)
+	canonical, canonicalErr := canonicalizeImportSnapshot(snapshot)
+	validation, _ := db.ValidateTreeImport("_vfs-link-v3", canonical)
+	if canonicalErr != nil {
+		fmt.Fprintf(output, "source canonicalization error: %v\n", canonicalErr)
+	}
 	fmt.Fprintf(output, "source %s sha256=%s active=%d trash=%d files=%d directories=%d bytes=%d nextFileId=%d shares=%d locks=%d uploads=%d\n",
 		source, snapshot.SourceSHA256, validation.Active, validation.Trash, validation.Files, validation.Directories,
 		validation.Bytes, snapshot.NextFileID, len(snapshot.Shares), len(snapshot.DAVLocks), len(snapshot.Uploads))
@@ -235,8 +243,8 @@ func openTreeTarget(ctx context.Context, o options) (db.Store, error) {
 }
 
 func validateTargetOptions(o options) error {
-	if o.targetPrefix != "_vfs-link-v2" {
-		return errors.New("--target-prefix must be the new reserved _vfs-link-v2 prefix")
+	if o.targetPrefix != "_vfs-link-v3" {
+		return errors.New("--target-prefix must be the reserved _vfs-link-v3 prefix")
 	}
 	switch strings.ToLower(strings.TrimSpace(o.targetDriver)) {
 	case "local":
@@ -262,7 +270,7 @@ func validateRootAggregates(ctx context.Context, store db.Store) (db.FolderSumma
 	if err != nil {
 		return db.FolderSummary{}, fmt.Errorf("read metadata stats: %w", err)
 	}
-	page, err := store.ListDirectChildren(ctx, "/", db.DirectChildrenOptions{Limit: 1})
+	page, err := store.ListDirectChildren(ctx, "", db.DirectChildrenOptions{Limit: 1})
 	if err != nil {
 		return db.FolderSummary{}, fmt.Errorf("read root folder summary: %w", err)
 	}

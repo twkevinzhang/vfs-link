@@ -69,9 +69,9 @@ func TestOpenMetadataStoreTreeV2AndValidateAggregates(t *testing.T) {
 		t.Fatal(err)
 	}
 	records := []db.FileRecord{
-		{ID: 1, LogicPath: "/docs", IsDirectory: true},
-		{ID: 2, LogicPath: "/docs/a.txt", PhysicalHash: "same", Size: 4},
-		{ID: 3, LogicPath: "/docs/b.txt", PhysicalHash: "same", Size: 4},
+		{ID: 1, LogicPath: "docs", IsDirectory: true},
+		{ID: 2, LogicPath: "docs/a.txt", PhysicalHash: "same", Size: 4},
+		{ID: 3, LogicPath: "docs/b.txt", PhysicalHash: "same", Size: 4},
 	}
 	if _, err := db.BulkImportTree(ctx, store, db.TreeImportSnapshot{Records: records, NextFileID: 4}); err != nil {
 		t.Fatal(err)
@@ -180,7 +180,7 @@ func TestClassify(t *testing.T) {
 func TestWriteCSV(t *testing.T) {
 	output := filepath.Join(t.TempDir(), "health.csv")
 	rows := []healthRow{{
-		LogicPath:      "/docs/report.pdf",
+		LogicPath:      "docs/report.pdf",
 		ExpectedSize:   42,
 		PhysicalHash:   "object.pdf",
 		TopDir:         "docs",
@@ -200,7 +200,7 @@ func TestWriteCSV(t *testing.T) {
 	}
 	text := string(content)
 	if !strings.Contains(text, "logicPath,expectedSize,physicalHash") ||
-		!strings.Contains(text, "/docs/report.pdf,42,object.pdf") {
+		!strings.Contains(text, "docs/report.pdf,42,object.pdf") {
 		t.Fatalf("unexpected CSV content: %q", text)
 	}
 }

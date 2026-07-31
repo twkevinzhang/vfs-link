@@ -163,7 +163,10 @@ func (s *TreeStore) CreateMoveOperation(ctx context.Context, paths []string, des
 	if e != nil {
 		return OperationRecord{}, e
 	}
-	op := OperationRecord{ID: uuid.NewString(), Type: "move", Status: "pending", Paths: roots, Destination: pathpkg.Clean("/" + strings.TrimSpace(destination)), CreatedAt: time.Now().UTC()}
+	if strings.HasPrefix(strings.TrimSpace(destination), "/") {
+		return OperationRecord{}, fmt.Errorf("logical path must not start with a slash")
+	}
+	op := OperationRecord{ID: uuid.NewString(), Type: "move", Status: "pending", Paths: roots, Destination: cleanLogicPath(destination), CreatedAt: time.Now().UTC()}
 	e = s.saveOperation(ctx, op)
 	return op, e
 }
@@ -281,7 +284,7 @@ func (s *TreeStore) RunOperation(ctx context.Context, id string) (op OperationRe
 					}
 					op.Total += len(sub)
 					for _, r := range sub {
-						if r.LogicPath == pathpkg.Clean("/"+strings.TrimSpace(item.Path)) {
+						if r.LogicPath == cleanLogicPath(item.Path) {
 							rootSummary := r
 							at := time.Now().UTC()
 							rootSummary.TrashedAt = &at
@@ -455,12 +458,12 @@ func (s *TreeStore) runRelocate(ctx context.Context, paths []string, destination
 		return nil, e
 	}
 	if explicitTarget == "" {
-		destination = pathpkg.Clean("/" + strings.TrimSpace(destination))
+		destination = cleanLogicPath(destination)
 	} else {
-		explicitTarget = pathpkg.Clean("/" + strings.TrimSpace(explicitTarget))
-		destination = pathpkg.Dir(explicitTarget)
+		explicitTarget = cleanLogicPath(explicitTarget)
+		destination = parentLogicPath(explicitTarget)
 	}
-	if destination != "/" {
+	if destination != "" {
 		r, ok, e := s.Find(ctx, destination)
 		if e != nil {
 			return nil, e
@@ -473,7 +476,7 @@ func (s *TreeStore) runRelocate(ctx context.Context, paths []string, destination
 		if explicitTarget != "" {
 			return explicitTarget
 		}
-		return pathpkg.Join(destination, pathpkg.Base(rootPath))
+		return joinLogicPath(destination, pathpkg.Base(rootPath))
 	}
 	var results []FileRecord
 	targetRoots := map[string]string{}
@@ -535,7 +538,7 @@ func (s *TreeStore) runRelocate(ctx context.Context, paths []string, destination
 			if existing, found, e := s.Find(ctx, targetRoot); e == nil && found {
 				old := existing
 				old.LogicPath = rootPath
-				_ = s.updateIndexRecord(ctx, pathpkg.Dir(rootPath), old, true)
+				_ = s.updateIndexRecord(ctx, parentLogicPath(rootPath), old, true)
 				if old.IsDirectory {
 					_ = s.deleteIndexManifest(ctx, rootPath)
 				}
@@ -570,7 +573,7 @@ func (s *TreeStore) runRelocate(ctx context.Context, paths []string, destination
 					return nil, e
 				}
 			}
-			if e = s.updateIndexRecord(ctx, pathpkg.Dir(target.LogicPath), target, false); e != nil {
+			if e = s.updateIndexRecord(ctx, parentLogicPath(target.LogicPath), target, false); e != nil {
 				return nil, e
 			}
 			if _, found, _ := s.Find(ctx, old.LogicPath); found {
@@ -578,7 +581,7 @@ func (s *TreeStore) runRelocate(ctx context.Context, paths []string, destination
 					return nil, e
 				}
 			}
-			if e = s.updateIndexRecord(ctx, pathpkg.Dir(old.LogicPath), old, true); e != nil {
+			if e = s.updateIndexRecord(ctx, parentLogicPath(old.LogicPath), old, true); e != nil {
 				return nil, e
 			}
 			if old.IsDirectory {
@@ -602,7 +605,7 @@ func (s *TreeStore) runRelocate(ctx context.Context, paths []string, destination
 	}
 	var rebuild, propagate []string
 	for _, rootPath := range roots {
-		propagate = append(propagate, pathpkg.Dir(rootPath))
+		propagate = append(propagate, parentLogicPath(rootPath))
 		targetRoot := targetForRoot(rootPath)
 		if target, found, findErr := s.Find(ctx, targetRoot); findErr != nil {
 			return nil, findErr
@@ -656,8 +659,8 @@ func (s *TreeStore) RenamePath(ctx context.Context, from, to string) error {
 		return e
 	}
 	defer release()
-	from = pathpkg.Clean("/" + strings.TrimSpace(from))
-	to = pathpkg.Clean("/" + strings.TrimSpace(to))
+	from = cleanLogicPath(from)
+	to = cleanLogicPath(to)
 	root, ok, e := s.Find(ctx, from)
 	if e != nil {
 		return e
@@ -693,7 +696,7 @@ func (s *TreeStore) RenamePath(ctx context.Context, from, to string) error {
 				return e
 			}
 		}
-		if e = s.updateIndexRecord(ctx, pathpkg.Dir(target.LogicPath), target, false); e != nil {
+		if e = s.updateIndexRecord(ctx, parentLogicPath(target.LogicPath), target, false); e != nil {
 			return e
 		}
 		if _, found, _ := s.Find(ctx, old.LogicPath); found {
@@ -701,7 +704,7 @@ func (s *TreeStore) RenamePath(ctx context.Context, from, to string) error {
 				return e
 			}
 		}
-		if e = s.updateIndexRecord(ctx, pathpkg.Dir(old.LogicPath), old, true); e != nil {
+		if e = s.updateIndexRecord(ctx, parentLogicPath(old.LogicPath), old, true); e != nil {
 			return e
 		}
 		if old.IsDirectory {
@@ -720,7 +723,7 @@ func (s *TreeStore) RenamePath(ctx context.Context, from, to string) error {
 		}
 		rebuild = directoryPaths(targetRecords)
 	}
-	if e = s.repairOperationAggregatesLeaseHeld(ctx, rebuild, []string{pathpkg.Dir(from), pathpkg.Dir(to)}); e != nil {
+	if e = s.repairOperationAggregatesLeaseHeld(ctx, rebuild, []string{parentLogicPath(from), parentLogicPath(to)}); e != nil {
 		return e
 	}
 	return nil
@@ -741,7 +744,7 @@ type trashManifest struct {
 func (s *TreeStore) repairOperationAggregatesLeaseHeld(ctx context.Context, rebuild, propagate []string) error {
 	uniqueRebuild := map[string]bool{}
 	for _, dir := range rebuild {
-		uniqueRebuild[pathpkg.Clean("/"+strings.TrimSpace(dir))] = true
+		uniqueRebuild[cleanLogicPath(dir)] = true
 	}
 	dirs := make([]string, 0, len(uniqueRebuild))
 	for dir := range uniqueRebuild {
@@ -769,7 +772,7 @@ func (s *TreeStore) repairOperationAggregatesLeaseHeld(ctx context.Context, rebu
 	}
 	uniquePropagate := map[string]bool{}
 	for _, dir := range propagate {
-		uniquePropagate[pathpkg.Clean("/"+strings.TrimSpace(dir))] = true
+		uniquePropagate[cleanLogicPath(dir)] = true
 	}
 	for dir := range uniquePropagate {
 		if err := s.propagateDirectorySummaryLeaseHeld(ctx, dir); err != nil {
@@ -808,7 +811,7 @@ func (s *TreeStore) trashPathsInternal(ctx context.Context, items []TrashPath, c
 	ids := map[string]string{}
 	for i, item := range items {
 		paths[i] = item.Path
-		ids[pathpkg.Clean("/"+strings.TrimSpace(item.Path))] = item.TrashID
+		ids[cleanLogicPath(item.Path)] = item.TrashID
 	}
 	roots, e := normalizeRoots(paths)
 	if e != nil {
@@ -834,7 +837,7 @@ func (s *TreeStore) trashPathsInternal(ctx context.Context, items []TrashPath, c
 				active.TrashedAt = nil
 				active.TrashID = ""
 				active.TrashRoot = false
-				_ = s.updateIndexRecord(ctx, pathpkg.Dir(active.LogicPath), active, true)
+				_ = s.updateIndexRecord(ctx, parentLogicPath(active.LogicPath), active, true)
 				if active.IsDirectory {
 					_ = s.deleteIndexManifest(ctx, active.LogicPath)
 				}
@@ -921,7 +924,7 @@ func (s *TreeStore) trashPathsInternal(ctx context.Context, items []TrashPath, c
 		if e = s.deleteNode(ctx, active); e != nil {
 			return nil, e
 		}
-		if e = s.updateIndexRecord(ctx, pathpkg.Dir(active.LogicPath), active, true); e != nil {
+		if e = s.updateIndexRecord(ctx, parentLogicPath(active.LogicPath), active, true); e != nil {
 			return nil, e
 		}
 		if active.IsDirectory {
@@ -957,7 +960,7 @@ func (s *TreeStore) trashPathsInternal(ctx context.Context, items []TrashPath, c
 	}
 	var propagate []string
 	for _, rootPath := range roots {
-		propagate = append(propagate, pathpkg.Dir(rootPath))
+		propagate = append(propagate, parentLogicPath(rootPath))
 	}
 	if e = s.repairOperationAggregatesLeaseHeld(ctx, nil, propagate); e != nil {
 		return nil, e
@@ -1121,7 +1124,7 @@ func (s *TreeStore) restoreTrashInternal(ctx context.Context, ids []string, chec
 				return nil, e
 			}
 		}
-		if e = s.updateIndexRecord(ctx, pathpkg.Dir(r.LogicPath), r, false); e != nil {
+		if e = s.updateIndexRecord(ctx, parentLogicPath(r.LogicPath), r, false); e != nil {
 			return nil, e
 		}
 		if r.IsDirectory {

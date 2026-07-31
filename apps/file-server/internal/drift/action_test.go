@@ -100,7 +100,7 @@ func newActionFixture(t *testing.T, failCopy, failStat int) (*Service, db.Store,
 	if err := metadata.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := metadata.UpsertFile(ctx, "/docs/report.txt", "legacy-uuid.txt", 7); err != nil {
+	if err := metadata.UpsertFile(ctx, "docs/report.txt", "legacy-uuid.txt", 7); err != nil {
 		t.Fatal(err)
 	}
 	state, err := db.AsDriftStateStore(metadata)
@@ -114,7 +114,7 @@ func newActionFixture(t *testing.T, failCopy, failStat int) (*Service, db.Store,
 	if _, err := service.Refresh(ctx); err != nil {
 		t.Fatal(err)
 	}
-	plan, err := service.CreatePlan(ctx, []string{"/docs/report.txt"})
+	plan, err := service.CreatePlan(ctx, []string{"docs/report.txt"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestActionRetriesAfterInjectedCopyFailure(t *testing.T) {
 	if completed.Status != "completed" || completed.Checkpoint != CheckpointCompleted {
 		t.Fatalf("retry = status %s checkpoint %s error %s", completed.Status, completed.Checkpoint, completed.Error)
 	}
-	record, found, err := metadata.Find(ctx, "/docs/report.txt")
+	record, found, err := metadata.Find(ctx, "docs/report.txt")
 	if err != nil || !found || record.PhysicalHash != "docs/report.txt" {
 		t.Fatalf("metadata = %+v found=%v err=%v", record, found, err)
 	}
@@ -212,7 +212,7 @@ func TestActionDeletesSharedSourceAfterAllReferencesBranch(t *testing.T) {
 	if err := metadata.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{"/docs/a.txt", "/docs/b.txt"} {
+	for _, path := range []string{"docs/a.txt", "docs/b.txt"} {
 		if err := metadata.UpsertFile(ctx, path, "shared-uuid.txt", 7); err != nil {
 			t.Fatal(err)
 		}
@@ -222,12 +222,12 @@ func TestActionDeletesSharedSourceAfterAllReferencesBranch(t *testing.T) {
 		"shared-uuid.txt": {Name: "shared-uuid.txt", Size: 7, Generation: 22, CRC32C: "checksum", StorageClass: "ARCHIVE"},
 	}}
 	service := NewForTest(metadata, objects, state, func(logicPath string) (string, error) {
-		return "docs/" + logicPath[len("/docs/"):], nil
+		return "docs/" + logicPath[len("docs/"):], nil
 	})
 	if _, err := service.Refresh(ctx); err != nil {
 		t.Fatal(err)
 	}
-	plan, err := service.CreatePlan(ctx, []string{"/docs/a.txt", "/docs/b.txt"})
+	plan, err := service.CreatePlan(ctx, []string{"docs/a.txt", "docs/b.txt"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +262,7 @@ func TestActionKeepsSharedSourceWhileAnUnselectedReferenceRemains(t *testing.T) 
 	if err := metadata.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{"/docs/a.txt", "/docs/b.txt"} {
+	for _, path := range []string{"docs/a.txt", "docs/b.txt"} {
 		if err := metadata.UpsertFile(ctx, path, "shared-uuid.txt", 7); err != nil {
 			t.Fatal(err)
 		}
@@ -272,12 +272,12 @@ func TestActionKeepsSharedSourceWhileAnUnselectedReferenceRemains(t *testing.T) 
 		"shared-uuid.txt": {Name: "shared-uuid.txt", Size: 7, Generation: 22, CRC32C: "checksum", StorageClass: "ARCHIVE"},
 	}}
 	service := NewForTest(metadata, objects, state, func(logicPath string) (string, error) {
-		return "docs/" + logicPath[len("/docs/"):], nil
+		return "docs/" + logicPath[len("docs/"):], nil
 	})
 	if _, err := service.Refresh(ctx); err != nil {
 		t.Fatal(err)
 	}
-	plan, err := service.CreatePlan(ctx, []string{"/docs/a.txt"})
+	plan, err := service.CreatePlan(ctx, []string{"docs/a.txt"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -295,7 +295,7 @@ func TestActionKeepsSharedSourceWhileAnUnselectedReferenceRemains(t *testing.T) 
 	if _, ok := objects.objects["shared-uuid.txt"]; !ok {
 		t.Fatal("shared source was deleted while an unselected reference remained")
 	}
-	record, found, err := metadata.Find(ctx, "/docs/b.txt")
+	record, found, err := metadata.Find(ctx, "docs/b.txt")
 	if err != nil || !found || record.PhysicalHash != "shared-uuid.txt" {
 		t.Fatalf("unselected metadata = %+v found=%v err=%v", record, found, err)
 	}

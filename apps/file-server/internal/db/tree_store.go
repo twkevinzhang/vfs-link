@@ -17,7 +17,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const defaultTreePrefix = "_vfs-link"
+const defaultTreePrefix = "_vfs-link-v3"
 const maxGCSObjectNameBytes = 1024
 
 func validateMetadataKey(key string) error {
@@ -108,10 +108,10 @@ func (s *TreeStore) EnsureSchema(ctx context.Context) error {
 
 func encodeTreePath(logicPath string) string {
 	logicPath = canonicalTreeIndexPath(logicPath)
-	if logicPath == "/" {
+	if logicPath == "" {
 		return "_root"
 	}
-	parts := strings.Split(strings.TrimPrefix(logicPath, "/"), "/")
+	parts := strings.Split(logicPath, "/")
 	for i := range parts {
 		parts[i] = encodeTreeSegment(parts[i])
 	}
@@ -270,12 +270,12 @@ func (s *TreeStore) nextID(ctx context.Context) (int, error) {
 	return 0, ErrMetadataConflict
 }
 func normalizeTreeRecord(r FileRecord) FileRecord {
-	r.LogicPath = pathpkg.Clean("/" + strings.TrimSpace(r.LogicPath))
+	r.LogicPath = cleanLogicPath(r.LogicPath)
 	return r
 }
 
 func canonicalTreeIndexPath(logicPath string) string {
-	return pathpkg.Clean("/" + strings.TrimSpace(logicPath))
+	return cleanLogicPath(logicPath)
 }
 func marshalTree(v any) ([]byte, error) {
 	b, e := json.MarshalIndent(v, "", "  ")
@@ -527,7 +527,14 @@ func removeIndexRecord(records []FileRecord, path string) []FileRecord {
 }
 
 func (s *TreeStore) Find(ctx context.Context, path string) (FileRecord, bool, error) {
-	path = pathpkg.Clean("/" + strings.TrimSpace(path))
+	var err error
+	path, err = parseLogicPath(path)
+	if err != nil {
+		return FileRecord{}, false, err
+	}
+	if path == "" {
+		return FileRecord{}, false, nil
+	}
 	key := s.activeKey(path, false)
 	if e := validateMetadataKey(key); e != nil {
 		return FileRecord{}, false, e
@@ -543,7 +550,11 @@ func (s *TreeStore) Find(ctx context.Context, path string) (FileRecord, bool, er
 	return FileRecord{}, false, nil
 }
 func (s *TreeStore) ListDirectChildren(ctx context.Context, dir string, o DirectChildrenOptions) (DirectChildrenPage, error) {
-	dir = pathpkg.Clean("/" + strings.TrimSpace(dir))
+	var err error
+	dir, err = parseLogicPath(dir)
+	if err != nil {
+		return DirectChildrenPage{}, err
+	}
 	idx, _, ok, e := s.getIndexManifest(ctx, dir)
 	if e != nil {
 		return DirectChildrenPage{}, e
@@ -665,6 +676,11 @@ func (s *TreeStore) listActive(ctx context.Context, prefix string) ([]FileRecord
 }
 func (s *TreeStore) ListAll(ctx context.Context) ([]FileRecord, error) { return s.listActive(ctx, "") }
 func (s *TreeStore) ListPrefix(ctx context.Context, prefix string) ([]FileRecord, error) {
+	var err error
+	prefix, err = parseLogicPrefix(prefix)
+	if err != nil {
+		return nil, err
+	}
 	return s.listActive(ctx, prefix)
 }
 
@@ -708,7 +724,13 @@ func (s *TreeStore) ReplaceFileConditional(ctx context.Context, path, hash strin
 		return "", false, e
 	}
 	defer release()
-	path = pathpkg.Clean("/" + strings.TrimSpace(path))
+	path, e = parseLogicPath(path)
+	if e != nil {
+		return "", false, e
+	}
+	if path == "" {
+		return "", false, fmt.Errorf("file path is required")
+	}
 	old, ok, e := s.Find(ctx, path)
 	if e != nil {
 		return "", false, e
@@ -732,7 +754,7 @@ func (s *TreeStore) ReplaceFileConditional(ctx context.Context, path, hash strin
 	if e = s.putNode(ctx, r, !ok); e != nil {
 		return "", false, e
 	}
-	if e = s.updateIndexRecordLeaseHeld(ctx, pathpkg.Dir(path), r, false, true); e != nil {
+	if e = s.updateIndexRecordLeaseHeld(ctx, parentLogicPath(path), r, false, true); e != nil {
 		return "", false, e
 	}
 	delta := MetadataStats{}
@@ -762,8 +784,11 @@ func (s *TreeStore) UpsertDirectory(ctx context.Context, path string) error {
 		return e
 	}
 	defer release()
-	path = pathpkg.Clean("/" + strings.TrimSpace(path))
-	if path == "/" {
+	path, e = parseLogicPath(path)
+	if e != nil {
+		return e
+	}
+	if path == "" {
 		return nil
 	}
 	old, ok, e := s.Find(ctx, path)
@@ -788,7 +813,7 @@ func (s *TreeStore) UpsertDirectory(ctx context.Context, path string) error {
 		e = s.writeIndex(ctx, idx, 0, false)
 	}
 	if e == nil {
-		e = s.updateIndexRecordLeaseHeld(ctx, pathpkg.Dir(path), r, false, true)
+		e = s.updateIndexRecordLeaseHeld(ctx, parentLogicPath(path), r, false, true)
 	}
 	if e == nil && !ok {
 		e = s.mutateStats(ctx, MetadataStats{LogicalDirs: 1})
@@ -810,7 +835,7 @@ func (s *TreeStore) DeletePath(ctx context.Context, path string) error {
 	if e = s.deleteNode(ctx, r); e != nil {
 		return e
 	}
-	if e = s.updateIndexRecordLeaseHeld(ctx, pathpkg.Dir(r.LogicPath), r, true, true); e != nil {
+	if e = s.updateIndexRecordLeaseHeld(ctx, parentLogicPath(r.LogicPath), r, true, true); e != nil {
 		return e
 	}
 	if r.IsDirectory {
@@ -987,7 +1012,7 @@ func ValidateTreeImport(prefix string, snapshot TreeImportSnapshot) (TreeValidat
 		return nil
 	}
 	v := TreeValidation{Expected: len(snapshot.Records), Actual: len(snapshot.Records)}
-	dirs := map[string]bool{"/": true}
+	dirs := map[string]bool{"": true}
 	trashRoots := map[string]bool{}
 	for _, r := range snapshot.Records {
 		r = normalizeTreeRecord(r)
@@ -1001,7 +1026,7 @@ func ValidateTreeImport(prefix string, snapshot TreeImportSnapshot) (TreeValidat
 		} else {
 			key = fake.activeKey(r.LogicPath, r.IsDirectory)
 			v.Active++
-			dirs[canonicalTreeIndexPath(pathpkg.Dir(r.LogicPath))] = true
+			dirs[parentLogicPath(r.LogicPath)] = true
 			if r.IsDirectory {
 				dirs[canonicalTreeIndexPath(r.LogicPath)] = true
 			}
@@ -1084,7 +1109,7 @@ func BulkImportTree(ctx context.Context, store Store, snapshot TreeImportSnapsho
 			return TreeValidation{}, fmt.Errorf("tree import destination is not empty: %s", key)
 		}
 	}
-	byDir := map[string][]FileRecord{"/": nil}
+	byDir := map[string][]FileRecord{"": nil}
 	trashRoots := map[string]FileRecord{}
 	physical := map[string]int64{}
 	var st MetadataStats
@@ -1139,7 +1164,7 @@ func BulkImportTree(ctx context.Context, store Store, snapshot TreeImportSnapsho
 		rCopy := r
 		tasks = append(tasks, func(taskCtx context.Context) error { return tree.putNode(taskCtx, rCopy, true) })
 		validation.Active++
-		parentDir := canonicalTreeIndexPath(pathpkg.Dir(r.LogicPath))
+		parentDir := parentLogicPath(r.LogicPath)
 		byDir[parentDir] = append(byDir[parentDir], r)
 		if r.IsDirectory {
 			// Empty directories also need an aggregate manifest so their parent

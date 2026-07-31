@@ -56,7 +56,7 @@ func TestTreeDriftScannerIsBoundedAndDeterministic(t *testing.T) {
 	backend := &measuredTreeBackend{objects: map[string]treeObject{}, delay: time.Millisecond}
 	store := newTreeStore(backend, "scan-test")
 	for i := 99; i >= 0; i-- {
-		record := FileRecord{ID: i + 1, LogicPath: fmt.Sprintf("/file-%03d", i), PhysicalHash: fmt.Sprintf("object-%03d", i), Size: int64(i)}
+		record := FileRecord{ID: i + 1, LogicPath: fmt.Sprintf("file-%03d", i), PhysicalHash: fmt.Sprintf("object-%03d", i), Size: int64(i)}
 		data, err := marshalTree(record)
 		if err != nil {
 			t.Fatal(err)
@@ -71,7 +71,7 @@ func TestTreeDriftScannerIsBoundedAndDeterministic(t *testing.T) {
 		t.Fatalf("record counts = %d active, %d trash", len(active), len(trash))
 	}
 	for index, record := range active {
-		want := fmt.Sprintf("/file-%03d", index)
+		want := fmt.Sprintf("file-%03d", index)
 		if record.LogicPath != want {
 			t.Fatalf("active[%d] = %q, want %q", index, record.LogicPath, want)
 		}
@@ -87,8 +87,8 @@ func TestTreeDriftScannerIsBoundedAndDeterministic(t *testing.T) {
 func TestTreeDriftScannerHonorsCancellation(t *testing.T) {
 	backend := &measuredTreeBackend{objects: map[string]treeObject{}, delay: time.Second}
 	store := newTreeStore(backend, "cancel-test")
-	data, _ := marshalTree(FileRecord{LogicPath: "/slow", PhysicalHash: "slow"})
-	backend.objects[store.activeKey("/slow", false)] = treeObject{Data: data, Generation: 1}
+	data, _ := marshalTree(FileRecord{LogicPath: "slow", PhysicalHash: "slow"})
+	backend.objects[store.activeKey("slow", false)] = treeObject{Data: data, Generation: 1}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, _, err := store.ScanDriftRecords(ctx)

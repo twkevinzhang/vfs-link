@@ -37,11 +37,12 @@ cross-request resumable upload protocol.
 With `DB_DRIVER=json`, configure `METADATA_STORAGE_DRIVER=gcs` and a dedicated
 `METADATA_GCS_BUCKET`. The tree stores one sidecar per file and directory,
 directory indexes, entity records, operation manifests, and aggregate stats
-beneath a versioned reserved prefix. The current v1 tree is `_vfs-link/`; v2 is
-staged under `_vfs-link-v2/` and adds persisted subtree folder summaries.
-Writes use generation-match preconditions. The metadata bucket should use Standard storage in the same
-region as Cloud Run; an Archive-class primary bucket should hold file bytes,
-not frequently read or rewritten metadata.
+beneath a versioned reserved prefix. Tree v2 under `_vfs-link-v2/` adds
+persisted subtree folder summaries. Tree v3 under `_vfs-link-v3/` uses relative
+NFC logical paths; v2 remains a rollback source during migration. Writes use
+generation-match preconditions. The metadata bucket should use Standard storage
+in the same region as Cloud Run; an Archive-class primary bucket should hold
+file bytes, not frequently read or rewritten metadata.
 
 The legacy single `_vfs-link/metadata.json` snapshot is not read by the runtime.
 It can be kept as an offline migration/rollback backup only.

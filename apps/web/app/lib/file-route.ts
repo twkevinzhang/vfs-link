@@ -6,12 +6,11 @@ export const DRIFT_ROUTE = '/drift';
 
 export function fileBrowserPath(logicalPath: string) {
   const normalizedPath = normalizePath(logicalPath);
-  if (normalizedPath === '/') {
+  if (normalizedPath === '') {
     return FILES_ROUTE;
   }
 
   const encodedPath = normalizedPath
-    .slice(1)
     .split('/')
     .map((segment) => encodeURIComponent(segment))
     .join('/');
@@ -19,5 +18,5 @@ export function fileBrowserPath(logicalPath: string) {
 }
 
 export function logicalPathFromRoute(routePath: string | undefined) {
-  return normalizePath(routePath ? `/${routePath}` : '/');
+  return normalizePath(routePath ?? '');
 }

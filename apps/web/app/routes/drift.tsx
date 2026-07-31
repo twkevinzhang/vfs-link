@@ -844,6 +844,7 @@ function DriftTable({
                 <KeyMove
                   currentKey={item.currentKey}
                   targetKey={item.targetKey}
+                  status={item.status}
                 />
               </td>
               <td className="px-2 py-3.5">
@@ -909,7 +910,11 @@ function DriftMobileCard({
         </div>
       </div>
       <div className="rounded-lg border border-border bg-[#fbfaf6] p-3 text-xs">
-        <KeyMove currentKey={item.currentKey} targetKey={item.targetKey} />
+        <KeyMove
+          currentKey={item.currentKey}
+          targetKey={item.targetKey}
+          status={item.status}
+        />
       </div>
       <dl className="grid grid-cols-3 gap-2 text-xs">
         <div>
@@ -933,18 +938,41 @@ function DriftMobileCard({
 function KeyMove({
   currentKey,
   targetKey,
+  status,
 }: {
   currentKey: string;
   targetKey: string;
+  status: string;
 }) {
+  const aligned = status.toLowerCase() === 'aligned';
+  if (aligned) {
+    return (
+      <div className="grid min-w-0 gap-1">
+        <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+          Matches index
+        </span>
+        <span className="break-all font-medium text-foreground">
+          {targetKey || currentKey || '—'}
+        </span>
+      </div>
+    );
+  }
   return (
     <div className="grid min-w-0 gap-1 text-muted-foreground">
+      <span className="text-[10px] font-medium uppercase tracking-wide">
+        Current GCS key
+      </span>
       <span className="break-all line-through decoration-border">
         {currentKey || '—'}
       </span>
       <span className="flex items-start gap-1.5 font-medium text-foreground">
         <ArrowRight className="mt-0.5 h-3 w-3 shrink-0 text-primary" />
-        <span className="break-all">{targetKey || '—'}</span>
+        <span className="min-w-0">
+          <span className="block text-[10px] uppercase tracking-wide text-muted-foreground">
+            Expected key
+          </span>
+          <span className="break-all">{targetKey || '—'}</span>
+        </span>
       </span>
     </div>
   );

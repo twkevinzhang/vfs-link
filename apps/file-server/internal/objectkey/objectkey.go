@@ -28,7 +28,9 @@ func FromLogicalPath(logicalPath string) (string, error) {
 		return "", errors.New("logical path is not valid UTF-8")
 	}
 	logicalPath = norm.NFC.String(logicalPath)
-	logicalPath = strings.TrimLeft(logicalPath, "/")
+	if strings.HasPrefix(logicalPath, "/") {
+		return "", errors.New("logical path must not start with a slash")
+	}
 	if logicalPath == "" {
 		return "", errors.New("logical path does not name an object")
 	}

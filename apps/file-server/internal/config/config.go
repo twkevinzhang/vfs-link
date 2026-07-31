@@ -76,7 +76,7 @@ func Load(args []string) (Config, error) {
 		MetadataStorageDriver: envString("METADATA_STORAGE_DRIVER", "local"),
 		MetadataLocalRoot:     envString("METADATA_LOCAL_ROOT", "./data/metadata"),
 		MetadataGCSBucket:     envString("METADATA_GCS_BUCKET", ""),
-		MetadataPrefix:        envString("METADATA_PREFIX", "_vfs-link"),
+		MetadataPrefix:        envString("METADATA_PREFIX", "_vfs-link-v3"),
 		StorageDriver:         envString("STORAGE_DRIVER", "local"),
 		LocalStorageRoot:      envString("LOCAL_STORAGE_ROOT", "./data/objects"),
 		GCSBucket:             envString("GCS_BUCKET", ""),
@@ -127,8 +127,8 @@ func Load(args []string) (Config, error) {
 		}
 	case "json":
 		cfg.MetadataPrefix = path.Clean(strings.TrimLeft(cfg.MetadataPrefix, "/"))
-		if cfg.MetadataPrefix != "_vfs-link" && cfg.MetadataPrefix != "_vfs-link-v2" {
-			return Config{}, fmt.Errorf("METADATA_PREFIX must be one of the reserved prefixes _vfs-link or _vfs-link-v2")
+		if cfg.MetadataPrefix != "_vfs-link" && cfg.MetadataPrefix != "_vfs-link-v2" && cfg.MetadataPrefix != "_vfs-link-v3" {
+			return Config{}, fmt.Errorf("METADATA_PREFIX must be one of the reserved prefixes _vfs-link, _vfs-link-v2, or _vfs-link-v3")
 		}
 		switch cfg.MetadataStorageDriver {
 		case "local":

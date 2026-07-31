@@ -16,6 +16,7 @@ import (
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/db"
 	driftdomain "github.com/twkevinzhang/vfs-link/apps/file-server/internal/drift"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/fileops"
+	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/logicpath"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/share"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/upload"
 )
@@ -212,8 +213,12 @@ func (s *Server) handleFiles(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	logicPath := cleanPath(r.URL.Query().Get("path"))
-	if logicPath != "/" {
+	logicPath, err := logicpath.Parse(r.URL.Query().Get("path"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if logicPath != "" {
 		record, found, err := s.store.Find(r.Context(), logicPath)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
@@ -261,8 +266,12 @@ func (s *Server) handleTree(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	logicPath := cleanPath(r.URL.Query().Get("path"))
-	if logicPath != "/" {
+	logicPath, err := logicpath.Parse(r.URL.Query().Get("path"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if logicPath != "" {
 		record, found, err := s.store.Find(r.Context(), logicPath)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
@@ -283,7 +292,7 @@ func (s *Server) handleTree(w http.ResponseWriter, r *http.Request) {
 	}
 
 	node := TreeNode{Name: path.Base(logicPath), Path: logicPath, Kind: "directory"}
-	if logicPath == "/" {
+	if logicPath == "" {
 		node.Name = "/"
 	}
 	for _, record := range page.Records {
@@ -303,7 +312,11 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	logicPath := cleanPath(r.URL.Query().Get("path"))
+	logicPath, err := logicpath.Parse(r.URL.Query().Get("path"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	record, found, err := s.store.Find(r.Context(), logicPath)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -493,27 +506,20 @@ func toShareResponse(record db.ShareRecord) shareResponse {
 }
 
 func breadcrumbs(logicPath string) []Entry {
-	if logicPath == "/" {
-		return []Entry{{Name: "/", Path: "/", Kind: "directory"}}
+	if logicPath == "" {
+		return []Entry{{Name: "/", Path: "", Kind: "directory"}}
 	}
-	crumbs := []Entry{{Name: "/", Path: "/", Kind: "directory"}}
+	crumbs := []Entry{{Name: "/", Path: "", Kind: "directory"}}
 	current := ""
-	for _, part := range strings.Split(strings.Trim(logicPath, "/"), "/") {
-		current += "/" + part
+	for _, part := range strings.Split(logicPath, "/") {
+		if current == "" {
+			current = part
+		} else {
+			current += "/" + part
+		}
 		crumbs = append(crumbs, Entry{Name: part, Path: current, Kind: "directory"})
 	}
 	return crumbs
-}
-
-func cleanPath(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" || value == "." {
-		return "/"
-	}
-	if !strings.HasPrefix(value, "/") {
-		value = "/" + value
-	}
-	return path.Clean(value)
 }
 
 func parsePagination(r *http.Request) (int, int) {

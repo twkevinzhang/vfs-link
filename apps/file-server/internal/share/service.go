@@ -17,6 +17,7 @@ import (
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/blob"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/config"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/db"
+	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/logicpath"
 )
 
 const (
@@ -63,7 +64,11 @@ func (s *Service) CreateDraft(ctx context.Context, logicPath string) (db.ShareRe
 		return db.ShareRecord{}, errors.New("SHARE_GCS_BUCKET is required")
 	}
 
-	file, found, err := s.store.Find(ctx, cleanPath(logicPath))
+	logicPath, err := logicpath.Parse(logicPath)
+	if err != nil {
+		return db.ShareRecord{}, err
+	}
+	file, found, err := s.store.Find(ctx, logicPath)
 	if err != nil {
 		return db.ShareRecord{}, err
 	}
@@ -306,17 +311,6 @@ func escapeObjectName(objectName string) string {
 		parts[idx] = url.PathEscape(part)
 	}
 	return strings.Join(parts, "/")
-}
-
-func cleanPath(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" || value == "." {
-		return "/"
-	}
-	if !strings.HasPrefix(value, "/") {
-		value = "/" + value
-	}
-	return path.Clean(value)
 }
 
 func formatBytes(size int64) string {

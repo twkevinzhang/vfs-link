@@ -19,8 +19,8 @@ const action: DriftAction = {
   succeeded: 2,
   failed: 1,
   results: [
-    { logicPath: '/ok.txt', status: 'completed' },
-    { logicPath: '/retry.txt', status: 'failed', error: 'precondition' },
+    { logicPath: 'ok.txt', status: 'completed' },
+    { logicPath: 'retry.txt', status: 'failed', error: 'precondition' },
   ],
 };
 
@@ -33,7 +33,7 @@ describe('drift helpers', () => {
   });
 
   it('returns only failed paths for retry', () => {
-    expect(driftActionFailedPaths(action)).toEqual(['/retry.txt']);
+    expect(driftActionFailedPaths(action)).toEqual(['retry.txt']);
   });
 
   it('formats estimated cost as a range', () => {

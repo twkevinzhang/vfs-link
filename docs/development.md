@@ -21,7 +21,7 @@ For a database-free local run, replace `DATABASE_URL` with:
 DB_DRIVER=json \
 METADATA_STORAGE_DRIVER=local \
 METADATA_LOCAL_ROOT='../../data/metadata' \
-METADATA_PREFIX=_vfs-link \
+METADATA_PREFIX=_vfs-link-v3 \
 STORAGE_DRIVER=local \
 LOCAL_STORAGE_ROOT='../../data/objects' \
 FTP_ENABLED=false WEBDAV_ENABLED=false HTTP_PORT=8080 \

@@ -43,14 +43,14 @@ func TestRunDryRunRejectsNonReservedTargetPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 	err := run([]string{"--source-file=" + filename, "--target-prefix=metadata", "--dry-run"}, &bytes.Buffer{})
-	if err == nil || !strings.Contains(err.Error(), "reserved _vfs-link-v2 prefix") {
+	if err == nil || !strings.Contains(err.Error(), "reserved _vfs-link-v3 prefix") {
 		t.Fatalf("run() error = %v", err)
 	}
 }
 
 func TestValidateRootAggregatesAfterBulkImport(t *testing.T) {
 	ctx := context.Background()
-	store, err := db.NewTreeLocal(t.TempDir(), "_vfs-link-v2")
+	store, err := db.NewTreeLocal(t.TempDir(), "_vfs-link-v3")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestValidateRootAggregatesAfterBulkImport(t *testing.T) {
 	}
 }
 
-func TestRunClonesDistributedTreeIntoV2Prefix(t *testing.T) {
+func TestRunMigratesDistributedV2TreeIntoRelativeV3Prefix(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	source, err := db.NewTreeLocal(root, "_vfs-link")
@@ -105,7 +105,7 @@ func TestRunClonesDistributedTreeIntoV2Prefix(t *testing.T) {
 		"--source-tree-prefix=_vfs-link",
 		"--target-driver=local",
 		"--target-local-root=" + root,
-		"--target-prefix=_vfs-link-v2",
+		"--target-prefix=_vfs-link-v3",
 		"--yes",
 	}, &output)
 	if err != nil {
@@ -115,7 +115,7 @@ func TestRunClonesDistributedTreeIntoV2Prefix(t *testing.T) {
 		t.Fatalf("migration output:\n%s", output.String())
 	}
 
-	target, err := db.NewTreeLocal(root, "_vfs-link-v2")
+	target, err := db.NewTreeLocal(root, "_vfs-link-v3")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,6 +123,11 @@ func TestRunClonesDistributedTreeIntoV2Prefix(t *testing.T) {
 	active, err := target.ListAll(ctx)
 	if err != nil || len(active) != 2 {
 		t.Fatalf("active records = %d, err = %v", len(active), err)
+	}
+	for _, record := range active {
+		if strings.HasPrefix(record.LogicPath, "/") {
+			t.Fatalf("v3 logical path is absolute: %q", record.LogicPath)
+		}
 	}
 	trash, err := target.ListTrashRecords(ctx, []string{"trash-1"})
 	if err != nil || len(trash) != 1 || trash[0].ID != 3 {
@@ -134,6 +139,21 @@ func TestRunClonesDistributedTreeIntoV2Prefix(t *testing.T) {
 		"--target-driver=local", "--target-local-root=" + root, "--yes",
 	}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "not empty") {
 		t.Fatalf("rerun error = %v, want non-empty target rejection", err)
+	}
+}
+
+func TestCanonicalizeImportSnapshotNormalizesNFCAndRejectsCollision(t *testing.T) {
+	snapshot := db.TreeImportSnapshot{Records: []db.FileRecord{
+		{ID: 1, LogicPath: "/cafe\u0301.txt", PhysicalHash: "nfd"},
+		{ID: 2, LogicPath: "/caf\u00e9.txt", PhysicalHash: "nfc"},
+	}}
+	if _, err := canonicalizeImportSnapshot(snapshot); err == nil || !strings.Contains(err.Error(), "canonical path collision") {
+		t.Fatalf("canonicalize collision error = %v", err)
+	}
+	snapshot.Records = snapshot.Records[:1]
+	canonical, err := canonicalizeImportSnapshot(snapshot)
+	if err != nil || canonical.Records[0].LogicPath != "caf\u00e9.txt" {
+		t.Fatalf("canonical snapshot = %#v, err = %v", canonical, err)
 	}
 }
 

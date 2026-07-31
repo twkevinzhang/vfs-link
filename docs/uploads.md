@@ -29,7 +29,8 @@ exists and that its size matches the declared size, then conditionally publishes
 the logical mapping. An overwrite succeeds only if the destination still points
 to the object observed when the session was created.
 
-The physical key is the NFC-normalized logical path without its leading slash.
+The physical key is the NFC-normalized relative logical path. Logical paths and
+GCS object keys never begin with a slash; the logical root is the empty string.
 Characters unsupported by portable Windows/Unix filenames, control characters,
 and trailing dots or spaces are replaced with `_`. Windows device names are
 prefixed with `_`. Empty segments, the reserved `_vfs-link*` first segment, and
