@@ -172,6 +172,7 @@ CREATE TABLE IF NOT EXISTS "Upload" (
   "physicalHash" TEXT NOT NULL,
   driver TEXT NOT NULL DEFAULT '',
   "contentType" TEXT NOT NULL DEFAULT '',
+  "uploadUrl" TEXT NOT NULL DEFAULT '',
   size BIGINT NOT NULL DEFAULT 0,
   "uploadedSize" BIGINT NOT NULL DEFAULT 0,
   overwrite BOOLEAN NOT NULL DEFAULT false,
@@ -183,7 +184,35 @@ CREATE TABLE IF NOT EXISTS "Upload" (
   "updatedAt" TIMESTAMPTZ NOT NULL,
   "expiresAt" TIMESTAMPTZ NOT NULL
 );
+ALTER TABLE "Upload" ADD COLUMN IF NOT EXISTS "uploadUrl" TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS "Upload_expiresAt_idx" ON "Upload" ("expiresAt");
+
+CREATE TABLE IF NOT EXISTS "DriftPlan" (
+  id TEXT PRIMARY KEY,
+  fingerprint TEXT NOT NULL,
+  payload JSONB NOT NULL,
+  "createdAt" TIMESTAMPTZ NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS "DriftPlan_fingerprint_uidx" ON "DriftPlan" (fingerprint);
+
+CREATE TABLE IF NOT EXISTS "DriftSnapshot" (
+  id SMALLINT PRIMARY KEY CHECK (id = 1),
+  payload JSONB NOT NULL,
+  "updatedAt" TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS "DriftAction" (
+  id TEXT PRIMARY KEY,
+  "planId" TEXT NOT NULL REFERENCES "DriftPlan"(id),
+  "idempotencyKey" TEXT NOT NULL,
+  status TEXT NOT NULL,
+  checkpoint TEXT NOT NULL,
+  payload JSONB NOT NULL,
+  version BIGINT NOT NULL DEFAULT 1,
+  "createdAt" TIMESTAMPTZ NOT NULL,
+  "updatedAt" TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS "DriftAction_planId_idx" ON "DriftAction" ("planId");
 `)
 	return err
 }
@@ -1017,13 +1046,13 @@ func (s *PostgresStore) CreateUpload(ctx context.Context, record UploadRecord) (
 		record.UpdatedAt = now
 	}
 	row := s.pool.QueryRow(ctx, `
-INSERT INTO "Upload" (id, "logicPath", "physicalHash", driver, "contentType", size,
+INSERT INTO "Upload" (id, "logicPath", "physicalHash", driver, "contentType", "uploadUrl", size,
   "uploadedSize", overwrite, "expectedPhysicalHash", "requireAbsent", status, error,
   "createdAt", "updatedAt", "expiresAt")
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-RETURNING id, "logicPath", "physicalHash", driver, "contentType", size, "uploadedSize",
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+RETURNING id, "logicPath", "physicalHash", driver, "contentType", "uploadUrl", size, "uploadedSize",
   overwrite, "expectedPhysicalHash", "requireAbsent", status, error, "createdAt", "updatedAt", "expiresAt"
-`, record.ID, record.LogicPath, record.PhysicalHash, record.Driver, record.ContentType, record.Size,
+`, record.ID, record.LogicPath, record.PhysicalHash, record.Driver, record.ContentType, record.UploadURL, record.Size,
 		record.UploadedSize, record.Overwrite, record.ExpectedPhysicalHash, record.RequireAbsent,
 		record.Status, record.Error, record.CreatedAt, record.UpdatedAt, record.ExpiresAt)
 	return scanUpload(row)
@@ -1031,7 +1060,7 @@ RETURNING id, "logicPath", "physicalHash", driver, "contentType", size, "uploade
 
 func (s *PostgresStore) FindUpload(ctx context.Context, id string) (UploadRecord, bool, error) {
 	record, err := scanUpload(s.pool.QueryRow(ctx, `
-SELECT id, "logicPath", "physicalHash", driver, "contentType", size, "uploadedSize",
+SELECT id, "logicPath", "physicalHash", driver, "contentType", "uploadUrl", size, "uploadedSize",
   overwrite, "expectedPhysicalHash", "requireAbsent", status, error, "createdAt", "updatedAt", "expiresAt"
 FROM "Upload" WHERE id = $1
 `, id))
@@ -1044,12 +1073,12 @@ FROM "Upload" WHERE id = $1
 func (s *PostgresStore) UpdateUpload(ctx context.Context, record UploadRecord) (UploadRecord, error) {
 	record.UpdatedAt = time.Now().UTC()
 	return scanUpload(s.pool.QueryRow(ctx, `
-UPDATE "Upload" SET "logicPath"=$2, "physicalHash"=$3, driver=$4, "contentType"=$5,
-  size=$6, "uploadedSize"=$7, overwrite=$8, "expectedPhysicalHash"=$9, "requireAbsent"=$10,
-  status=$11, error=$12, "updatedAt"=$13, "expiresAt"=$14 WHERE id=$1
-RETURNING id, "logicPath", "physicalHash", driver, "contentType", size, "uploadedSize",
+UPDATE "Upload" SET "logicPath"=$2, "physicalHash"=$3, driver=$4, "contentType"=$5, "uploadUrl"=$6,
+  size=$7, "uploadedSize"=$8, overwrite=$9, "expectedPhysicalHash"=$10, "requireAbsent"=$11,
+  status=$12, error=$13, "updatedAt"=$14, "expiresAt"=$15 WHERE id=$1
+RETURNING id, "logicPath", "physicalHash", driver, "contentType", "uploadUrl", size, "uploadedSize",
   overwrite, "expectedPhysicalHash", "requireAbsent", status, error, "createdAt", "updatedAt", "expiresAt"
-`, record.ID, record.LogicPath, record.PhysicalHash, record.Driver, record.ContentType, record.Size,
+`, record.ID, record.LogicPath, record.PhysicalHash, record.Driver, record.ContentType, record.UploadURL, record.Size,
 		record.UploadedSize, record.Overwrite, record.ExpectedPhysicalHash, record.RequireAbsent,
 		record.Status, record.Error, record.UpdatedAt, record.ExpiresAt))
 }
@@ -1102,7 +1131,7 @@ func scanShare(row rowScanner) (ShareRecord, error) {
 func scanUpload(row rowScanner) (UploadRecord, error) {
 	var record UploadRecord
 	err := row.Scan(&record.ID, &record.LogicPath, &record.PhysicalHash, &record.Driver,
-		&record.ContentType, &record.Size, &record.UploadedSize, &record.Overwrite,
+		&record.ContentType, &record.UploadURL, &record.Size, &record.UploadedSize, &record.Overwrite,
 		&record.ExpectedPhysicalHash, &record.RequireAbsent, &record.Status, &record.Error,
 		&record.CreatedAt, &record.UpdatedAt, &record.ExpiresAt)
 	return record, err

@@ -5,6 +5,7 @@ import {
   Check,
   Copy,
   Download,
+  DatabaseZap,
   File,
   Folder,
   FolderInput,
@@ -58,6 +59,7 @@ import {
 import { appPath } from '../lib/base-path';
 import {
   fileBrowserPath,
+  DRIFT_ROUTE,
   logicalPathFromRoute,
   TRASH_ROUTE,
 } from '../lib/file-route';
@@ -631,6 +633,16 @@ export default function FileBrowserRoute() {
                 value={`${folderSummary?.files ?? 0} files`}
                 detail={formatBytes(folderSummary?.bytes ?? 0)}
               />
+            )}
+            {view === 'files' && (
+              <Button
+                variant="outline"
+                onClick={() => navigate(DRIFT_ROUTE)}
+                className="h-9 w-full px-3 md:w-auto"
+              >
+                <DatabaseZap aria-hidden="true" className="h-4 w-4" />
+                Drift
+              </Button>
             )}
             {view === 'files' && (
               <Button

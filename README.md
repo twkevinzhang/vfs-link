@@ -55,13 +55,13 @@ stores the bytes:
 ```text
 logical namespace              metadata mapping                 physical storage
 ─────────────────              ────────────────                 ────────────────
-/incoming/report.zip  ───────>  physicalHash: 7f3a9c2e...  ───>  gs://data/7f3a9c2e...
+/incoming/report.zip  ───────>  physicalHash: incoming/report.zip  ───>  gs://data/incoming/report.zip
                                                                     100 GiB
 
 MOVE /incoming/report.zip
   TO /archive/report.zip
 
-/archive/report.zip   ───────>  physicalHash: 7f3a9c2e...  ───>  gs://data/7f3a9c2e...
+/archive/report.zip   ───────>  physicalHash: incoming/report.zip  ───>  gs://data/incoming/report.zip
                                                                     same object
                                                                     same bytes
 ```
@@ -74,13 +74,14 @@ renamed by vfs-link.
 With `DB_DRIVER=json`, JSON metadata is not a cache and not a secondary index.
 It is the source of truth for the logical filesystem namespace.
 
-Conceptually, a file record connects a human-readable path to an opaque physical
-object key:
+Conceptually, a file record connects a human-readable path to a stable physical
+object key. New uploads start with a portable, sanitized form of the original
+logical path; later logical renames do not change that key:
 
 ```json
 {
   "path": "/archive/report.zip",
-  "physicalHash": "7f3a9c2e...",
+  "physicalHash": "incoming/report.zip",
   "size": 107374182400
 }
 ```
@@ -143,7 +144,7 @@ for a logical rename: zero.
                           PostgreSQL or JSON         local volume or GCS
                           metadata namespace         payload objects
                           ──────────────────         ───────────────
-                          paths                      opaque physical keys
+                          paths                      stable physical keys
                           directories                immutable-by-move bytes
                           indexes                    range-readable objects
                           trash records
@@ -157,7 +158,7 @@ then atomically publishes its logical mapping:
 ```text
 Browser ── create session ──> file-server
    │                              │
-   ├──── resumable PUT ──────────> GCS provisional object
+   ├──── resumable PUT ──────────> GCS final sanitized key
    │                              │
    └──── complete session ───────> verify object ──> publish logical mapping
 ```
@@ -175,6 +176,7 @@ Browser ── create session ──> file-server
 - Optional GCS and Telegram sharing workflow
 - Optional Pub/Sub dispatch for serverless share jobs
 - Mapping rebuild, metadata migration, and physical-object health checks
+- Optional drift viewer, cost plan, and explicit GCS physical reconciliation
 - Docker Compose for self-hosting and an HTTP-only Cloud Run deployment model
 
 ## Quick start
@@ -292,6 +294,12 @@ With GCS, the browser uploads directly to Cloud Storage instead of routing large
 payload bytes through the file-server container. The default maximum declared
 file size is 50 GiB and the default session lifetime is 24 hours.
 
+The object key is derived once from the uploaded logical path. Unsupported
+Windows/Unix filename characters are replaced with `_`; path separators remain
+path separators. A rename still updates metadata only. See
+[Storage drift](docs/drift.md) for comparing and explicitly reconciling the two
+namespaces.
+
 ## Move and trash API
 
 | Endpoint | Purpose |
@@ -338,6 +346,7 @@ used only with a verified backup.
 - [Networking and exposure](docs/networking.md)
 - [WebDAV and serverless deployment](docs/webdav.md)
 - [Browser upload API](docs/uploads.md)
+- [Storage drift](docs/drift.md)
 - [Move, trash, and operations](docs/operations.md)
 - [Cloud Run HTTP file-server](docs/cloud-run.md)
 - [Development](docs/development.md)

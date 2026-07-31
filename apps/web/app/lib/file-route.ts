@@ -2,6 +2,7 @@ import { normalizePath } from './format';
 
 export const FILES_ROUTE = '/files';
 export const TRASH_ROUTE = '/trash';
+export const DRIFT_ROUTE = '/drift';
 
 export function fileBrowserPath(logicalPath: string) {
   const normalizedPath = normalizePath(logicalPath);

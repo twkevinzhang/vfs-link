@@ -56,6 +56,7 @@ type Config struct {
 	CommandArgs           []string
 	AssumeYes             bool
 	MaintenanceMode       bool
+	DriftEnabled          bool
 }
 
 func Load(args []string) (Config, error) {
@@ -104,6 +105,7 @@ func Load(args []string) (Config, error) {
 		PubSubAudience:        envString("PUB_SUB_PUSH_AUDIENCE", ""),
 		PubSubPushEmail:       envString("PUB_SUB_PUSH_SERVICE_ACCOUNT", ""),
 		MaintenanceMode:       envBool("MAINTENANCE_MODE", false),
+		DriftEnabled:          envBool("DRIFT_ENABLED", false),
 	}
 
 	for _, arg := range args {
@@ -336,6 +338,8 @@ func applyOverride(cfg *Config, key, value string) {
 		cfg.PubSubPushEmail = strings.TrimSpace(value)
 	case "MAINTENANCE_MODE":
 		cfg.MaintenanceMode = parseBool(value, cfg.MaintenanceMode)
+	case "DRIFT_ENABLED":
+		cfg.DriftEnabled = parseBool(value, cfg.DriftEnabled)
 	}
 }
 

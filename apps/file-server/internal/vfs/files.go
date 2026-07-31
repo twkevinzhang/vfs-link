@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/afero"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/blob"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/db"
+	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/objectkey"
 )
 
 var errUnsupported = errors.New("operation is not supported by database VFS")
@@ -158,30 +159,49 @@ func (f *readFile) Close() error {
 
 type uploadFile struct {
 	baseFile
-	store        db.Store
-	objects      blob.Store
-	logicPath    string
-	physicalHash string
-	writer       io.WriteCloser
-	size         int64
-	transferErr  error
-	mu           sync.Mutex
-	closed       bool
+	store                db.Store
+	objects              blob.Store
+	logicPath            string
+	physicalHash         string
+	expectedPhysicalHash *string
+	requireAbsent        bool
+	writer               io.WriteCloser
+	size                 int64
+	transferErr          error
+	mu                   sync.Mutex
+	closed               bool
 }
 
 func newUploadFile(store db.Store, objects blob.Store, logicPath string) afero.File {
-	physicalHash := blob.GeneratePhysicalHash(logicPath)
-	writer, err := objects.NewWriter(context.Background(), physicalHash)
+	physicalHash, err := objectkey.FromLogicalPath(logicPath)
+	if err != nil {
+		return &errorFile{err: err}
+	}
+	existing, found, err := store.Find(context.Background(), logicPath)
+	if err != nil {
+		return &errorFile{err: err}
+	}
+	if found && existing.IsDirectory {
+		return &errorFile{err: os.ErrExist}
+	}
+	var expected *string
+	if found {
+		value := existing.PhysicalHash
+		expected = &value
+	}
+	writer, err := blob.NewUploadWriter(context.Background(), objects, physicalHash, expected)
 	if err != nil {
 		return &errorFile{err: err}
 	}
 	return &uploadFile{
-		baseFile:     baseFile{name: logicPath, info: fileInfo{name: pathBase(logicPath), mode: 0o666, modTime: now()}},
-		store:        store,
-		objects:      objects,
-		logicPath:    logicPath,
-		physicalHash: physicalHash,
-		writer:       writer,
+		baseFile:             baseFile{name: logicPath, info: fileInfo{name: pathBase(logicPath), mode: 0o666, modTime: now()}},
+		store:                store,
+		objects:              objects,
+		logicPath:            logicPath,
+		physicalHash:         physicalHash,
+		expectedPhysicalHash: expected,
+		requireAbsent:        !found,
+		writer:               writer,
 	}
 }
 
@@ -193,6 +213,9 @@ func (f *uploadFile) Write(p []byte) (int, error) {
 	}
 	n, err := f.writer.Write(p)
 	f.size += int64(n)
+	if err != nil {
+		f.transferErr = err
+	}
 	return n, err
 }
 
@@ -206,25 +229,36 @@ func (f *uploadFile) Close() error {
 	transferErr := f.transferErr
 	f.mu.Unlock()
 
-	closeErr := f.writer.Close()
-
 	if transferErr != nil {
-		_ = f.objects.Delete(context.Background(), f.physicalHash)
+		abortWriter(f.writer, transferErr)
 		return transferErr
 	}
+	closeErr := f.writer.Close()
 	if closeErr != nil {
-		_ = f.objects.Delete(context.Background(), f.physicalHash)
 		return closeErr
 	}
-	previousPhysicalHash, err := f.store.ReplaceFile(context.Background(), f.logicPath, f.physicalHash, f.size)
+	previousPhysicalHash, matched, err := f.store.ReplaceFileConditional(
+		context.Background(), f.logicPath, f.physicalHash, f.size,
+		f.expectedPhysicalHash, f.requireAbsent,
+	)
 	if err != nil {
-		_ = f.objects.Delete(context.Background(), f.physicalHash)
 		return err
 	}
-	if previousPhysicalHash != "" {
+	if !matched {
+		return errors.New("file changed while upload was in progress")
+	}
+	if previousPhysicalHash != "" && previousPhysicalHash != f.physicalHash {
 		return f.objects.Delete(context.Background(), previousPhysicalHash)
 	}
 	return nil
+}
+
+func abortWriter(writer io.WriteCloser, cause error) {
+	if abortable, ok := writer.(blob.AbortableWriter); ok {
+		_ = abortable.CloseWithError(cause)
+		return
+	}
+	_ = writer.Close()
 }
 
 func (f *uploadFile) TransferError(err error) {

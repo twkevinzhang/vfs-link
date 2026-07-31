@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/blob"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/db"
@@ -75,6 +76,7 @@ func toDBUpload(session Session) db.UploadRecord {
 	return db.UploadRecord{
 		ID: session.ID, LogicPath: session.LogicPath, PhysicalHash: session.PhysicalHash,
 		Driver: session.Driver, ContentType: session.ContentType, Size: session.Size, Overwrite: session.Overwrite,
+		UploadURL:            session.UploadURL,
 		UploadedSize:         session.UploadedSize,
 		ExpectedPhysicalHash: session.ExpectedPhysicalHash, RequireAbsent: session.RequireAbsent,
 		Status: session.Status, Error: session.Error, CreatedAt: session.CreatedAt,
@@ -86,6 +88,7 @@ func fromDBUpload(record db.UploadRecord) Session {
 	return Session{
 		ID: record.ID, LogicPath: record.LogicPath, PhysicalHash: record.PhysicalHash,
 		Driver: record.Driver, ContentType: record.ContentType, Size: record.Size, Overwrite: record.Overwrite,
+		UploadURL:            record.UploadURL,
 		UploadedSize:         record.UploadedSize,
 		ExpectedPhysicalHash: record.ExpectedPhysicalHash, RequireAbsent: record.RequireAbsent,
 		Status: record.Status, Error: record.Error, CreatedAt: record.CreatedAt,
@@ -101,19 +104,31 @@ func (s blobStorage) Prepare(context.Context, Session) (PreparedTarget, error) {
 	return PreparedTarget{}, nil
 }
 
-func (s blobStorage) Write(ctx context.Context, physicalHash string, source io.Reader) (int64, error) {
-	writer, err := s.objects.NewWriter(ctx, physicalHash)
+func (s blobStorage) Write(ctx context.Context, session Session, source io.Reader) (int64, error) {
+	writer, err := blob.NewUploadWriter(ctx, s.objects, session.PhysicalHash, session.ExpectedPhysicalHash)
 	if err != nil {
 		return 0, err
 	}
 	written, copyErr := io.Copy(writer, source)
-	closeErr := writer.Close()
 	if copyErr != nil {
-		_ = s.objects.Delete(ctx, physicalHash)
+		if abortable, ok := writer.(blob.AbortableWriter); ok {
+			_ = abortable.CloseWithError(copyErr)
+		} else {
+			_ = writer.Close()
+		}
 		return written, copyErr
 	}
+	if written != session.Size {
+		sizeErr := fmt.Errorf("uploaded size %d does not match declared size %d", written, session.Size)
+		if abortable, ok := writer.(blob.AbortableWriter); ok {
+			_ = abortable.CloseWithError(sizeErr)
+		} else {
+			_ = writer.Close()
+		}
+		return written, sizeErr
+	}
+	closeErr := writer.Close()
 	if closeErr != nil {
-		_ = s.objects.Delete(ctx, physicalHash)
 		return written, closeErr
 	}
 	return written, nil
@@ -136,16 +151,42 @@ func (s blobStorage) Delete(ctx context.Context, physicalHash string) error {
 	return s.objects.Delete(ctx, physicalHash)
 }
 
+func (s blobStorage) Cancel(ctx context.Context, session Session) error {
+	// A local successful write has already atomically renamed into place. A new
+	// object can be removed safely; an overwrite cannot be rolled back without
+	// retaining the previous bytes, so never delete it as a cancellation side
+	// effect.
+	if session.Status == StatusUploaded && session.RequireAbsent {
+		return s.objects.Delete(ctx, session.PhysicalHash)
+	}
+	return nil
+}
+
 type gcsDirectStorage struct{ objects blob.DirectUploadStore }
 
 func (s gcsDirectStorage) Driver() string { return s.objects.Driver() }
 
 func (s gcsDirectStorage) Prepare(ctx context.Context, session Session) (PreparedTarget, error) {
-	url, headers, err := s.objects.StartResumableUpload(ctx, session.PhysicalHash, session.ContentType, session.UploadOrigin, session.Size)
+	ifGenerationMatch := int64(0)
+	// A logical record already using the final key is a true in-place
+	// overwrite. Snapshot its generation and require that exact generation at
+	// upload commit time. Legacy UUID-backed records write a previously absent
+	// final key with generation-match zero.
+	if session.ExpectedPhysicalHash != nil && *session.ExpectedPhysicalHash == session.PhysicalHash {
+		object, err := s.objects.StatObject(ctx, session.PhysicalHash)
+		if err != nil {
+			return PreparedTarget{}, fmt.Errorf("stat overwrite target: %w", err)
+		}
+		if object.Generation <= 0 {
+			return PreparedTarget{}, errors.New("overwrite target has no storage generation")
+		}
+		ifGenerationMatch = object.Generation
+	}
+	url, headers, err := s.objects.StartResumableUpload(ctx, session.PhysicalHash, session.ContentType, session.UploadOrigin, session.Size, ifGenerationMatch)
 	return PreparedTarget{URL: url, Headers: headers}, err
 }
 
-func (s gcsDirectStorage) Write(context.Context, string, io.Reader) (int64, error) {
+func (s gcsDirectStorage) Write(context.Context, Session, io.Reader) (int64, error) {
 	return 0, errors.New("GCS direct uploads must use the resumable upload URL")
 }
 
@@ -156,4 +197,11 @@ func (s gcsDirectStorage) Stat(ctx context.Context, physicalHash string) (int64,
 
 func (s gcsDirectStorage) Delete(ctx context.Context, physicalHash string) error {
 	return s.objects.Delete(ctx, physicalHash)
+}
+
+func (s gcsDirectStorage) Cancel(ctx context.Context, session Session) error {
+	if strings.TrimSpace(session.UploadURL) == "" {
+		return ErrCancellationUnavailable
+	}
+	return s.objects.CancelResumableUpload(ctx, session.UploadURL)
 }

@@ -85,13 +85,16 @@ type TrashPath struct {
 }
 
 // UploadRecord persists an upload session independently of a Cloud Run
-// instance. PhysicalHash is the provisional object key until completion.
+// instance. UploadURL is an opaque GCS resumable-session capability and must
+// only be returned by the create-session response, never by status responses
+// or logs.
 type UploadRecord struct {
 	ID                   string    `json:"id"`
 	LogicPath            string    `json:"logicPath"`
 	PhysicalHash         string    `json:"physicalHash"`
 	Driver               string    `json:"driver"`
 	ContentType          string    `json:"contentType,omitempty"`
+	UploadURL            string    `json:"uploadUrl,omitempty"`
 	Size                 int64     `json:"size"`
 	UploadedSize         int64     `json:"uploadedSize,omitempty"`
 	Overwrite            bool      `json:"overwrite,omitempty"`

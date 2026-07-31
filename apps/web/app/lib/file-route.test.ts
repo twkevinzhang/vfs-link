@@ -1,12 +1,17 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  DRIFT_ROUTE,
   FILES_ROUTE,
   fileBrowserPath,
   logicalPathFromRoute,
 } from './file-route';
 
 describe('file browser routes', () => {
+  it('exposes the storage drift management route', () => {
+    expect(DRIFT_ROUTE).toBe('/drift');
+  });
+
   it('uses /files for the logical root', () => {
     expect(fileBrowserPath('/')).toBe(FILES_ROUTE);
     expect(logicalPathFromRoute(undefined)).toBe('/');

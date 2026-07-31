@@ -44,12 +44,19 @@ func NewGCS(ctx context.Context, bucket string) (*GCSStore, error) {
 	}, nil
 }
 
-func (s *GCSStore) StartResumableUpload(ctx context.Context, objectName, contentType, origin string, size int64) (string, map[string]string, error) {
-	location, err := initiateResumableUpload(ctx, s.httpClient, gcsResumableEndpoint, s.bucket, cleanObjectName(objectName), contentType, origin, size)
+func (s *GCSStore) StartResumableUpload(ctx context.Context, objectName, contentType, origin string, size, ifGenerationMatch int64) (string, map[string]string, error) {
+	location, err := initiateResumableUpload(ctx, s.httpClient, gcsResumableEndpoint, s.bucket, cleanObjectName(objectName), contentType, origin, size, ifGenerationMatch)
 	if err != nil {
 		return "", nil, err
 	}
 	return location, resumableUploadHeaders(contentType, size), nil
+}
+
+// CancelResumableUpload invalidates an unfinished upload session. It never
+// deletes the destination object: cancellation is addressed solely by the
+// opaque session URI returned by Cloud Storage.
+func (s *GCSStore) CancelResumableUpload(ctx context.Context, sessionURL string) error {
+	return cancelResumableUpload(ctx, s.httpClient, sessionURL)
 }
 
 func resumableUploadHeaders(contentType string, size int64) map[string]string {
@@ -70,17 +77,21 @@ func (s *GCSStore) StatObject(ctx context.Context, objectName string) (ObjectInf
 	if err != nil {
 		return ObjectInfo{}, err
 	}
-	return ObjectInfo{Name: attrs.Name, Size: attrs.Size}, nil
+	return ObjectInfo{Name: attrs.Name, Size: attrs.Size, Generation: attrs.Generation}, nil
 }
 
-func initiateResumableUpload(ctx context.Context, client *http.Client, endpoint, bucket, objectName, contentType, origin string, size int64) (string, error) {
+func initiateResumableUpload(ctx context.Context, client *http.Client, endpoint, bucket, objectName, contentType, origin string, size, ifGenerationMatch int64) (string, error) {
 	if client == nil {
 		return "", errors.New("authenticated HTTP client is required")
 	}
 	if strings.TrimSpace(bucket) == "" || strings.TrimSpace(objectName) == "" {
 		return "", errors.New("bucket and object name are required")
 	}
-	requestURL := strings.TrimRight(endpoint, "/") + "/b/" + url.PathEscape(bucket) + "/o?uploadType=resumable&name=" + url.QueryEscape(objectName)
+	query := url.Values{}
+	query.Set("uploadType", "resumable")
+	query.Set("name", objectName)
+	query.Set("ifGenerationMatch", strconv.FormatInt(ifGenerationMatch, 10))
+	requestURL := strings.TrimRight(endpoint, "/") + "/b/" + url.PathEscape(bucket) + "/o?" + query.Encode()
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, nil)
 	if err != nil {
 		return "", err
@@ -107,6 +118,30 @@ func initiateResumableUpload(ctx context.Context, client *http.Client, endpoint,
 		return "", errors.New("initiate GCS resumable upload: response has no Location header")
 	}
 	return location, nil
+}
+
+func cancelResumableUpload(ctx context.Context, client *http.Client, sessionURL string) error {
+	if client == nil {
+		return errors.New("authenticated HTTP client is required")
+	}
+	if strings.TrimSpace(sessionURL) == "" {
+		return errors.New("resumable upload session URL is required")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodDelete, sessionURL, nil)
+	if err != nil {
+		return err
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return fmt.Errorf("cancel GCS resumable upload: %w", err)
+	}
+	defer response.Body.Close()
+	// Cloud Storage uses 499 to acknowledge resumable-session cancellation.
+	if (response.StatusCode < 200 || response.StatusCode >= 300) && response.StatusCode != 499 {
+		payload, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		return fmt.Errorf("cancel GCS resumable upload: %s: %s", response.Status, strings.TrimSpace(string(payload)))
+	}
+	return nil
 }
 
 func (s *GCSStore) Close() error {
@@ -137,6 +172,18 @@ func (s *GCSStore) NewRangeReader(ctx context.Context, physicalHash string, offs
 func (s *GCSStore) NewWriter(ctx context.Context, physicalHash string) (io.WriteCloser, error) {
 	objectName := cleanObjectName(physicalHash)
 	return s.client.Bucket(s.bucket).Object(objectName).NewWriter(ctx), nil
+}
+
+func (s *GCSStore) NewWriterIfGenerationMatch(ctx context.Context, physicalHash string, generation int64) (io.WriteCloser, error) {
+	objectName := cleanObjectName(physicalHash)
+	conditions := storage.Conditions{GenerationMatch: generation}
+	if generation == 0 {
+		// The Go client treats GenerationMatch: 0 as unset. DoesNotExist is the
+		// explicit form that emits ifGenerationMatch=0 on the JSON request.
+		conditions = storage.Conditions{DoesNotExist: true}
+	}
+	object := s.client.Bucket(s.bucket).Object(objectName).If(conditions)
+	return object.NewWriter(ctx), nil
 }
 
 func (s *GCSStore) Delete(ctx context.Context, physicalHash string) error {
@@ -187,13 +234,17 @@ func (s *GCSStore) List(ctx context.Context) ([]ObjectInfo, error) {
 			continue
 		}
 		objects = append(objects, ObjectInfo{
-			Name: attrs.Name,
-			Size: attrs.Size,
+			Name:       attrs.Name,
+			Size:       attrs.Size,
+			Generation: attrs.Generation,
 		})
 	}
 	return objects, nil
 }
 
 func cleanObjectName(physicalHash string) string {
-	return strings.TrimLeft(strings.TrimSpace(physicalHash), "/")
+	return strings.TrimLeft(physicalHash, "/")
 }
+
+var _ GenerationMatchWriterStore = (*GCSStore)(nil)
+var _ AbortableWriter = (*storage.Writer)(nil)

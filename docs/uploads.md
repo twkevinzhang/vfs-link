@@ -24,15 +24,24 @@ the browser to Cloud Storage and do not consume Cloud Run request bandwidth.
 
 ## 3. Complete
 
-Call `POST <completeUrl>`. The server verifies that the provisional object
+Call `POST <completeUrl>`. The server verifies that the final-key object
 exists and that its size matches the declared size, then conditionally publishes
 the logical mapping. An overwrite succeeds only if the destination still points
 to the object observed when the session was created.
 
-`GET <statusUrl>` returns persisted status. GCS resumable session URIs are not
-persisted because they grant upload capability; after losing the create
-response, cancel the session and create a new one. `DELETE <statusUrl>` cancels
-an incomplete session and cleans up its provisional object.
+The physical key is the NFC-normalized logical path without its leading slash.
+Characters unsupported by portable Windows/Unix filenames, control characters,
+and trailing dots or spaces are replaced with `_`. Windows device names are
+prefixed with `_`. Empty segments, the reserved `_vfs-link*` first segment, and
+keys over GCS's 1024-byte limit are rejected. Sanitization collisions are not
+silently suffixed; the storage precondition reports a conflict.
+
+GCS writes directly to that final key with a generation precondition. There is
+no provisional object and no copy/move after verification. `GET <statusUrl>`
+returns persisted status. The opaque GCS resumable session URI is persisted in
+protected metadata so a different server instance can cancel it; it must never
+be logged or returned by status responses. `DELETE <statusUrl>` cancels the
+resumable session and does not delete the final object key.
 
 The default maximum is 50 GiB and the default session lifetime is 24 hours.
 Clients should treat `409` as a path or conditional-update conflict.

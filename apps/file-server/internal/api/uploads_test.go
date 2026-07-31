@@ -3,6 +3,8 @@ package api
 import (
 	"net/http/httptest"
 	"testing"
+
+	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/upload"
 )
 
 func TestRequestOriginPrefersBrowserOrigin(t *testing.T) {
@@ -12,6 +14,23 @@ func TestRequestOriginPrefersBrowserOrigin(t *testing.T) {
 
 	if got := requestOrigin(request); got != "https://files.example.com" {
 		t.Fatalf("requestOrigin() = %q", got)
+	}
+}
+
+func TestUploadStatusDoesNotExposePersistedGCSCapability(t *testing.T) {
+	session := upload.Session{
+		ID:            "upload-id",
+		Driver:        "gcs",
+		UploadURL:     "https://storage.example/opaque-session",
+		UploadHeaders: map[string]string{"Content-Type": "text/plain"},
+	}
+	created := toUploadResponse(session, true)
+	if created.UploadURL == "" || len(created.Headers) == 0 {
+		t.Fatal("create response must include the resumable upload capability")
+	}
+	status := toUploadResponse(session, false)
+	if status.UploadURL != "" || len(status.Headers) != 0 {
+		t.Fatalf("status exposed upload capability: url=%q headers=%v", status.UploadURL, status.Headers)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/objectkey"
 )
 
 const (
@@ -23,10 +24,11 @@ const (
 )
 
 var (
-	ErrNotFound       = errors.New("upload session not found")
-	ErrFileExists     = errors.New("file already exists")
-	ErrConflict       = errors.New("file changed while upload was in progress")
-	ErrInvalidSession = errors.New("upload session is not ready")
+	ErrNotFound                = errors.New("upload session not found")
+	ErrFileExists              = errors.New("file already exists")
+	ErrConflict                = errors.New("file changed while upload was in progress")
+	ErrInvalidSession          = errors.New("upload session is not ready")
+	ErrCancellationUnavailable = errors.New("upload session cannot be safely cancelled")
 )
 
 type Session struct {
@@ -87,9 +89,10 @@ type PreparedTarget struct {
 type Storage interface {
 	Driver() string
 	Prepare(context.Context, Session) (PreparedTarget, error)
-	Write(context.Context, string, io.Reader) (int64, error)
+	Write(context.Context, Session, io.Reader) (int64, error)
 	Stat(context.Context, string) (int64, error)
 	Delete(context.Context, string) error
+	Cancel(context.Context, Session) error
 }
 
 type Service struct {
@@ -150,10 +153,14 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Session, error
 	}
 
 	now := s.now().UTC()
+	physicalHash, err := objectkey.FromLogicalPath(logicPath)
+	if err != nil {
+		return Session{}, fmt.Errorf("create object key: %w", err)
+	}
 	session := Session{
 		ID:            uuid.NewString(),
 		LogicPath:     logicPath,
-		PhysicalHash:  uuid.NewString() + path.Ext(logicPath),
+		PhysicalHash:  physicalHash,
 		Driver:        s.storage.Driver(),
 		Size:          input.Size,
 		ContentType:   strings.TrimSpace(input.ContentType),
@@ -176,7 +183,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Session, error
 	session.UploadURL = prepared.URL
 	session.UploadHeaders = prepared.Headers
 	if err := s.repository.CreateUpload(ctx, session); err != nil {
-		_ = s.storage.Delete(ctx, session.PhysicalHash)
+		_ = s.storage.Cancel(ctx, session)
 		return Session{}, err
 	}
 	return session, nil
@@ -212,7 +219,7 @@ func (s *Service) Write(ctx context.Context, id string, body io.Reader) (Session
 	}
 	// Read at most one byte beyond the declared size. This detects oversized
 	// local uploads without allowing an unbounded request body to fill storage.
-	written, writeErr := s.storage.Write(ctx, session.PhysicalHash, io.LimitReader(body, session.Size+1))
+	written, writeErr := s.storage.Write(ctx, session, io.LimitReader(body, session.Size+1))
 	session.UploadedSize = written
 	if writeErr != nil {
 		session.Status = StatusFailed
@@ -221,7 +228,6 @@ func (s *Service) Write(ctx context.Context, id string, body io.Reader) (Session
 		writeErr = fmt.Errorf("uploaded size %d does not match declared size %d", written, session.Size)
 		session.Status = StatusFailed
 		session.Error = writeErr.Error()
-		_ = s.storage.Delete(ctx, session.PhysicalHash)
 	} else {
 		session.Status = StatusUploaded
 	}
@@ -296,7 +302,7 @@ func (s *Service) Cancel(ctx context.Context, id string) error {
 		return err
 	}
 	if session.Status != StatusComplete {
-		if err := s.storage.Delete(ctx, session.PhysicalHash); err != nil {
+		if err := s.storage.Cancel(ctx, session); err != nil {
 			return err
 		}
 	}
@@ -304,7 +310,6 @@ func (s *Service) Cancel(ctx context.Context, id string) error {
 }
 
 func cleanPath(value string) string {
-	value = strings.TrimSpace(value)
 	if !strings.HasPrefix(value, "/") {
 		value = "/" + value
 	}

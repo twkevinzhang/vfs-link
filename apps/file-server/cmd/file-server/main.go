@@ -97,6 +97,7 @@ func run(logger *slog.Logger) error {
 		logger.Info("WebDAV enabled", "path", cfg.WebDAVPath)
 	}
 	publicHandler := api.New(store, objects, shareService, cfg.WebStaticRoot, cfg.WebBasePath, uploadService).
+		SetDriftEnabled(cfg.DriftEnabled).
 		SetCORSOrigins(strings.Split(cfg.HTTPCORSOrigins, ",")).Handler()
 	httpHandler.Handle("/", httpauth.Basic(cfg.HTTPBasicAuth, cfg.HTTPBasicUser, cfg.HTTPBasicPass, publicHandler))
 	apiServer := &http.Server{

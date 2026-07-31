@@ -88,3 +88,27 @@ func TestLocalStoreListHidesReservedMetadata(t *testing.T) {
 		t.Fatalf("List() = %#v, want only visible.txt", objects)
 	}
 }
+
+func TestLocalStoreListIncludesFinalDotfiles(t *testing.T) {
+	store, err := NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, err := store.NewWriter(context.Background(), "docs/.env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write([]byte("safe=value")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	objects, err := store.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(objects) != 1 || objects[0].Name != "docs/.env" {
+		t.Fatalf("List() = %#v, want final dotfile", objects)
+	}
+}

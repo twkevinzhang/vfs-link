@@ -23,6 +23,26 @@ func newTestTree(t *testing.T) *TreeStore {
 	return tree
 }
 
+func TestUploadRoundTripPersistsOpaqueResumableSessionURL(t *testing.T) {
+	ctx := context.Background()
+	store := newTestTree(t)
+	want := UploadRecord{
+		ID: "upload-session", LogicPath: "/docs/report.txt", PhysicalHash: "docs/report.txt",
+		Driver: "gcs", UploadURL: "https://storage.example/session/opaque-token",
+		Status: "pending", ExpiresAt: time.Now().Add(time.Hour).UTC(),
+	}
+	if _, err := store.CreateUpload(ctx, want); err != nil {
+		t.Fatal(err)
+	}
+	got, found, err := store.FindUpload(ctx, want.ID)
+	if err != nil || !found {
+		t.Fatalf("FindUpload() = found %t, error %v", found, err)
+	}
+	if got.UploadURL != want.UploadURL {
+		t.Fatalf("UploadURL = %q, want opaque session URL", got.UploadURL)
+	}
+}
+
 func TestCanonicalTreeIndexPathOnlyAliasesOuterWhitespace(t *testing.T) {
 	if left, right := canonicalTreeIndexPath("/Game/PCGame/archive"), canonicalTreeIndexPath("/Game/PCGame/archive "); left != right {
 		t.Fatalf("canonical directory paths differ: %q != %q", left, right)

@@ -54,6 +54,9 @@ func TestWebDAVFileLifecycle(t *testing.T) {
 	if putResponse.Code != http.StatusCreated {
 		t.Fatalf("PUT status = %d, body = %s", putResponse.Code, putResponse.Body.String())
 	}
+	if record, found, err := store.Find(context.Background(), "/docs/a.txt"); err != nil || !found || record.PhysicalHash != "docs/a.txt" {
+		t.Fatalf("PUT physical mapping = %#v, found=%v err=%v", record, found, err)
+	}
 	response := request(http.MethodGet, "/dav/docs/a.txt", nil, map[string]string{"Range": "bytes=1-3"})
 	if response.Code != http.StatusPartialContent || response.Body.String() != "ell" {
 		t.Fatalf("range GET = (%d, %q), want (206, %q)", response.Code, response.Body.String(), "ell")

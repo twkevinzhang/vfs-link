@@ -55,8 +55,15 @@ restoring the previous image/configuration and source prefix.
 Both storage drivers expose the same create, upload, and complete contract.
 Local uploads return a file-server `uploadUrl`; GCS uploads return an
 authenticated resumable session URL so bytes travel directly from the browser
-to Cloud Storage. Completion verifies the object size before atomically
-publishing the logical mapping. The default maximum file size is 50 GiB.
+to Cloud Storage. The upload writes once to the sanitized final key; completion
+verifies the object size before atomically publishing the logical mapping. No
+post-upload copy or move is performed. The default maximum file size is 50 GiB.
+
+Browser, VFS/FTP, and WebDAV uploads share the same deterministic key rule.
+Unsupported portable filename characters become `_`, while directory separators
+remain intact. Logical rename and move operations intentionally leave that key
+unchanged. Use the optional [drift viewer](drift.md) when an operator explicitly
+wants to reconcile physical keys with the current logical index.
 
 ## File sharing
 

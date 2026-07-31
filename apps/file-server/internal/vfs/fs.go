@@ -195,7 +195,6 @@ func (fs *FS) removePath(ctx context.Context, logicPath string) error {
 }
 
 func cleanPath(name string) string {
-	name = strings.TrimSpace(name)
 	if name == "" || name == "." {
 		return "/"
 	}

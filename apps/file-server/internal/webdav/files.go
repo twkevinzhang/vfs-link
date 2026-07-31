@@ -10,6 +10,7 @@ import (
 
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/blob"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/db"
+	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/objectkey"
 )
 
 var errUnsupported = errors.New("operation is not supported by the WebDAV filesystem")
@@ -114,32 +115,51 @@ func (f *readFile) Readdir(int) ([]os.FileInfo, error) { return nil, errUnsuppor
 func (f *readFile) Stat() (os.FileInfo, error)         { return f.info, nil }
 
 type uploadFile struct {
-	ctx          context.Context
-	store        filePublisher
-	objects      blob.Store
-	logicPath    string
-	physicalHash string
-	writer       io.WriteCloser
-	size         int64
-	writeErr     error
-	mu           sync.Mutex
-	closed       bool
+	ctx                  context.Context
+	store                filePublisher
+	objects              blob.Store
+	logicPath            string
+	physicalHash         string
+	expectedPhysicalHash *string
+	requireAbsent        bool
+	writer               io.WriteCloser
+	size                 int64
+	writeErr             error
+	mu                   sync.Mutex
+	closed               bool
 }
 
 type filePublisher interface {
+	Find(context.Context, string) (db.FileRecord, bool, error)
 	ReplaceFile(context.Context, string, string, int64) (string, error)
 	ReplaceFileConditional(context.Context, string, string, int64, *string, bool) (string, bool, error)
 }
 
 func newUploadFile(ctx context.Context, store filePublisher, objects blob.Store, logicPath string) (*uploadFile, error) {
-	physicalHash := blob.GeneratePhysicalHash(logicPath)
-	writer, err := objects.NewWriter(ctx, physicalHash)
+	physicalHash, err := objectkey.FromLogicalPath(logicPath)
+	if err != nil {
+		return nil, err
+	}
+	existing, found, err := store.Find(ctx, logicPath)
+	if err != nil {
+		return nil, err
+	}
+	if found && existing.IsDirectory {
+		return nil, os.ErrExist
+	}
+	var expected *string
+	if found {
+		value := existing.PhysicalHash
+		expected = &value
+	}
+	writer, err := blob.NewUploadWriter(ctx, objects, physicalHash, expected)
 	if err != nil {
 		return nil, err
 	}
 	return &uploadFile{
 		ctx: ctx, store: store, objects: objects, logicPath: logicPath,
-		physicalHash: physicalHash, writer: writer,
+		physicalHash: physicalHash, expectedPhysicalHash: expected,
+		requireAbsent: !found, writer: writer,
 	}, nil
 }
 
@@ -167,10 +187,13 @@ func (f *uploadFile) Close() error {
 	writeErr := f.writeErr
 	f.mu.Unlock()
 
-	closeErr := f.writer.Close()
-	if writeErr != nil || closeErr != nil || f.ctx.Err() != nil {
-		_ = f.objects.Delete(context.Background(), f.physicalHash)
-		return errors.Join(writeErr, closeErr, f.ctx.Err())
+	if writeErr != nil || f.ctx.Err() != nil {
+		cause := errors.Join(writeErr, f.ctx.Err())
+		abortUploadWriter(f.writer, cause)
+		return cause
+	}
+	if closeErr := f.writer.Close(); closeErr != nil {
+		return closeErr
 	}
 	if session := uploadSessionFromContext(f.ctx); session != nil {
 		session.add(f)
@@ -192,20 +215,36 @@ func (f *uploadFile) commit() error {
 			err = errPreconditionFailed
 		}
 	} else {
-		previous, err = f.store.ReplaceFile(f.ctx, f.logicPath, f.physicalHash, f.size)
+		var matched bool
+		previous, matched, err = f.store.ReplaceFileConditional(
+			f.ctx, f.logicPath, f.physicalHash, f.size,
+			f.expectedPhysicalHash, f.requireAbsent,
+		)
+		if err == nil && !matched {
+			err = errPreconditionFailed
+		}
 	}
 	if err != nil {
-		_ = f.objects.Delete(context.Background(), f.physicalHash)
 		return err
 	}
-	if previous != "" {
+	if previous != "" && previous != f.physicalHash {
 		_ = f.objects.Delete(context.Background(), previous)
 	}
 	return nil
 }
 
 func (f *uploadFile) abort() {
-	_ = f.objects.Delete(context.Background(), f.physicalHash)
+	// The writer has already published to the final key by the time a WebDAV
+	// transaction commits. Deleting here could remove a concurrent/aligned
+	// object, so metadata failure leaves the object for retry/reconciliation.
+}
+
+func abortUploadWriter(writer io.WriteCloser, cause error) {
+	if abortable, ok := writer.(blob.AbortableWriter); ok {
+		_ = abortable.CloseWithError(cause)
+		return
+	}
+	_ = writer.Close()
 }
 
 func (f *uploadFile) Read([]byte) (int, error)           { return 0, errUnsupported }

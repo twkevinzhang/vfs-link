@@ -14,6 +14,7 @@ import (
 
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/blob"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/db"
+	driftdomain "github.com/twkevinzhang/vfs-link/apps/file-server/internal/drift"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/fileops"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/share"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/upload"
@@ -25,13 +26,24 @@ const (
 )
 
 type Server struct {
-	store      db.Store
-	objects    blob.Store
-	shares     *share.Service
-	uploads    *upload.Service
-	files      *fileops.Service
-	webHandler http.Handler
-	cors       map[string]struct{}
+	store        db.Store
+	objects      blob.Store
+	shares       *share.Service
+	uploads      *upload.Service
+	files        *fileops.Service
+	drift        *driftdomain.Service
+	driftErr     error
+	driftEnabled bool
+	webHandler   http.Handler
+	cors         map[string]struct{}
+}
+
+// SetDriftEnabled is an explicit safety gate. Drift routes are wired by
+// default for observability, but destructive plans/actions remain disabled
+// until configuration opts in.
+func (s *Server) SetDriftEnabled(enabled bool) *Server {
+	s.driftEnabled = enabled
+	return s
 }
 
 func (s *Server) SetCORSOrigins(origins []string) *Server {
@@ -133,11 +145,14 @@ type shareResponse struct {
 }
 
 func New(store db.Store, objects blob.Store, shares *share.Service, webStaticRoot string, webBasePath string, uploads ...*upload.Service) *Server {
+	driftService, driftErr := driftdomain.New(store, objects)
 	server := &Server{
 		store:      store,
 		objects:    objects,
 		shares:     shares,
 		files:      fileops.New(store, objects),
+		drift:      driftService,
+		driftErr:   driftErr,
 		webHandler: newWebHandler(webStaticRoot, webBasePath),
 	}
 	if len(uploads) > 0 {
@@ -164,6 +179,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/shares/", s.handleShare)
 	mux.HandleFunc("/api/uploads", s.handleCreateUpload)
 	mux.HandleFunc("/api/uploads/", s.handleUpload)
+	mux.HandleFunc("/api/drift", s.handleDrift)
+	mux.HandleFunc("/api/drift/plans", s.handleDriftPlans)
+	mux.HandleFunc("/api/drift/actions", s.handleDriftActions)
+	mux.HandleFunc("/api/drift/actions/", s.handleDriftAction)
 	if s.webHandler != nil {
 		mux.Handle("/", s.webHandler)
 	}

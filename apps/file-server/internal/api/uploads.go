@@ -58,7 +58,7 @@ func (s *Server) handleCreateUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	writeJSON(w, toUploadResponse(session))
+	writeJSON(w, toUploadResponse(session, true))
 }
 
 func requestOrigin(r *http.Request) string {
@@ -94,7 +94,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 				writeUploadError(w, err)
 				return
 			}
-			writeJSON(w, toUploadResponse(session))
+			writeJSON(w, toUploadResponse(session, false))
 		case http.MethodDelete:
 			if err := s.uploads.Cancel(r.Context(), id); err != nil {
 				writeUploadError(w, err)
@@ -112,7 +112,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 			writeUploadError(w, err)
 			return
 		}
-		writeJSON(w, toUploadResponse(session))
+		writeJSON(w, toUploadResponse(session, false))
 		return
 	}
 	if len(parts) == 2 && parts[1] == "complete" && r.Method == http.MethodPost {
@@ -121,18 +121,24 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 			writeUploadError(w, err)
 			return
 		}
-		writeJSON(w, toUploadResponse(session))
+		writeJSON(w, toUploadResponse(session, false))
 		return
 	}
 	writeError(w, http.StatusNotFound, "upload endpoint not found")
 }
 
-func toUploadResponse(session upload.Session) uploadResponse {
-	uploadURL := session.UploadURL
+func toUploadResponse(session upload.Session, includeUploadCapability bool) uploadResponse {
+	uploadURL := ""
+	if includeUploadCapability {
+		uploadURL = session.UploadURL
+	}
 	if uploadURL == "" && session.Driver != "gcs" {
 		uploadURL = "/api/uploads/" + session.ID + "/content"
 	}
-	headers := session.UploadHeaders
+	var headers map[string]string
+	if includeUploadCapability {
+		headers = session.UploadHeaders
+	}
 	if headers == nil {
 		headers = map[string]string{}
 	}

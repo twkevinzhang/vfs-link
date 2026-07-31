@@ -157,6 +157,7 @@ func TestLoadHTTPAuthUploadAndPubSub(t *testing.T) {
 		"PUB_SUB_PUSH_AUDIENCE=https://file-server.example/",
 		"PUB_SUB_PUSH_SERVICE_ACCOUNT=push@example.iam.gserviceaccount.com",
 		"MAINTENANCE_MODE=true",
+		"DRIFT_ENABLED=true",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -172,6 +173,9 @@ func TestLoadHTTPAuthUploadAndPubSub(t *testing.T) {
 	}
 	if !cfg.MaintenanceMode {
 		t.Fatal("MaintenanceMode = false, want true")
+	}
+	if !cfg.DriftEnabled {
+		t.Fatal("DriftEnabled = false, want true")
 	}
 
 	_, err = Load([]string{"HTTP_BASIC_AUTH_ENABLED=true", "HTTP_BASIC_AUTH_USER="})

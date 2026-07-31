@@ -1,0 +1,61 @@
+package drift
+
+import (
+	"context"
+	"math"
+	"strings"
+	"testing"
+
+	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/blob"
+	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/db"
+)
+
+func TestCreatePlanRejectsSanitizedTargetCollisions(t *testing.T) {
+	ctx := context.Background()
+	metadata, err := db.NewTreeLocal(t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(metadata.Close)
+	if err := metadata.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for path, physical := range map[string]string{
+		"/docs/a:b.txt": "legacy-a",
+		"/docs/a?b.txt": "legacy-b",
+	} {
+		if err := metadata.UpsertFile(ctx, path, physical, 7); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state, _ := db.AsDriftStateStore(metadata)
+	objects := &faultObjects{objects: map[string]blob.DriftObject{
+		"legacy-a": {Name: "legacy-a", Size: 7, Generation: 1, CRC32C: "a"},
+		"legacy-b": {Name: "legacy-b", Size: 7, Generation: 2, CRC32C: "b"},
+	}}
+	service := NewForTest(metadata, objects, state, func(string) (string, error) {
+		return "docs/a_b.txt", nil
+	})
+	if _, err := service.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.CreatePlan(ctx, []string{"/docs/a:b.txt", "/docs/a?b.txt"})
+	if err == nil || !strings.Contains(err.Error(), "sanitized target collision") {
+		t.Fatalf("CreatePlan error = %v, want sanitized target collision", err)
+	}
+}
+
+func TestEstimateCostUsesListedStorageClassRetrievalRate(t *testing.T) {
+	entry := func(storageClass string) PlanEntry {
+		return PlanEntry{Source: blob.DriftObject{Size: 1 << 30, StorageClass: storageClass}}
+	}
+	standard := estimateCost([]PlanEntry{entry("STANDARD")})
+	archive := estimateCost([]PlanEntry{entry("ARCHIVE")})
+	operationCost := 0.05/1000 + 3*0.05/1000
+	if math.Abs(standard.USDMin-operationCost) > 1e-12 {
+		t.Fatalf("standard minimum = %f, want operations only %f", standard.USDMin, operationCost)
+	}
+	if math.Abs(archive.USDMin-(operationCost+0.05)) > 1e-12 {
+		t.Fatalf("archive minimum = %f, want retrieval plus operations", archive.USDMin)
+	}
+}

@@ -21,6 +21,7 @@ Copy `.env.example` to `.env`. The `.env` file is deliberately ignored by Git.
 | `HTTP_BASIC_AUTH_USER`, `HTTP_BASIC_AUTH_PASS` | HTTP auth enabled | Application Basic Auth credential. Keep the password in managed secrets. |
 | `HTTP_CORS_ORIGINS` | No | Comma-separated cross-origin API allowlist. Empty means same-origin only; `*` is intended for local development. |
 | `MAINTENANCE_MODE` | No | Read-only migration mode. GET/HEAD/OPTIONS remain available; metadata mutations and Pub/Sub pushes return `503`. |
+| `DRIFT_ENABLED` | No | Enables GCS drift cost plans and physical reconciliation actions. Defaults to `false`; the viewer remains read-only until enabled. Use only for trusted operators. |
 | `UPLOAD_MAX_BYTES` | No | Maximum declared upload size; default `53687091200` (50 GiB). |
 | `UPLOAD_SESSION_TTL` | No | Upload-session lifetime; default `24h`. |
 | `FTP_PASV_URL` | Yes | Public DNS name or IP advertised to passive FTP clients. |

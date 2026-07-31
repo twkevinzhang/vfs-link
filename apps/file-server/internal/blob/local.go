@@ -125,7 +125,7 @@ func (s *LocalStore) List(ctx context.Context) ([]ObjectInfo, error) {
 		if err != nil {
 			return err
 		}
-		if strings.HasPrefix(filepath.Base(name), ".") {
+		if isLocalTempObject(filepath.Base(name)) {
 			return nil
 		}
 		if isReservedObject(filepath.ToSlash(name)) {
@@ -145,6 +145,10 @@ func (s *LocalStore) List(ctx context.Context) ([]ObjectInfo, error) {
 		return nil, err
 	}
 	return objects, nil
+}
+
+func isLocalTempObject(base string) bool {
+	return strings.HasPrefix(base, ".") && strings.Contains(base, ".tmp-")
 }
 
 func (s *LocalStore) objectPath(physicalHash string) string {
@@ -174,6 +178,19 @@ func (w *localWriter) Close() error {
 		return err
 	}
 	return nil
+}
+
+func (w *localWriter) CloseWithError(_ error) error {
+	if w.closed {
+		return nil
+	}
+	w.closed = true
+	closeErr := w.file.Close()
+	removeErr := os.Remove(w.tempPath)
+	if errors.Is(removeErr, os.ErrNotExist) {
+		removeErr = nil
+	}
+	return errors.Join(closeErr, removeErr)
 }
 
 func (r *localRangeReader) Read(p []byte) (int, error) {
