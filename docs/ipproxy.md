@@ -51,7 +51,7 @@ FTP_PASS=<ftp-password>
 FTP_PASV_URL=<public-ftp-hostname>
 FTP_PASV_MIN=30000
 FTP_PASV_MAX=30100
-HTTP_PORT=8080
+HTTP_PORT=18080
 WEB_BASE_PATH=/vfs-link/index
 
 HTTP_BASIC_AUTH_ENABLED=true
@@ -74,7 +74,9 @@ tag such as `latest`. The direct ipproxy build uses
 the resulting local image ID in this file. This preserves the browser path
 without depending on the retired aiotlab gateway to strip `/vfs-link` from API
 requests. `HTTP_PORT` is the host-facing port in this profile; the application
-always listens on container port `8080`.
+always listens on container port `8080`. The ipproxy host publishes that port
+as `18080`; the base infrastructure Nginx owns the user-facing ZeroTier port
+`80` and routes `/vfs-link` traffic to it.
 For an HTTPS reverse proxy that terminates TLS for WebDAV, set
 `WEBDAV_ENABLED=true`, configure `WEBDAV_USER` and `WEBDAV_PASS`, and set
 `WEBDAV_TRUST_FORWARDED_HEADERS=true` only when that proxy overwrites
@@ -134,7 +136,7 @@ docker compose \
   -f docker-compose.ipproxy.yml ps
 ```
 
-The profile exposes TCP `21`, the configured HTTP host port (default `8080`),
+The profile exposes TCP `21`, the configured HTTP host port (default `18080`),
 and the configured inclusive FTP passive range (default `30000-30100`). Ensure
 the host firewall and any edge NAT publish the same ports, and advertise a
 public hostname in `FTP_PASV_URL`; do not use an internal-only address for
