@@ -165,6 +165,7 @@ func New(store db.Store, objects blob.Store, shares *share.Service, webStaticRoo
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/openapi.json", handleOpenAPI)
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/files", s.handleFiles)
 	mux.HandleFunc("/api/files/move", s.handleMoveFiles)

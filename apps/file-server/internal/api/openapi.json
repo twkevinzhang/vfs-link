@@ -1,0 +1,1310 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "VFS Link File Server API",
+    "version": "1.0.0",
+    "description": "HTTP API for browsing and operating on VFS Link files, uploads, shares, thumbnails, and storage-key drift. Deployments may enable HTTP Basic authentication for the entire service."
+  },
+  "servers": [
+    {
+      "url": "./",
+      "description": "Current deployment and base path"
+    }
+  ],
+  "security": [
+    {
+      "basicAuth": []
+    }
+  ],
+  "tags": [
+    { "name": "Status" },
+    { "name": "Files" },
+    { "name": "Trash" },
+    { "name": "Shares" },
+    { "name": "Uploads" },
+    { "name": "Thumbnails" },
+    { "name": "Drift" }
+  ],
+  "paths": {
+    "/api/status": {
+      "get": {
+        "tags": ["Status"],
+        "summary": "Get storage status and aggregate statistics",
+        "operationId": "getStatus",
+        "responses": {
+          "200": {
+            "description": "Current storage status",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/StatusResponse" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      }
+    },
+    "/api/files": {
+      "get": {
+        "tags": ["Files"],
+        "summary": "List direct children of a directory",
+        "operationId": "listFiles",
+        "parameters": [
+          { "$ref": "#/components/parameters/PathQuery" },
+          { "$ref": "#/components/parameters/SearchQuery" },
+          { "$ref": "#/components/parameters/LimitQuery" },
+          { "$ref": "#/components/parameters/OffsetQuery" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Directory listing",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/FilesResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      }
+    },
+    "/api/files/move": {
+      "post": {
+        "tags": ["Files"],
+        "summary": "Move files or directories",
+        "description": "Small operations complete synchronously with 200. Large directory operations can be queued and return 202; poll the operation URL from the Location header.",
+        "operationId": "moveFiles",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/MoveRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/EntriesResult" },
+          "202": { "$ref": "#/components/responses/AcceptedOperation" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "409": { "$ref": "#/components/responses/Conflict" }
+        }
+      }
+    },
+    "/api/files/rename": {
+      "post": {
+        "tags": ["Files"],
+        "summary": "Rename a file or directory",
+        "description": "Small operations complete synchronously with 200. Large directory operations can be queued and return 202.",
+        "operationId": "renameFile",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RenameRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/EntriesResult" },
+          "202": { "$ref": "#/components/responses/AcceptedOperation" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "409": { "$ref": "#/components/responses/Conflict" }
+        }
+      }
+    },
+    "/api/operations/{operationId}": {
+      "get": {
+        "tags": ["Files"],
+        "summary": "Get an asynchronous file operation",
+        "operationId": "getFileOperation",
+        "parameters": [
+          { "$ref": "#/components/parameters/OperationId" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current operation state. Terminal statuses are completed or failed.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OperationResponse" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      }
+    },
+    "/api/files/trash": {
+      "post": {
+        "tags": ["Trash"],
+        "summary": "Move files or directories to trash",
+        "description": "Small operations complete synchronously with 200. Large directory operations can be queued and return 202.",
+        "operationId": "trashFiles",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/PathsRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/EntriesResult" },
+          "202": { "$ref": "#/components/responses/AcceptedOperation" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "409": { "$ref": "#/components/responses/Conflict" }
+        }
+      }
+    },
+    "/api/trash": {
+      "get": {
+        "tags": ["Trash"],
+        "summary": "List trash entries",
+        "operationId": "listTrash",
+        "responses": {
+          "200": { "$ref": "#/components/responses/EntriesResult" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      }
+    },
+    "/api/trash/restore": {
+      "post": {
+        "tags": ["Trash"],
+        "summary": "Restore trash entries",
+        "description": "Small operations complete synchronously with 200. Large directory operations can be queued and return 202.",
+        "operationId": "restoreTrash",
+        "requestBody": { "$ref": "#/components/requestBodies/TrashIds" },
+        "responses": {
+          "200": { "$ref": "#/components/responses/EntriesResult" },
+          "202": { "$ref": "#/components/responses/AcceptedOperation" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "409": { "$ref": "#/components/responses/Conflict" }
+        }
+      }
+    },
+    "/api/trash/delete": {
+      "post": {
+        "tags": ["Trash"],
+        "summary": "Permanently delete selected trash entries",
+        "description": "At least one trash ID is required. The deletion may return synchronously or as an asynchronous operation.",
+        "operationId": "deleteTrash",
+        "requestBody": { "$ref": "#/components/requestBodies/TrashIds" },
+        "responses": {
+          "200": { "$ref": "#/components/responses/DeletedResult" },
+          "202": { "$ref": "#/components/responses/AcceptedOperation" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      }
+    },
+    "/api/trash/empty": {
+      "post": {
+        "tags": ["Trash"],
+        "summary": "Permanently delete all trash entries",
+        "description": "The deletion may return synchronously or as an asynchronous operation.",
+        "operationId": "emptyTrash",
+        "responses": {
+          "200": { "$ref": "#/components/responses/DeletedResult" },
+          "202": { "$ref": "#/components/responses/AcceptedOperation" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      }
+    },
+    "/api/tree": {
+      "get": {
+        "tags": ["Files"],
+        "summary": "List the directory tree one level deep",
+        "operationId": "getTree",
+        "parameters": [
+          { "$ref": "#/components/parameters/PathQuery" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Directory node and its direct child directories",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TreeNode" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      }
+    },
+    "/api/download": {
+      "get": {
+        "tags": ["Files"],
+        "summary": "Download a file",
+        "operationId": "downloadFile",
+        "parameters": [
+          { "$ref": "#/components/parameters/RequiredPathQuery" },
+          {
+            "name": "disposition",
+            "in": "query",
+            "description": "Use inline to request browser display; every other value uses attachment.",
+            "schema": {
+              "type": "string",
+              "enum": ["attachment", "inline"],
+              "default": "attachment"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Raw file bytes. Content-Type is inferred from the file extension and Content-Disposition includes the filename.",
+            "headers": {
+              "Content-Disposition": {
+                "schema": { "type": "string" }
+              }
+            },
+            "content": {
+              "application/octet-stream": {
+                "schema": { "type": "string", "format": "binary" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      }
+    },
+    "/api/shares/drafts": {
+      "post": {
+        "tags": ["Shares"],
+        "summary": "Create a share draft",
+        "operationId": "createShareDraft",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateShareDraftRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/ShareResult" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" }
+        }
+      }
+    },
+    "/api/shares/{shareId}": {
+      "get": {
+        "tags": ["Shares"],
+        "summary": "Get a share",
+        "operationId": "getShare",
+        "parameters": [
+          { "$ref": "#/components/parameters/ShareId" }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/ShareResult" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/shares/{shareId}/start": {
+      "post": {
+        "tags": ["Shares"],
+        "summary": "Start processing a share draft",
+        "operationId": "startShare",
+        "parameters": [
+          { "$ref": "#/components/parameters/ShareId" }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/ShareResult" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/uploads": {
+      "post": {
+        "tags": ["Uploads"],
+        "summary": "Create an upload session",
+        "description": "For local storage, uploadUrl points to this API's content endpoint. For GCS it can be an absolute signed URL and headers contains the headers that must accompany the upload.",
+        "operationId": "createUpload",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateUploadRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Upload session created, including its upload capability",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UploadResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/api/uploads/{uploadId}": {
+      "parameters": [
+        { "$ref": "#/components/parameters/UploadId" }
+      ],
+      "get": {
+        "tags": ["Uploads"],
+        "summary": "Get an upload session",
+        "description": "The upload capability headers are not repeated when reading an existing session.",
+        "operationId": "getUpload",
+        "responses": {
+          "200": {
+            "description": "Upload session status",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UploadResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      },
+      "delete": {
+        "tags": ["Uploads"],
+        "summary": "Cancel an upload session",
+        "operationId": "cancelUpload",
+        "responses": {
+          "204": { "description": "Upload session cancelled" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/api/uploads/{uploadId}/content": {
+      "put": {
+        "tags": ["Uploads"],
+        "summary": "Upload content through the file server",
+        "description": "Used by non-GCS upload sessions. GCS sessions normally upload directly to the signed uploadUrl returned when the session is created.",
+        "operationId": "putUploadContent",
+        "parameters": [
+          { "$ref": "#/components/parameters/UploadId" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/octet-stream": {
+              "schema": { "type": "string", "format": "binary" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Content accepted by the upload session",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UploadResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/api/uploads/{uploadId}/complete": {
+      "post": {
+        "tags": ["Uploads"],
+        "summary": "Complete and commit an upload session",
+        "description": "Call this after bytes have been uploaded either through the local content endpoint or directly to GCS.",
+        "operationId": "completeUpload",
+        "parameters": [
+          { "$ref": "#/components/parameters/UploadId" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Completed upload session",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UploadResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "503": { "$ref": "#/components/responses/ServiceUnavailable" }
+        }
+      }
+    },
+    "/api/thumbnails": {
+      "post": {
+        "tags": ["Thumbnails"],
+        "summary": "Attach a WebP thumbnail to archive files",
+        "description": "The thumbnail must be a non-empty WebP no larger than 2 MiB. Width and height must each be between 1 and 512. paths is a JSON-encoded array in a multipart text field.",
+        "operationId": "createThumbnail",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateThumbnailForm"
+              },
+              "encoding": {
+                "paths": { "contentType": "application/json" },
+                "thumbnail": { "contentType": "image/webp" }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Thumbnail created and attached",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Thumbnail" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "415": { "$ref": "#/components/responses/UnsupportedMediaType" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      },
+      "delete": {
+        "tags": ["Thumbnails"],
+        "summary": "Detach thumbnails from archive files",
+        "operationId": "deleteThumbnails",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/PathsRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/DeletedResult" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      }
+    },
+    "/api/thumbnails/{thumbnailId}": {
+      "get": {
+        "tags": ["Thumbnails"],
+        "summary": "Get thumbnail image bytes",
+        "operationId": "getThumbnail",
+        "parameters": [
+          { "$ref": "#/components/parameters/ThumbnailId" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Immutable private WebP thumbnail",
+            "headers": {
+              "Cache-Control": {
+                "schema": { "type": "string", "const": "private, max-age=31536000, immutable" }
+              },
+              "Content-Length": {
+                "schema": { "type": "integer", "format": "int64" }
+              }
+            },
+            "content": {
+              "image/webp": {
+                "schema": { "type": "string", "format": "binary" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      }
+    },
+    "/api/drift": {
+      "get": {
+        "tags": ["Drift"],
+        "summary": "Inspect metadata-to-object-key drift",
+        "description": "This endpoint remains readable when drift mutation is disabled or unavailable. With refresh=true it performs a storage scan; otherwise it reads the current snapshot. An unavailable or missing snapshot is represented by a 200 response with available=false or snapshotStatus=missing.",
+        "operationId": "getDriftSnapshot",
+        "parameters": [
+          {
+            "name": "refresh",
+            "in": "query",
+            "schema": { "type": "boolean", "default": false }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": { "$ref": "#/components/schemas/DriftStatus" }
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "schema": { "$ref": "#/components/schemas/DriftScope" }
+          },
+          { "$ref": "#/components/parameters/SearchQuery" },
+          { "$ref": "#/components/parameters/LimitQuery" },
+          { "$ref": "#/components/parameters/OffsetQuery" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Drift capability and snapshot state",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DriftSnapshotResponse" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "500": { "$ref": "#/components/responses/InternalServerError" }
+        }
+      }
+    },
+    "/api/drift/plans": {
+      "post": {
+        "tags": ["Drift"],
+        "summary": "Create a drift repair plan",
+        "description": "Mutation must be explicitly enabled, the storage driver must be GCS, and the metadata/object stores must support drift state. No storage object is changed by plan creation.",
+        "operationId": "createDriftPlan",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateDriftPlanRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Immutable repair plan created from the current snapshot",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DriftPlanResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "501": { "$ref": "#/components/responses/NotImplemented" }
+        }
+      }
+    },
+    "/api/drift/actions": {
+      "post": {
+        "tags": ["Drift"],
+        "summary": "Start an asynchronous drift repair action",
+        "description": "Mutation must be explicitly enabled and use GCS. The idempotency key is optional; if omitted the server generates a UUID. The accepted action runs asynchronously and must be polled to a terminal completed or failed status.",
+        "operationId": "createDriftAction",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateDriftActionRequest" }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Repair action accepted",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DriftActionResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "500": { "$ref": "#/components/responses/InternalServerError" },
+          "501": { "$ref": "#/components/responses/NotImplemented" }
+        }
+      }
+    },
+    "/api/drift/actions/{actionId}": {
+      "get": {
+        "tags": ["Drift"],
+        "summary": "Get and, when necessary, resume a drift repair action",
+        "description": "Reading a pending, failed, or expired running action can kick its background processing. Poll until status is completed or failed.",
+        "operationId": "getDriftAction",
+        "parameters": [
+          { "$ref": "#/components/parameters/ActionId" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current action state",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DriftActionResponse" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "500": { "$ref": "#/components/responses/InternalServerError" },
+          "501": { "$ref": "#/components/responses/NotImplemented" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "basicAuth": {
+        "type": "http",
+        "scheme": "basic",
+        "description": "Enabled only when the deployment configures Basic authentication credentials."
+      }
+    },
+    "parameters": {
+      "PathQuery": {
+        "name": "path",
+        "in": "query",
+        "description": "Normalized logical path relative to the VFS root. Empty means root.",
+        "schema": { "$ref": "#/components/schemas/LogicalPath" }
+      },
+      "RequiredPathQuery": {
+        "name": "path",
+        "in": "query",
+        "required": true,
+        "description": "Logical file path relative to the VFS root.",
+        "schema": { "$ref": "#/components/schemas/LogicalPath" }
+      },
+      "SearchQuery": {
+        "name": "q",
+        "in": "query",
+        "schema": { "type": "string", "default": "" }
+      },
+      "LimitQuery": {
+        "name": "limit",
+        "in": "query",
+        "schema": { "type": "integer", "minimum": 1, "maximum": 500, "default": 100 }
+      },
+      "OffsetQuery": {
+        "name": "offset",
+        "in": "query",
+        "schema": { "type": "integer", "minimum": 0, "default": 0 }
+      },
+      "OperationId": {
+        "name": "operationId",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string", "minLength": 1 }
+      },
+      "ShareId": {
+        "name": "shareId",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string", "minLength": 1 }
+      },
+      "UploadId": {
+        "name": "uploadId",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string", "minLength": 1 }
+      },
+      "ThumbnailId": {
+        "name": "thumbnailId",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string", "minLength": 1 }
+      },
+      "ActionId": {
+        "name": "actionId",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string", "minLength": 1 }
+      }
+    },
+    "requestBodies": {
+      "TrashIds": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/TrashIdsRequest" }
+          }
+        }
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "Invalid request",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+      },
+      "Unauthorized": {
+        "description": "Basic authentication is enabled and credentials are missing or invalid",
+        "headers": {
+          "WWW-Authenticate": { "schema": { "type": "string" } }
+        },
+        "content": { "text/plain": { "schema": { "type": "string", "example": "Unauthorized" } } }
+      },
+      "Forbidden": {
+        "description": "The requested capability is disabled",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+      },
+      "NotFound": {
+        "description": "Resource not found",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+      },
+      "MethodNotAllowed": {
+        "description": "Method not allowed",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+      },
+      "Conflict": {
+        "description": "Request conflicts with the current resource or session state",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+      },
+      "UnsupportedMediaType": {
+        "description": "Only WebP thumbnails are accepted",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+      },
+      "InternalServerError": {
+        "description": "Internal server or storage failure",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+      },
+      "NotImplemented": {
+        "description": "The configured storage or metadata backend does not support this capability",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+      },
+      "ServiceUnavailable": {
+        "description": "Uploads are not configured",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+      },
+      "EntriesResult": {
+        "description": "Synchronous file-operation result",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EntriesResponse" } } }
+      },
+      "DeletedResult": {
+        "description": "Synchronous deletion result",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DeletedResponse" } } }
+      },
+      "AcceptedOperation": {
+        "description": "File operation accepted for asynchronous execution",
+        "headers": {
+          "Location": {
+            "required": true,
+            "description": "Relative URL to poll for the operation state",
+            "schema": { "type": "string" }
+          }
+        },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OperationResponse" } } }
+      },
+      "ShareResult": {
+        "description": "Share state",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShareResponse" } } }
+      }
+    },
+    "schemas": {
+      "LogicalPath": {
+        "type": "string",
+        "description": "Slash-separated logical path relative to the root, without a leading slash.",
+        "examples": ["documents/report.pdf"]
+      },
+      "Timestamp": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["error"],
+        "properties": {
+          "error": { "type": "string" }
+        }
+      },
+      "Stats": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["fileCount", "directoryCount", "totalBytes", "objectCount", "objectBytes"],
+        "properties": {
+          "fileCount": { "type": "integer", "minimum": 0 },
+          "directoryCount": { "type": "integer", "minimum": 0 },
+          "totalBytes": { "type": "integer", "format": "int64", "minimum": 0 },
+          "objectCount": { "type": "integer", "minimum": 0 },
+          "objectBytes": { "type": "integer", "format": "int64", "minimum": 0 }
+        }
+      },
+      "StatusResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["storageDriver", "storageRoot", "stats", "generatedAt"],
+        "properties": {
+          "storageDriver": { "type": "string" },
+          "storageRoot": { "type": "string" },
+          "stats": { "$ref": "#/components/schemas/Stats" },
+          "generatedAt": { "$ref": "#/components/schemas/Timestamp" }
+        }
+      },
+      "FolderSummary": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["files", "directories", "bytes"],
+        "properties": {
+          "files": { "type": "integer", "format": "int64", "minimum": 0 },
+          "directories": { "type": "integer", "format": "int64", "minimum": 0 },
+          "bytes": { "type": "integer", "format": "int64", "minimum": 0 }
+        }
+      },
+      "Thumbnail": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "url", "width", "height"],
+        "properties": {
+          "id": { "type": "string" },
+          "url": { "type": "string" },
+          "width": { "type": "integer", "minimum": 1, "maximum": 512 },
+          "height": { "type": "integer", "minimum": 1, "maximum": 512 }
+        }
+      },
+      "Entry": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "path", "kind", "size", "updatedAt"],
+        "properties": {
+          "name": { "type": "string" },
+          "path": { "$ref": "#/components/schemas/LogicalPath" },
+          "kind": { "type": "string", "enum": ["file", "directory"] },
+          "size": { "type": "integer", "format": "int64", "minimum": 0 },
+          "folderSummary": { "$ref": "#/components/schemas/FolderSummary" },
+          "updatedAt": { "$ref": "#/components/schemas/Timestamp" },
+          "physicalHash": { "type": "string" },
+          "trashId": { "type": "string" },
+          "trashedAt": { "$ref": "#/components/schemas/Timestamp" },
+          "thumbnail": { "$ref": "#/components/schemas/Thumbnail" }
+        }
+      },
+      "Pagination": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["limit", "offset", "total", "query", "hasNext", "hasPrev"],
+        "properties": {
+          "limit": { "type": "integer", "minimum": 1 },
+          "offset": { "type": "integer", "minimum": 0 },
+          "total": { "type": "integer", "minimum": 0 },
+          "query": { "type": "string" },
+          "hasNext": { "type": "boolean" },
+          "hasPrev": { "type": "boolean" }
+        }
+      },
+      "FilesResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "breadcrumbs", "entries", "pagination", "folderSummary", "visibleBytes", "generatedAt"],
+        "properties": {
+          "path": { "$ref": "#/components/schemas/LogicalPath" },
+          "breadcrumbs": { "type": "array", "items": { "$ref": "#/components/schemas/Entry" } },
+          "entries": { "type": "array", "items": { "$ref": "#/components/schemas/Entry" } },
+          "pagination": { "$ref": "#/components/schemas/Pagination" },
+          "folderSummary": { "$ref": "#/components/schemas/FolderSummary" },
+          "visibleBytes": { "type": "integer", "format": "int64", "minimum": 0 },
+          "stats": { "$ref": "#/components/schemas/Stats" },
+          "generatedAt": { "$ref": "#/components/schemas/Timestamp" }
+        }
+      },
+      "TreeNode": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "path", "kind", "size", "updatedAt"],
+        "properties": {
+          "name": { "type": "string" },
+          "path": { "$ref": "#/components/schemas/LogicalPath" },
+          "kind": { "type": "string", "const": "directory" },
+          "size": { "type": "integer", "format": "int64", "minimum": 0 },
+          "updatedAt": { "$ref": "#/components/schemas/Timestamp" },
+          "hasChildren": { "type": "boolean" },
+          "children": { "type": "array", "items": { "$ref": "#/components/schemas/TreeNode" } }
+        }
+      },
+      "PathsRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["paths"],
+        "properties": {
+          "paths": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "$ref": "#/components/schemas/LogicalPath" }
+          }
+        }
+      },
+      "MoveRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["paths", "destination"],
+        "properties": {
+          "paths": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "$ref": "#/components/schemas/LogicalPath" }
+          },
+          "destination": { "$ref": "#/components/schemas/LogicalPath" }
+        }
+      },
+      "RenameRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "name"],
+        "properties": {
+          "path": { "$ref": "#/components/schemas/LogicalPath" },
+          "name": { "type": "string", "minLength": 1, "description": "New basename, not a full path." }
+        }
+      },
+      "TrashIdsRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["trashIds"],
+        "properties": {
+          "trashIds": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          }
+        }
+      },
+      "EntriesResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["entries", "generatedAt"],
+        "properties": {
+          "entries": { "type": "array", "items": { "$ref": "#/components/schemas/Entry" } },
+          "generatedAt": { "$ref": "#/components/schemas/Timestamp" }
+        }
+      },
+      "DeletedResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["deleted"],
+        "properties": {
+          "deleted": { "type": "integer", "format": "int64", "minimum": 0 }
+        }
+      },
+      "OperationResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operationId", "type", "status", "progress", "total", "createdAt", "updatedAt"],
+        "properties": {
+          "operationId": { "type": "string" },
+          "type": { "type": "string", "enum": ["move", "rename", "trash", "restore", "delete-trash"] },
+          "status": { "type": "string", "enum": ["pending", "running", "completed", "failed"] },
+          "progress": { "type": "integer", "minimum": 0 },
+          "total": { "type": "integer", "minimum": 0 },
+          "deleted": { "type": "integer", "format": "int64", "minimum": 0 },
+          "error": { "type": "string" },
+          "entries": { "type": "array", "items": { "$ref": "#/components/schemas/Entry" } },
+          "createdAt": { "$ref": "#/components/schemas/Timestamp" },
+          "updatedAt": { "$ref": "#/components/schemas/Timestamp" }
+        }
+      },
+      "CreateShareDraftRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path"],
+        "properties": {
+          "path": { "$ref": "#/components/schemas/LogicalPath" }
+        }
+      },
+      "ShareResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "logicPath", "fileName", "size", "destinationObject", "destinationUrl", "shareUrl", "email", "notificationTarget", "status", "createdAt", "updatedAt"],
+        "properties": {
+          "id": { "type": "string" },
+          "logicPath": { "$ref": "#/components/schemas/LogicalPath" },
+          "fileName": { "type": "string" },
+          "size": { "type": "integer", "format": "int64", "minimum": 0 },
+          "destinationObject": { "type": "string" },
+          "destinationUrl": { "type": "string" },
+          "shareUrl": { "type": "string" },
+          "email": { "type": "string" },
+          "notificationTarget": { "type": "string" },
+          "status": { "type": "string" },
+          "error": { "type": "string" },
+          "createdAt": { "$ref": "#/components/schemas/Timestamp" },
+          "updatedAt": { "$ref": "#/components/schemas/Timestamp" },
+          "completedAt": { "$ref": "#/components/schemas/Timestamp" },
+          "notifiedAt": { "$ref": "#/components/schemas/Timestamp" }
+        }
+      },
+      "CreateUploadRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "size", "contentType", "overwrite"],
+        "properties": {
+          "path": { "$ref": "#/components/schemas/LogicalPath" },
+          "size": { "type": "integer", "format": "int64", "minimum": 0 },
+          "contentType": { "type": "string" },
+          "overwrite": { "type": "boolean" }
+        }
+      },
+      "UploadResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "logicPath", "size", "contentType", "status", "method", "uploadUrl", "headers", "completeUrl", "statusUrl", "expiresAt"],
+        "properties": {
+          "id": { "type": "string" },
+          "logicPath": { "$ref": "#/components/schemas/LogicalPath" },
+          "size": { "type": "integer", "format": "int64", "minimum": 0 },
+          "contentType": { "type": "string" },
+          "status": { "type": "string", "enum": ["pending", "uploading", "uploaded", "complete", "failed"] },
+          "error": { "type": "string" },
+          "method": { "type": "string", "const": "PUT" },
+          "uploadUrl": { "type": "string", "description": "Relative local API URL or absolute GCS signed URL." },
+          "headers": { "type": "object", "additionalProperties": { "type": "string" } },
+          "completeUrl": { "type": "string" },
+          "statusUrl": { "type": "string" },
+          "expiresAt": { "$ref": "#/components/schemas/Timestamp" }
+        }
+      },
+      "CreateThumbnailForm": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["paths", "width", "height", "thumbnail"],
+        "properties": {
+          "paths": {
+            "type": "string",
+            "contentMediaType": "application/json",
+            "contentSchema": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "$ref": "#/components/schemas/LogicalPath" }
+            },
+            "description": "JSON-encoded array of archive paths."
+          },
+          "width": { "type": "integer", "minimum": 1, "maximum": 512 },
+          "height": { "type": "integer", "minimum": 1, "maximum": 512 },
+          "thumbnail": { "type": "string", "format": "binary", "contentMediaType": "image/webp" }
+        }
+      },
+      "DriftStatus": {
+        "type": "string",
+        "enum": ["aligned", "drifted", "object_missing", "size_mismatch", "target_conflict", "orphan_object", "shared_object"]
+      },
+      "DriftScope": {
+        "type": "string",
+        "enum": ["active", "trash", "object"]
+      },
+      "DriftItem": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["currentKey", "status", "size", "method", "actionable", "estimatedCostUsdMin", "estimatedCostUsdMax"],
+        "properties": {
+          "logicPath": { "$ref": "#/components/schemas/LogicalPath" },
+          "currentKey": { "type": "string" },
+          "targetKey": { "type": "string" },
+          "status": { "type": "string", "description": "Snapshot status or planned for a plan item." },
+          "size": { "type": "integer", "format": "int64", "minimum": 0 },
+          "storageClass": { "type": "string" },
+          "generation": { "type": "integer", "format": "int64", "minimum": 0 },
+          "method": { "type": "string", "enum": ["display_only", "copy_on_branch", "copy_verify_update_delete", "copy_verify_update_conditional_delete"] },
+          "actionable": { "type": "boolean" },
+          "estimatedCostUsdMin": { "type": "number", "minimum": 0 },
+          "estimatedCostUsdMax": { "type": "number", "minimum": 0 },
+          "error": { "type": "string" }
+        }
+      },
+      "CostItem": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "units", "unitLabel", "rate", "rateUnit", "formula", "usdMin", "usdMax", "details"],
+        "properties": {
+          "name": { "type": "string" },
+          "storageClass": { "type": "string" },
+          "units": { "type": "number" },
+          "unitLabel": { "type": "string" },
+          "rate": { "type": "number" },
+          "rateUnit": { "type": "string" },
+          "formula": { "type": "string" },
+          "usdMin": { "type": "number" },
+          "usdMax": { "type": "number" },
+          "details": { "type": "string" }
+        }
+      },
+      "CostFormula": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["minimum", "maximum"],
+        "properties": {
+          "minimum": { "type": "string" },
+          "maximum": { "type": "string" }
+        }
+      },
+      "PricingSource": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["label", "url"],
+        "properties": {
+          "label": { "type": "string" },
+          "url": { "type": "string", "format": "uri" }
+        }
+      },
+      "DriftSummary": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["total", "aligned", "drifted", "missing", "failed", "totalBytes", "estimatedCostUsdMin", "estimatedCostUsdMax", "costBreakdown", "costFormula", "warnings"],
+        "properties": {
+          "total": { "type": "integer", "minimum": 0 },
+          "aligned": { "type": "integer", "minimum": 0 },
+          "drifted": { "type": "integer", "minimum": 0 },
+          "missing": { "type": "integer", "minimum": 0 },
+          "failed": { "type": "integer", "minimum": 0 },
+          "totalBytes": { "type": "integer", "format": "int64", "minimum": 0 },
+          "estimatedCostUsdMin": { "type": "number", "minimum": 0 },
+          "estimatedCostUsdMax": { "type": "number", "minimum": 0 },
+          "costBreakdown": { "type": "array", "items": { "$ref": "#/components/schemas/CostItem" } },
+          "costFormula": { "$ref": "#/components/schemas/CostFormula" },
+          "warnings": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "DriftSnapshotResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["available", "enabled", "readOnly", "storageDriver", "snapshotStatus", "scanning", "summary", "items", "pagination", "pricingAsOf", "pricingModel", "pricingSources"],
+        "properties": {
+          "available": { "type": "boolean" },
+          "enabled": { "type": "boolean" },
+          "readOnly": { "type": "boolean" },
+          "storageDriver": { "type": "string" },
+          "snapshotStatus": { "type": "string", "enum": ["ready", "missing", "unavailable"] },
+          "scanning": { "type": "boolean" },
+          "summary": { "$ref": "#/components/schemas/DriftSummary" },
+          "items": { "type": "array", "items": { "$ref": "#/components/schemas/DriftItem" } },
+          "pagination": { "$ref": "#/components/schemas/Pagination" },
+          "pricingAsOf": { "type": "string", "format": "date" },
+          "pricingModel": { "type": "string" },
+          "pricingSources": { "type": "array", "items": { "$ref": "#/components/schemas/PricingSource" } },
+          "generatedAt": { "$ref": "#/components/schemas/Timestamp" },
+          "error": { "type": "string" }
+        }
+      },
+      "CreateDriftPlanRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["paths"],
+        "properties": {
+          "paths": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "$ref": "#/components/schemas/LogicalPath" }
+          }
+        }
+      },
+      "DriftPlanResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["planId", "fingerprint", "items", "paths", "totalBytes", "estimatedCostUsdMin", "estimatedCostUsdMax", "pricingAsOf", "method", "costBreakdown", "warnings", "createdAt"],
+        "properties": {
+          "planId": { "type": "string" },
+          "fingerprint": { "type": "string" },
+          "items": { "type": "array", "items": { "$ref": "#/components/schemas/DriftItem" } },
+          "paths": { "type": "array", "items": { "$ref": "#/components/schemas/LogicalPath" } },
+          "totalBytes": { "type": "integer", "format": "int64", "minimum": 0 },
+          "estimatedCostUsdMin": { "type": "number", "minimum": 0 },
+          "estimatedCostUsdMax": { "type": "number", "minimum": 0 },
+          "pricingAsOf": { "type": "string", "format": "date" },
+          "method": { "type": "string", "const": "copy_verify_update_conditional_delete" },
+          "costBreakdown": { "type": "array", "items": { "$ref": "#/components/schemas/CostItem" } },
+          "warnings": { "type": "array", "items": { "type": "string" } },
+          "createdAt": { "$ref": "#/components/schemas/Timestamp" }
+        }
+      },
+      "CreateDriftActionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["planId"],
+        "properties": {
+          "planId": { "type": "string", "minLength": 1 },
+          "idempotencyKey": { "type": "string", "description": "Optional caller key. The server generates a UUID when omitted or blank." }
+        }
+      },
+      "DriftActionResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["logicPath", "status"],
+        "properties": {
+          "logicPath": { "$ref": "#/components/schemas/LogicalPath" },
+          "status": { "type": "string", "enum": ["pending", "succeeded", "failed"] }
+        }
+      },
+      "DriftActionResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "planId", "idempotencyKey", "status", "progress", "total", "succeeded", "failed", "results", "createdAt", "updatedAt"],
+        "properties": {
+          "id": { "type": "string" },
+          "planId": { "type": "string" },
+          "idempotencyKey": { "type": "string" },
+          "status": { "type": "string", "enum": ["pending", "running", "completed", "failed"] },
+          "progress": { "type": "integer", "minimum": 0 },
+          "total": { "type": "integer", "minimum": 0 },
+          "succeeded": { "type": "integer", "minimum": 0 },
+          "failed": { "type": "integer", "minimum": 0 },
+          "results": { "type": "array", "items": { "$ref": "#/components/schemas/DriftActionResult" } },
+          "error": { "type": "string" },
+          "createdAt": { "$ref": "#/components/schemas/Timestamp" },
+          "updatedAt": { "$ref": "#/components/schemas/Timestamp" }
+        }
+      }
+    }
+  }
+}

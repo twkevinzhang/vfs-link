@@ -213,6 +213,21 @@ The default Compose profile uses:
 
 Open the browser UI at `http://localhost:8080/` after the service is healthy.
 
+### OpenAPI discovery
+
+The machine-readable OpenAPI 3.1 description is available from
+`GET /openapi.json` (or `HEAD /openapi.json`):
+
+```bash
+curl -fsS http://localhost:8080/openapi.json
+```
+
+The document describes the public REST API under `/api/*`, including file,
+trash, upload, share, thumbnail, and drift operations. WebDAV, FTP, and the
+internal Pub/Sub push endpoint are outside its scope. Deployments with
+`HTTP_BASIC_AUTH_ENABLED=true` protect `/openapi.json` with the same HTTP Basic
+Auth credentials as the browser and public API.
+
 > [!WARNING]
 > Do not expose the default stack directly to the public internet. Replace every
 > example password, enable HTTP Basic Auth for the browser/API, terminate TLS at
