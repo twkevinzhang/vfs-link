@@ -12,7 +12,7 @@
     "@vueuse/integrations": "^14.1.0",
     "@vueuse/shared": "^14.1.0",
     "axios": "^1.13.2",
-    "body-parser": "^2.2.0",
+    "body-parser": "^2.3.0",
     "cors": "^2.8.5",
     "csv": "^6.4.1",
     "express": "^4.21.2",
