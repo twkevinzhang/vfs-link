@@ -19,6 +19,9 @@ services:
       - STORAGE_DRIVER=${STORAGE_DRIVER:-local}
       - LOCAL_STORAGE_ROOT=/data/objects
       - GCS_BUCKET=${GCS_BUCKET:-}
+      - THUMBNAIL_STORAGE_DRIVER=${THUMBNAIL_STORAGE_DRIVER:-local}
+      - THUMBNAIL_LOCAL_ROOT=/data/thumbnails
+      - THUMBNAIL_GCS_BUCKET=${THUMBNAIL_GCS_BUCKET:-}
       - FTP_ENABLED=${FTP_ENABLED:-true}
       - FTP_USER=${FTP_USER:?Set FTP_USER}
       - FTP_PASS=${FTP_PASS:?Set FTP_PASS}
@@ -52,6 +55,7 @@ services:
       - PUB_SUB_PUSH_SERVICE_ACCOUNT=${PUB_SUB_PUSH_SERVICE_ACCOUNT:-}
     volumes:
       - objectdata:/data/objects
+      - thumbnails:/data/thumbnails
       - metadata:/data/metadata
     networks:
       - vfs-net
@@ -76,6 +80,7 @@ services:
 volumes:
   pgdata:
   objectdata:
+  thumbnails:
   metadata:
 
 networks:

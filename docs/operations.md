@@ -83,4 +83,6 @@ with a verified backup and an object-key layout it understands. `physical-health
 is read-only and is the preferred first diagnostic step.
 
 Unreferenced thumbnails remain recoverable for seven days; the server then
-scans and removes them outside the request path.
+scans and removes them outside the request path from the dedicated thumbnail
+store. Back up that store alongside thumbnail metadata while the retention
+window matters.

@@ -98,19 +98,19 @@ func (s *Server) handleThumbnails(w http.ResponseWriter, r *http.Request) {
 
 	id := uuid.NewString()
 	objectName := "_vfs-link-thumbnails/" + id + ".webp"
-	writer, err := s.objects.NewWriter(r.Context(), objectName)
+	writer, err := s.thumbnailObjects.NewWriter(r.Context(), objectName)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if _, err = io.Copy(writer, bytes.NewReader(data)); err != nil {
 		_ = writer.Close()
-		_ = s.objects.Delete(r.Context(), objectName)
+		_ = s.thumbnailObjects.Delete(r.Context(), objectName)
 		writeError(w, http.StatusInternalServerError, "write thumbnail: "+err.Error())
 		return
 	}
 	if err = writer.Close(); err != nil {
-		_ = s.objects.Delete(r.Context(), objectName)
+		_ = s.thumbnailObjects.Delete(r.Context(), objectName)
 		writeError(w, http.StatusInternalServerError, "commit thumbnail: "+err.Error())
 		return
 	}
@@ -123,13 +123,13 @@ func (s *Server) handleThumbnails(w http.ResponseWriter, r *http.Request) {
 		// only when the metadata store can positively confirm that publication did
 		// not happen; otherwise retain a recoverable orphan for the GC path.
 		if _, found, findErr := s.store.FindThumbnail(r.Context(), id); findErr == nil && !found {
-			_ = s.objects.Delete(r.Context(), objectName)
+			_ = s.thumbnailObjects.Delete(r.Context(), objectName)
 		}
 		writeError(w, http.StatusInternalServerError, "store thumbnail: "+err.Error())
 		return
 	}
 	for _, orphan := range orphans {
-		_ = s.objects.Delete(r.Context(), orphan.PhysicalHash)
+		_ = s.thumbnailObjects.Delete(r.Context(), orphan.PhysicalHash)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -164,7 +164,7 @@ func (s *Server) handleDeleteThumbnails(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	for _, orphan := range orphans {
-		_ = s.objects.Delete(r.Context(), orphan.PhysicalHash)
+		_ = s.thumbnailObjects.Delete(r.Context(), orphan.PhysicalHash)
 	}
 	writeJSON(w, deletedResponse{Deleted: int64(len(orphans))})
 }
@@ -188,7 +188,7 @@ func (s *Server) handleThumbnail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "thumbnail not found")
 		return
 	}
-	reader, err := s.objects.NewReader(r.Context(), record.PhysicalHash)
+	reader, err := s.thumbnailObjects.NewReader(r.Context(), record.PhysicalHash)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "thumbnail object not found")
 		return

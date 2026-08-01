@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -79,7 +80,7 @@ func TestMoveWaitsForInitialOperationResumeScan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := New(store, objects)
+	service := New(store, objects, objects)
 	select {
 	case <-store.listStarted:
 	case <-time.After(time.Second):
@@ -110,6 +111,41 @@ func TestMoveWaitsForInitialOperationResumeScan(t *testing.T) {
 type failDeleteOnceStore struct {
 	blob.Store
 	failed bool
+}
+
+type trackingDeleteStore struct {
+	blob.Store
+	mu      sync.Mutex
+	deleted []string
+}
+
+func (s *trackingDeleteStore) Delete(ctx context.Context, physicalHash string) error {
+	s.mu.Lock()
+	s.deleted = append(s.deleted, physicalHash)
+	s.mu.Unlock()
+	return s.Store.Delete(ctx, physicalHash)
+}
+
+func (s *trackingDeleteStore) deletedObjects() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.deleted...)
+}
+
+// detachThumbnailOrphanStore models a metadata backend that can return an
+// immediately collectable orphan. TreeStore normally retains such objects for
+// seven days, but the service must still route any returned orphan exclusively
+// to the dedicated thumbnail store.
+type detachThumbnailOrphanStore struct {
+	db.Store
+	orphan db.ThumbnailRecord
+}
+
+func (s detachThumbnailOrphanStore) DetachThumbnails(ctx context.Context, fileIDs []int) ([]db.ThumbnailRecord, error) {
+	if _, err := s.Store.DetachThumbnails(ctx, fileIDs); err != nil {
+		return nil, err
+	}
+	return []db.ThumbnailRecord{s.orphan}, nil
 }
 
 func (s *failDeleteOnceStore) Delete(ctx context.Context, physicalHash string) error {
@@ -146,7 +182,7 @@ func TestDeletePermanentlyDeletesObjectBeforeMetadata(t *testing.T) {
 	if err := metadata.UpsertFile(ctx, "a.txt", "object-a", 1); err != nil {
 		t.Fatal(err)
 	}
-	service := New(metadata, objects)
+	service := New(metadata, objects, objects)
 	trashResult, err := service.Trash(ctx, []string{"a.txt"})
 	if err != nil {
 		t.Fatal(err)
@@ -190,7 +226,7 @@ func TestDeletePermanentlyCanRetryAfterObjectFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := &failDeleteOnceStore{Store: objects}
-	service := New(metadata, store)
+	service := New(metadata, store, objects)
 	trashResult, err := service.Trash(ctx, []string{"a.txt"})
 	if err != nil {
 		t.Fatal(err)
@@ -234,7 +270,7 @@ func TestDeletePermanentlyCanRetryAfterCheckpointFailure(t *testing.T) {
 	if err := metadata.UpsertFile(ctx, "a.txt", "object-a", 1); err != nil {
 		t.Fatal(err)
 	}
-	service := New(metadata, objects)
+	service := New(metadata, objects, objects)
 	trashResult, err := service.Trash(ctx, []string{"a.txt"})
 	if err != nil {
 		t.Fatal(err)
@@ -255,5 +291,81 @@ func TestDeletePermanentlyCanRetryAfterCheckpointFailure(t *testing.T) {
 	result, err := service.DeletePermanently(ctx, []string{trashID})
 	if err != nil || result.Deleted != 1 {
 		t.Fatalf("retry deleted=%d err=%v", result.Deleted, err)
+	}
+}
+
+func TestDeletePermanentlyKeepsPrimaryAndThumbnailStoresSeparate(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	metadata, err := db.NewTreeLocal(filepath.Join(root, "metadata"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(metadata.Close)
+	if err = metadata.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	primaryRaw, err := blob.NewLocal(filepath.Join(root, "primary"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	thumbnailRaw, err := blob.NewLocal(filepath.Join(root, "thumbnails"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range []struct {
+		store blob.Store
+		name  string
+		data  string
+	}{
+		{primaryRaw, "archive-object", "archive"},
+		{thumbnailRaw, "_vfs-link-thumbnails/orphan.webp", "webp"},
+	} {
+		writer, writeErr := item.store.NewWriter(ctx, item.name)
+		if writeErr != nil {
+			t.Fatal(writeErr)
+		}
+		if _, writeErr = writer.Write([]byte(item.data)); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+		if writeErr = writer.Close(); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+	}
+	if err = metadata.UpsertFile(ctx, "archive.zip", "archive-object", 7); err != nil {
+		t.Fatal(err)
+	}
+	file, found, err := metadata.Find(ctx, "archive.zip")
+	if err != nil || !found {
+		t.Fatalf("file found=%v err=%v", found, err)
+	}
+	orphan := db.ThumbnailRecord{ID: "orphan", PhysicalHash: "_vfs-link-thumbnails/orphan.webp", CreatedAt: time.Now().UTC()}
+	if _, err = metadata.ReplaceThumbnail(ctx, orphan, []int{file.ID}); err != nil {
+		t.Fatal(err)
+	}
+	primary := &trackingDeleteStore{Store: primaryRaw}
+	thumbnails := &trackingDeleteStore{Store: thumbnailRaw}
+	service := New(detachThumbnailOrphanStore{Store: metadata, orphan: orphan}, primary, thumbnails)
+	trashResult, err := service.Trash(ctx, []string{"archive.zip"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.DeletePermanently(ctx, []string{trashResult.Records[0].TrashID})
+	if err != nil || result.Deleted != 1 {
+		t.Fatalf("deleted=%d err=%v", result.Deleted, err)
+	}
+	if got := primary.deletedObjects(); len(got) != 1 || got[0] != "archive-object" {
+		t.Fatalf("primary deletes=%#v, want only archive object", got)
+	}
+	if got := thumbnails.deletedObjects(); len(got) != 1 || got[0] != orphan.PhysicalHash {
+		t.Fatalf("thumbnail deletes=%#v, want only orphan thumbnail", got)
+	}
+	if reader, openErr := primaryRaw.NewReader(ctx, orphan.PhysicalHash); openErr == nil {
+		_ = reader.Close()
+		t.Fatal("thumbnail leaked into primary store")
+	}
+	if reader, openErr := thumbnailRaw.NewReader(ctx, orphan.PhysicalHash); openErr == nil {
+		_ = reader.Close()
+		t.Fatal("thumbnail orphan still exists in thumbnail store")
 	}
 }

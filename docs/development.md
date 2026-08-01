@@ -24,6 +24,8 @@ METADATA_LOCAL_ROOT='../../data/metadata' \
 METADATA_PREFIX=_vfs-link-v3 \
 STORAGE_DRIVER=local \
 LOCAL_STORAGE_ROOT='../../data/objects' \
+THUMBNAIL_STORAGE_DRIVER=local \
+THUMBNAIL_LOCAL_ROOT='../../data/thumbnails' \
 FTP_ENABLED=false WEBDAV_ENABLED=false HTTP_PORT=8080 \
 ./scripts/go.sh run ./cmd/file-server
 ```

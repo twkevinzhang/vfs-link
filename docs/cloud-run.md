@@ -1,13 +1,16 @@
 # Cloud Run HTTP file-server
 
 The serverless deployment runs only the browser and HTTP API. FTP and WebDAV are
-disabled. File bytes and JSON metadata live in separate Cloud Storage buckets.
+disabled. Primary file bytes, thumbnail bytes, and JSON metadata live in
+separate Cloud Storage buckets.
 
 ```dotenv
 FTP_ENABLED=false
 WEBDAV_ENABLED=false
 STORAGE_DRIVER=gcs
 GCS_BUCKET=your-vfs-link-production-bucket
+THUMBNAIL_STORAGE_DRIVER=gcs
+THUMBNAIL_GCS_BUCKET=your-vfs-link-thumbnail-bucket
 DB_DRIVER=json
 METADATA_STORAGE_DRIVER=gcs
 METADATA_GCS_BUCKET=your-vfs-link-metadata-bucket
@@ -18,10 +21,13 @@ GCP_PROJECT_ID=your-project-id
 PUB_SUB_TOPIC=vfs-link-share-jobs
 ```
 
-Use a dedicated Standard-class metadata bucket in the same region as Cloud Run.
-The primary bucket may use Archive storage for low-frequency file bytes. Grant
-the runtime service account object access to the primary, metadata, and share
-buckets plus publisher access to the share-job topic. Store the HTTP
+Use dedicated private Standard-class thumbnail and metadata buckets in the same
+region as Cloud Run. The primary bucket may use Archive storage for
+low-frequency file bytes. Grant the runtime service account object access to
+the primary, thumbnail, metadata, and share buckets plus publisher access to
+the share-job topic. Enforce uniform bucket-level access and public-access
+prevention on the thumbnail bucket; thumbnail reads stay behind the application
+API. Store the HTTP
 password and Telegram bot token in Secret Manager.
 
 Google Cloud does not allow IAM Conditions on `allUsers` public bindings. The

@@ -26,7 +26,7 @@ func TestDriftDefaultIsReadOnlyAndMissingSnapshotDoesNotTriggerScan(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := New(metadata, objects, nil, "", "").Handler()
+	handler := New(metadata, objects, objects, nil, "", "").Handler()
 	request := httptest.NewRequest(http.MethodGet, "/api/drift", nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -62,7 +62,7 @@ func TestDriftActionsRejectNonGCSStorageEvenWhenEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := New(metadata, objects, nil, "", "").SetDriftEnabled(true).Handler()
+	handler := New(metadata, objects, objects, nil, "", "").SetDriftEnabled(true).Handler()
 	request := httptest.NewRequest(http.MethodPost, "/api/drift/plans", nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)

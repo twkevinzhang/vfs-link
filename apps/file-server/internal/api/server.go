@@ -27,16 +27,17 @@ const (
 )
 
 type Server struct {
-	store        db.Store
-	objects      blob.Store
-	shares       *share.Service
-	uploads      *upload.Service
-	files        *fileops.Service
-	drift        *driftdomain.Service
-	driftErr     error
-	driftEnabled bool
-	webHandler   http.Handler
-	cors         map[string]struct{}
+	store            db.Store
+	objects          blob.Store
+	thumbnailObjects blob.Store
+	shares           *share.Service
+	uploads          *upload.Service
+	files            *fileops.Service
+	drift            *driftdomain.Service
+	driftErr         error
+	driftEnabled     bool
+	webHandler       http.Handler
+	cors             map[string]struct{}
 }
 
 // SetDriftEnabled is an explicit safety gate. Drift routes are wired by
@@ -146,16 +147,24 @@ type shareResponse struct {
 	NotifiedAt         *time.Time `json:"notifiedAt,omitempty"`
 }
 
-func New(store db.Store, objects blob.Store, shares *share.Service, webStaticRoot string, webBasePath string, uploads ...*upload.Service) *Server {
+// New keeps original archive objects and derived thumbnail objects in
+// deliberately separate stores.  Callers must provide both explicitly: using
+// the archive store as an implicit thumbnail fallback makes a bucket routing
+// mistake silently write derived data into the primary archive bucket.
+func New(store db.Store, objects blob.Store, thumbnailObjects blob.Store, shares *share.Service, webStaticRoot string, webBasePath string, uploads ...*upload.Service) *Server {
+	if thumbnailObjects == nil {
+		panic("thumbnail object store is required")
+	}
 	driftService, driftErr := driftdomain.New(store, objects)
 	server := &Server{
-		store:      store,
-		objects:    objects,
-		shares:     shares,
-		files:      fileops.New(store, objects),
-		drift:      driftService,
-		driftErr:   driftErr,
-		webHandler: newWebHandler(webStaticRoot, webBasePath),
+		store:            store,
+		objects:          objects,
+		thumbnailObjects: thumbnailObjects,
+		shares:           shares,
+		files:            fileops.New(store, objects, thumbnailObjects),
+		drift:            driftService,
+		driftErr:         driftErr,
+		webHandler:       newWebHandler(webStaticRoot, webBasePath),
 	}
 	if len(uploads) > 0 {
 		server.uploads = uploads[0]

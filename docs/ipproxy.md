@@ -7,7 +7,9 @@ create or manage either of them.
 ```text
 /home/ipproxy/vfs-link-ipproxy
 ├── .env                 # host-only runtime configuration and secrets
-└── data/objects/        # new local payload store (bind-mounted at /data/objects)
+└── data/
+    ├── objects/         # new local payload store (bind-mounted at /data/objects)
+    └── thumbnails/      # derived WebP store (bind-mounted at /data/thumbnails)
               │
               ▼
     vfs-link-ipproxy container ── external Docker network `services`
@@ -64,6 +66,8 @@ MAINTENANCE_MODE=false
 DRIFT_ENABLED=false
 UPLOAD_SESSION_TTL=24h
 UPLOAD_MAX_BYTES=53687091200
+THUMBNAIL_STORAGE_DRIVER=local
+THUMBNAIL_LOCAL_ROOT=/data/thumbnails
 PUB_SUB_DRIVER=goroutine
 ```
 
@@ -122,7 +126,7 @@ have been provisioned separately. Run them from
 
 ```bash
 cd /home/ipproxy/vfs-link-ipproxy
-install -d -m 0750 /home/ipproxy/vfs-link-ipproxy/data/objects
+install -d -m 0750 /home/ipproxy/vfs-link-ipproxy/data/objects /home/ipproxy/vfs-link-ipproxy/data/thumbnails
 docker network inspect services >/dev/null
 
 docker compose \
@@ -157,11 +161,12 @@ docker compose \
   ./physical-health --fail-on-unhealthy
 ```
 
-Then perform one end-to-end upload, listing, download, and permanent-delete
+Then perform one end-to-end upload, thumbnail replacement, listing, download, and permanent-delete
 through the intended client path (browser/API, FTP, and/or WebDAV). Confirm
 that the deleted test payload disappears beneath
-`/home/ipproxy/vfs-link-ipproxy/data/objects` and that the active database is
-still `vfs_link_ipproxy`. Do not run `physical-health` against the archive as
+`/home/ipproxy/vfs-link-ipproxy/data/objects`, thumbnail WebP files are kept
+under `/home/ipproxy/vfs-link-ipproxy/data/thumbnails`, and the active database
+is still `vfs_link_ipproxy`. Do not run `physical-health` against the archive as
 an acceptance check for this new empty deployment: its records intentionally
 refer to discarded payloads.
 

@@ -12,100 +12,106 @@ import (
 )
 
 type Config struct {
-	FTPEnabled            bool
-	FTPPort               int
-	HTTPPort              int
-	FTPUser               string
-	FTPPass               string
-	FTPPasvURL            string
-	FTPPasvMin            int
-	FTPPasvMax            int
-	DatabaseURL           string
-	DatabaseDriver        string
-	MetadataStorageDriver string
-	MetadataLocalRoot     string
-	MetadataGCSBucket     string
-	MetadataPrefix        string
-	StorageDriver         string
-	LocalStorageRoot      string
-	GCSBucket             string
-	ShareGCSBucket        string
-	ShareGCSPrefix        string
-	SharePublicURL        string
-	TelegramBotToken      string
-	TelegramChatID        string
-	WebStaticRoot         string
-	WebBasePath           string
-	WebDAVEnabled         bool
-	WebDAVPath            string
-	WebDAVUser            string
-	WebDAVPass            string
-	WebDAVLockTimeout     time.Duration
-	WebDAVTrustProxy      bool
-	HTTPBasicAuth         bool
-	HTTPBasicUser         string
-	HTTPBasicPass         string
-	HTTPCORSOrigins       string
-	UploadSessionTTL      time.Duration
-	UploadMaxBytes        int64
-	PubSubDriver          string
-	GCPProjectID          string
-	PubSubTopic           string
-	PubSubAudience        string
-	PubSubPushEmail       string
-	CommandArgs           []string
-	AssumeYes             bool
-	MaintenanceMode       bool
-	DriftEnabled          bool
+	FTPEnabled             bool
+	FTPPort                int
+	HTTPPort               int
+	FTPUser                string
+	FTPPass                string
+	FTPPasvURL             string
+	FTPPasvMin             int
+	FTPPasvMax             int
+	DatabaseURL            string
+	DatabaseDriver         string
+	MetadataStorageDriver  string
+	MetadataLocalRoot      string
+	MetadataGCSBucket      string
+	MetadataPrefix         string
+	StorageDriver          string
+	LocalStorageRoot       string
+	GCSBucket              string
+	ThumbnailStorageDriver string
+	ThumbnailLocalRoot     string
+	ThumbnailGCSBucket     string
+	ShareGCSBucket         string
+	ShareGCSPrefix         string
+	SharePublicURL         string
+	TelegramBotToken       string
+	TelegramChatID         string
+	WebStaticRoot          string
+	WebBasePath            string
+	WebDAVEnabled          bool
+	WebDAVPath             string
+	WebDAVUser             string
+	WebDAVPass             string
+	WebDAVLockTimeout      time.Duration
+	WebDAVTrustProxy       bool
+	HTTPBasicAuth          bool
+	HTTPBasicUser          string
+	HTTPBasicPass          string
+	HTTPCORSOrigins        string
+	UploadSessionTTL       time.Duration
+	UploadMaxBytes         int64
+	PubSubDriver           string
+	GCPProjectID           string
+	PubSubTopic            string
+	PubSubAudience         string
+	PubSubPushEmail        string
+	CommandArgs            []string
+	AssumeYes              bool
+	MaintenanceMode        bool
+	DriftEnabled           bool
 }
 
 func Load(args []string) (Config, error) {
 	_ = godotenv.Load()
 
 	cfg := Config{
-		FTPEnabled:            envBool("FTP_ENABLED", true),
-		FTPPort:               envInt("FTP_PORT", 21),
-		HTTPPort:              envInt("HTTP_PORT", envInt("PORT", 8080)),
-		FTPUser:               envString("FTP_USER", "admin"),
-		FTPPass:               envString("FTP_PASS", "admin123"),
-		FTPPasvURL:            envString("FTP_PASV_URL", "127.0.0.1"),
-		FTPPasvMin:            envInt("FTP_PASV_MIN", 30000),
-		FTPPasvMax:            envInt("FTP_PASV_MAX", 30005),
-		DatabaseURL:           strings.TrimSpace(os.Getenv("DATABASE_URL")),
-		DatabaseDriver:        envString("DB_DRIVER", "postgres"),
-		MetadataStorageDriver: envString("METADATA_STORAGE_DRIVER", "local"),
-		MetadataLocalRoot:     envString("METADATA_LOCAL_ROOT", "./data/metadata"),
-		MetadataGCSBucket:     envString("METADATA_GCS_BUCKET", ""),
-		MetadataPrefix:        envString("METADATA_PREFIX", "_vfs-link-v3"),
-		StorageDriver:         envString("STORAGE_DRIVER", "local"),
-		LocalStorageRoot:      envString("LOCAL_STORAGE_ROOT", "./data/objects"),
-		GCSBucket:             envString("GCS_BUCKET", ""),
-		ShareGCSBucket:        envString("SHARE_GCS_BUCKET", ""),
-		ShareGCSPrefix:        envString("SHARE_GCS_PREFIX", "shares"),
-		SharePublicURL:        envString("SHARE_PUBLIC_BASE_URL", ""),
-		TelegramBotToken:      envString("TELEGRAM_BOT_TOKEN", ""),
-		TelegramChatID:        envString("TELEGRAM_CHAT_ID", ""),
-		WebStaticRoot:         envString("WEB_STATIC_ROOT", ""),
-		WebBasePath:           envString("WEB_BASE_PATH", "/"),
-		WebDAVEnabled:         envBool("WEBDAV_ENABLED", false),
-		WebDAVPath:            normalizeWebDAVPath(envString("WEBDAV_PATH", "/dav/")),
-		WebDAVUser:            envString("WEBDAV_USER", ""),
-		WebDAVPass:            envString("WEBDAV_PASS", ""),
-		WebDAVLockTimeout:     envDuration("WEBDAV_LOCK_TIMEOUT", 30*time.Minute),
-		WebDAVTrustProxy:      envBool("WEBDAV_TRUST_FORWARDED_HEADERS", false),
-		HTTPBasicAuth:         envBool("HTTP_BASIC_AUTH_ENABLED", false),
-		HTTPBasicUser:         envString("HTTP_BASIC_AUTH_USER", ""),
-		HTTPBasicPass:         envString("HTTP_BASIC_AUTH_PASS", ""),
-		HTTPCORSOrigins:       envString("HTTP_CORS_ORIGINS", ""),
-		UploadSessionTTL:      envDuration("UPLOAD_SESSION_TTL", 24*time.Hour),
-		UploadMaxBytes:        envInt64("UPLOAD_MAX_BYTES", 50*1024*1024*1024),
-		PubSubDriver:          envString("PUB_SUB_DRIVER", "goroutine"),
-		GCPProjectID:          envString("GCP_PROJECT_ID", ""),
-		PubSubTopic:           envString("PUB_SUB_TOPIC", ""),
-		PubSubAudience:        envString("PUB_SUB_PUSH_AUDIENCE", ""),
-		PubSubPushEmail:       envString("PUB_SUB_PUSH_SERVICE_ACCOUNT", ""),
-		MaintenanceMode:       envBool("MAINTENANCE_MODE", false),
-		DriftEnabled:          envBool("DRIFT_ENABLED", false),
+		FTPEnabled:             envBool("FTP_ENABLED", true),
+		FTPPort:                envInt("FTP_PORT", 21),
+		HTTPPort:               envInt("HTTP_PORT", envInt("PORT", 8080)),
+		FTPUser:                envString("FTP_USER", "admin"),
+		FTPPass:                envString("FTP_PASS", "admin123"),
+		FTPPasvURL:             envString("FTP_PASV_URL", "127.0.0.1"),
+		FTPPasvMin:             envInt("FTP_PASV_MIN", 30000),
+		FTPPasvMax:             envInt("FTP_PASV_MAX", 30005),
+		DatabaseURL:            strings.TrimSpace(os.Getenv("DATABASE_URL")),
+		DatabaseDriver:         envString("DB_DRIVER", "postgres"),
+		MetadataStorageDriver:  envString("METADATA_STORAGE_DRIVER", "local"),
+		MetadataLocalRoot:      envString("METADATA_LOCAL_ROOT", "./data/metadata"),
+		MetadataGCSBucket:      envString("METADATA_GCS_BUCKET", ""),
+		MetadataPrefix:         envString("METADATA_PREFIX", "_vfs-link-v3"),
+		StorageDriver:          envString("STORAGE_DRIVER", "local"),
+		LocalStorageRoot:       envString("LOCAL_STORAGE_ROOT", "./data/objects"),
+		GCSBucket:              envString("GCS_BUCKET", ""),
+		ThumbnailStorageDriver: envString("THUMBNAIL_STORAGE_DRIVER", "local"),
+		ThumbnailLocalRoot:     envString("THUMBNAIL_LOCAL_ROOT", "./data/thumbnails"),
+		ThumbnailGCSBucket:     envString("THUMBNAIL_GCS_BUCKET", ""),
+		ShareGCSBucket:         envString("SHARE_GCS_BUCKET", ""),
+		ShareGCSPrefix:         envString("SHARE_GCS_PREFIX", "shares"),
+		SharePublicURL:         envString("SHARE_PUBLIC_BASE_URL", ""),
+		TelegramBotToken:       envString("TELEGRAM_BOT_TOKEN", ""),
+		TelegramChatID:         envString("TELEGRAM_CHAT_ID", ""),
+		WebStaticRoot:          envString("WEB_STATIC_ROOT", ""),
+		WebBasePath:            envString("WEB_BASE_PATH", "/"),
+		WebDAVEnabled:          envBool("WEBDAV_ENABLED", false),
+		WebDAVPath:             normalizeWebDAVPath(envString("WEBDAV_PATH", "/dav/")),
+		WebDAVUser:             envString("WEBDAV_USER", ""),
+		WebDAVPass:             envString("WEBDAV_PASS", ""),
+		WebDAVLockTimeout:      envDuration("WEBDAV_LOCK_TIMEOUT", 30*time.Minute),
+		WebDAVTrustProxy:       envBool("WEBDAV_TRUST_FORWARDED_HEADERS", false),
+		HTTPBasicAuth:          envBool("HTTP_BASIC_AUTH_ENABLED", false),
+		HTTPBasicUser:          envString("HTTP_BASIC_AUTH_USER", ""),
+		HTTPBasicPass:          envString("HTTP_BASIC_AUTH_PASS", ""),
+		HTTPCORSOrigins:        envString("HTTP_CORS_ORIGINS", ""),
+		UploadSessionTTL:       envDuration("UPLOAD_SESSION_TTL", 24*time.Hour),
+		UploadMaxBytes:         envInt64("UPLOAD_MAX_BYTES", 50*1024*1024*1024),
+		PubSubDriver:           envString("PUB_SUB_DRIVER", "goroutine"),
+		GCPProjectID:           envString("GCP_PROJECT_ID", ""),
+		PubSubTopic:            envString("PUB_SUB_TOPIC", ""),
+		PubSubAudience:         envString("PUB_SUB_PUSH_AUDIENCE", ""),
+		PubSubPushEmail:        envString("PUB_SUB_PUSH_SERVICE_ACCOUNT", ""),
+		MaintenanceMode:        envBool("MAINTENANCE_MODE", false),
+		DriftEnabled:           envBool("DRIFT_ENABLED", false),
 	}
 
 	for _, arg := range args {
@@ -156,6 +162,21 @@ func Load(args []string) (Config, error) {
 		}
 	default:
 		return Config{}, fmt.Errorf("unsupported STORAGE_DRIVER %q", cfg.StorageDriver)
+	}
+	switch cfg.ThumbnailStorageDriver {
+	case "local":
+		if strings.TrimSpace(cfg.ThumbnailLocalRoot) == "" {
+			return Config{}, fmt.Errorf("THUMBNAIL_LOCAL_ROOT is required when THUMBNAIL_STORAGE_DRIVER=local")
+		}
+	case "gcs":
+		if strings.TrimSpace(cfg.ThumbnailGCSBucket) == "" {
+			return Config{}, fmt.Errorf("THUMBNAIL_GCS_BUCKET is required when THUMBNAIL_STORAGE_DRIVER=gcs")
+		}
+		if cfg.ThumbnailGCSBucket == cfg.GCSBucket {
+			return Config{}, fmt.Errorf("THUMBNAIL_GCS_BUCKET must differ from GCS_BUCKET")
+		}
+	default:
+		return Config{}, fmt.Errorf("unsupported THUMBNAIL_STORAGE_DRIVER %q", cfg.ThumbnailStorageDriver)
 	}
 	if cfg.FTPPasvMax < cfg.FTPPasvMin {
 		return Config{}, fmt.Errorf("FTP_PASV_MAX must be >= FTP_PASV_MIN")
@@ -286,6 +307,12 @@ func applyOverride(cfg *Config, key, value string) {
 		cfg.LocalStorageRoot = strings.TrimSpace(value)
 	case "GCS_BUCKET":
 		cfg.GCSBucket = strings.TrimSpace(value)
+	case "THUMBNAIL_STORAGE_DRIVER":
+		cfg.ThumbnailStorageDriver = strings.TrimSpace(value)
+	case "THUMBNAIL_LOCAL_ROOT":
+		cfg.ThumbnailLocalRoot = strings.TrimSpace(value)
+	case "THUMBNAIL_GCS_BUCKET":
+		cfg.ThumbnailGCSBucket = strings.TrimSpace(value)
 	case "SHARE_GCS_BUCKET":
 		cfg.ShareGCSBucket = value
 	case "SHARE_GCS_PREFIX":

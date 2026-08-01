@@ -18,7 +18,7 @@ const (
 // grace period, then runs the intentionally O(total thumbnails) sweep outside
 // request handling. A cold instance waits before its first sweep so startup and
 // canary traffic never pay that scan synchronously.
-func startThumbnailGarbageCollector(ctx context.Context, store db.Store, objects blob.Store, logger *slog.Logger) {
+func startThumbnailGarbageCollector(ctx context.Context, store db.Store, thumbnailObjects blob.Store, logger *slog.Logger) {
 	if _, ok := store.(db.ThumbnailGarbageCollector); !ok {
 		return
 	}
@@ -32,7 +32,7 @@ func startThumbnailGarbageCollector(ctx context.Context, store db.Store, objects
 		}
 		for {
 			cleanupCtx, cancel := context.WithTimeout(ctx, time.Hour)
-			deleted, err := cleanupExpiredThumbnailObjects(cleanupCtx, store, objects, time.Now().UTC())
+			deleted, err := cleanupExpiredThumbnailObjects(cleanupCtx, store, thumbnailObjects, time.Now().UTC())
 			cancel()
 			if err != nil {
 				logger.Warn("thumbnail garbage collection failed", "error", err)
@@ -50,12 +50,12 @@ func startThumbnailGarbageCollector(ctx context.Context, store db.Store, objects
 	}()
 }
 
-func cleanupExpiredThumbnailObjects(ctx context.Context, store db.Store, objects blob.Store, now time.Time) (int, error) {
+func cleanupExpiredThumbnailObjects(ctx context.Context, store db.Store, thumbnailObjects blob.Store, now time.Time) (int, error) {
 	collector, ok := store.(db.ThumbnailGarbageCollector)
 	if !ok {
 		return 0, nil
 	}
 	return collector.CleanupExpiredThumbnails(ctx, now, func(deleteCtx context.Context, record db.ThumbnailRecord) error {
-		return objects.Delete(deleteCtx, record.PhysicalHash)
+		return thumbnailObjects.Delete(deleteCtx, record.PhysicalHash)
 	})
 }

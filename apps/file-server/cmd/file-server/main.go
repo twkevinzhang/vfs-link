@@ -61,7 +61,18 @@ func run(logger *slog.Logger) error {
 	}
 	defer objects.Close()
 	logger.Info("initialized object storage", "driver", objects.Driver(), "root", objects.Root())
-	startThumbnailGarbageCollector(ctx, store, objects, logger)
+
+	thumbnailObjects, err := blob.NewStore(ctx, blob.StoreConfig{
+		Driver:    cfg.ThumbnailStorageDriver,
+		LocalRoot: cfg.ThumbnailLocalRoot,
+		GCSBucket: cfg.ThumbnailGCSBucket,
+	})
+	if err != nil {
+		return fmt.Errorf("initialize thumbnail storage: %w", err)
+	}
+	defer thumbnailObjects.Close()
+	logger.Info("initialized thumbnail storage", "driver", thumbnailObjects.Driver(), "root", thumbnailObjects.Root())
+	startThumbnailGarbageCollector(ctx, store, thumbnailObjects, logger)
 
 	if len(cfg.CommandArgs) > 0 {
 		switch cfg.CommandArgs[0] {
@@ -100,7 +111,7 @@ func run(logger *slog.Logger) error {
 		}, store, objects, logger))
 		logger.Info("WebDAV enabled", "path", cfg.WebDAVPath)
 	}
-	publicHandler := api.New(store, objects, shareService, cfg.WebStaticRoot, cfg.WebBasePath, uploadService).
+	publicHandler := api.New(store, objects, thumbnailObjects, shareService, cfg.WebStaticRoot, cfg.WebBasePath, uploadService).
 		SetDriftEnabled(cfg.DriftEnabled).
 		SetCORSOrigins(strings.Split(cfg.HTTPCORSOrigins, ",")).Handler()
 	httpHandler.Handle("/", httpauth.Basic(cfg.HTTPBasicAuth, cfg.HTTPBasicUser, cfg.HTTPBasicPass, publicHandler))
@@ -130,7 +141,7 @@ func run(logger *slog.Logger) error {
 		logger.Info("FTP server disabled")
 	}
 	go func() {
-		logger.Info("starting HTTP server", "listen", cfg.HTTPListenAddr(), "storage_root", objects.Root(), "web_static_root", cfg.WebStaticRoot, "web_base_path", cfg.WebBasePath)
+		logger.Info("starting HTTP server", "listen", cfg.HTTPListenAddr(), "storage_root", objects.Root(), "thumbnail_storage_root", thumbnailObjects.Root(), "web_static_root", cfg.WebStaticRoot, "web_base_path", cfg.WebBasePath)
 		if err := apiServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 			return

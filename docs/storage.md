@@ -51,6 +51,21 @@ During a prefix migration, keep the source prefix immutable and intact. Switch
 `METADATA_PREFIX` only after validating the new prefix, and roll back by
 restoring the previous image/configuration and source prefix.
 
+## Thumbnail storage
+
+Thumbnails are derived WebP objects and never share the primary file-byte
+store. Configure `THUMBNAIL_STORAGE_DRIVER=local` with a separate
+`THUMBNAIL_LOCAL_ROOT` for persistent self-hosting, or
+`THUMBNAIL_STORAGE_DRIVER=gcs` with a dedicated `THUMBNAIL_GCS_BUCKET` for
+Cloud Run. The GCS bucket must differ from `GCS_BUCKET`; configuration rejects
+an equal name.
+
+The Cloud Run deployment helper creates the thumbnail bucket as Standard class
+in the service region, with uniform bucket-level access and public-access
+prevention. Keep it private and serve thumbnail reads only through the
+authenticated `/api/thumbnails/{id}` route. Grant the runtime service account
+object access to this bucket, not anonymous access.
+
 ## Browser uploads
 
 Both storage drivers expose the same create, upload, and complete contract.

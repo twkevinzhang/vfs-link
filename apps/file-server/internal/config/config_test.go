@@ -66,6 +66,67 @@ func TestLoadStorageDriverRequirements(t *testing.T) {
 			t.Fatalf("Load() error = %v, want unsupported driver error", err)
 		}
 	})
+
+	t.Run("thumbnail local storage defaults to a separate root", func(t *testing.T) {
+		cfg, err := Load([]string{"THUMBNAIL_STORAGE_DRIVER=local"})
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.ThumbnailLocalRoot != "./data/thumbnails" {
+			t.Fatalf("ThumbnailLocalRoot = %q, want ./data/thumbnails", cfg.ThumbnailLocalRoot)
+		}
+		if cfg.ThumbnailLocalRoot == cfg.LocalStorageRoot {
+			t.Fatalf("thumbnail and primary local roots must differ: %q", cfg.ThumbnailLocalRoot)
+		}
+	})
+
+	t.Run("thumbnail local storage requires its root", func(t *testing.T) {
+		_, err := Load([]string{"THUMBNAIL_STORAGE_DRIVER=local", "THUMBNAIL_LOCAL_ROOT="})
+		if err == nil || !strings.Contains(err.Error(), "THUMBNAIL_LOCAL_ROOT is required") {
+			t.Fatalf("Load() error = %v, want THUMBNAIL_LOCAL_ROOT requirement", err)
+		}
+	})
+
+	t.Run("thumbnail GCS storage requires a dedicated bucket", func(t *testing.T) {
+		cfg, err := Load([]string{
+			"STORAGE_DRIVER=gcs",
+			"GCS_BUCKET=primary-objects",
+			"THUMBNAIL_STORAGE_DRIVER=gcs",
+			"THUMBNAIL_GCS_BUCKET=thumbnail-objects",
+		})
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if cfg.ThumbnailStorageDriver != "gcs" || cfg.ThumbnailGCSBucket != "thumbnail-objects" {
+			t.Fatalf("thumbnail GCS config = %#v", cfg)
+		}
+	})
+
+	t.Run("thumbnail GCS storage requires a bucket", func(t *testing.T) {
+		_, err := Load([]string{"THUMBNAIL_STORAGE_DRIVER=gcs", "THUMBNAIL_GCS_BUCKET="})
+		if err == nil || !strings.Contains(err.Error(), "THUMBNAIL_GCS_BUCKET is required") {
+			t.Fatalf("Load() error = %v, want THUMBNAIL_GCS_BUCKET requirement", err)
+		}
+	})
+
+	t.Run("thumbnail GCS storage rejects the primary bucket", func(t *testing.T) {
+		_, err := Load([]string{
+			"STORAGE_DRIVER=gcs",
+			"GCS_BUCKET=shared-objects",
+			"THUMBNAIL_STORAGE_DRIVER=gcs",
+			"THUMBNAIL_GCS_BUCKET=shared-objects",
+		})
+		if err == nil || !strings.Contains(err.Error(), "THUMBNAIL_GCS_BUCKET must differ from GCS_BUCKET") {
+			t.Fatalf("Load() error = %v, want dedicated thumbnail bucket requirement", err)
+		}
+	})
+
+	t.Run("unsupported thumbnail driver is rejected", func(t *testing.T) {
+		_, err := Load([]string{"THUMBNAIL_STORAGE_DRIVER=s3"})
+		if err == nil || !strings.Contains(err.Error(), `unsupported THUMBNAIL_STORAGE_DRIVER "s3"`) {
+			t.Fatalf("Load() error = %v, want unsupported thumbnail driver error", err)
+		}
+	})
 }
 
 func TestLoadDatabaseDriverRequirements(t *testing.T) {

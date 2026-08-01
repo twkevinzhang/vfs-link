@@ -72,7 +72,7 @@ func TestFileOperationsAPITrashLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	handler := New(store, objects, nil, "", "").Handler()
+	handler := New(store, objects, objects, nil, "", "").Handler()
 	requestJSON(t, handler, http.MethodPost, "/api/files/move", map[string]any{
 		"paths": []string{"source/a.txt"}, "destination": "target",
 	}, http.StatusOK, nil)
@@ -143,7 +143,7 @@ func TestTreeDirectoryMoveReturnsAcceptedOperationAndCanBePolled(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	handler := New(store, objects, nil, "", "").Handler()
+	handler := New(store, objects, objects, nil, "", "").Handler()
 	var accepted operationResponse
 	requestJSON(t, handler, http.MethodPost, "/api/files/move", map[string]any{
 		"paths": []string{"source"}, "destination": "target",
@@ -200,7 +200,7 @@ func TestTreeFileMoveRemainsSynchronous(t *testing.T) {
 	}
 
 	var moved entriesResponse
-	requestJSON(t, New(store, objects, nil, "", "").Handler(), http.MethodPost, "/api/files/move", map[string]any{
+	requestJSON(t, New(store, objects, objects, nil, "", "").Handler(), http.MethodPost, "/api/files/move", map[string]any{
 		"paths": []string{"a.txt"}, "destination": "target",
 	}, http.StatusOK, &moved)
 	if len(moved.Entries) != 1 || moved.Entries[0].Path != "target/a.txt" {
@@ -232,7 +232,7 @@ func TestFileRenameAPIValidatesNamesConflictsAndTrimsUnicode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := New(store, objects, nil, "", "").Handler()
+	handler := New(store, objects, objects, nil, "", "").Handler()
 
 	var renamed entriesResponse
 	requestJSON(t, handler, http.MethodPost, "/api/files/rename", map[string]any{
@@ -291,7 +291,7 @@ func TestTreeDirectoryRenameReturnsAcceptedOperationAndCanBePolled(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := New(store, objects, nil, "", "").Handler()
+	handler := New(store, objects, objects, nil, "", "").Handler()
 
 	var accepted operationResponse
 	requestJSON(t, handler, http.MethodPost, "/api/files/rename", map[string]any{
@@ -334,7 +334,7 @@ func TestTreeDirectoryTrashAndRestoreReturnAcceptedOperations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := New(store, objects, nil, "", "").Handler()
+	handler := New(store, objects, objects, nil, "", "").Handler()
 
 	var accepted operationResponse
 	requestJSON(t, handler, http.MethodPost, "/api/files/trash", map[string]any{
@@ -386,7 +386,7 @@ func TestTreeDirectoryPermanentDeleteRunsDurableOperation(t *testing.T) {
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	handler := New(store, objects, nil, "", "").Handler()
+	handler := New(store, objects, objects, nil, "", "").Handler()
 
 	var accepted operationResponse
 	requestJSON(t, handler, http.MethodPost, "/api/files/trash", map[string]any{
@@ -456,7 +456,7 @@ func TestOperationPollsDoNotStartDuplicateInProcessWorkers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := New(store, objects, nil, "", "")
+	server := New(store, objects, objects, nil, "", "")
 	handler := server.Handler()
 	var releaseOnce sync.Once
 	releaseWorker := func() { releaseOnce.Do(func() { close(store.release) }) }

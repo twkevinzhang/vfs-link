@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,6 +19,34 @@ import (
 )
 
 var testWebP = []byte{'R', 'I', 'F', 'F', 6, 0, 0, 0, 'W', 'E', 'B', 'P', 'V', 'P'}
+
+// countingBlobStore makes cross-bucket regressions observable: thumbnail
+// endpoints must never perform a blob operation against the primary store.
+type countingBlobStore struct {
+	blob.Store
+	newWriterCalls atomic.Int64
+	newReaderCalls atomic.Int64
+	deleteCalls    atomic.Int64
+}
+
+func (s *countingBlobStore) NewWriter(ctx context.Context, name string) (io.WriteCloser, error) {
+	s.newWriterCalls.Add(1)
+	return s.Store.NewWriter(ctx, name)
+}
+
+func (s *countingBlobStore) NewReader(ctx context.Context, name string) (io.ReadCloser, error) {
+	s.newReaderCalls.Add(1)
+	return s.Store.NewReader(ctx, name)
+}
+
+func (s *countingBlobStore) Delete(ctx context.Context, name string) error {
+	s.deleteCalls.Add(1)
+	return s.Store.Delete(ctx, name)
+}
+
+func (s *countingBlobStore) calls() int64 {
+	return s.newWriterCalls.Load() + s.newReaderCalls.Load() + s.deleteCalls.Load()
+}
 
 func newThumbnailRequest(t *testing.T, paths []string) *http.Request {
 	t.Helper()
@@ -77,7 +106,13 @@ func TestThumbnailCreateListGetAndReplace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := New(store, objects, nil, "", "").Handler()
+	thumbnailObjects, err := blob.NewLocal(filepath.Join(root, "thumbnails"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary := &countingBlobStore{Store: objects}
+	thumbnails := &countingBlobStore{Store: thumbnailObjects}
+	handler := New(store, primary, thumbnails, nil, "", "").Handler()
 	first := postThumbnail(t, handler, []string{"photos.z01", "photos.zip"})
 	if first.ID == "" || first.Width != 32 || first.Height != 24 {
 		t.Fatalf("response=%#v", first)
@@ -101,7 +136,7 @@ func TestThumbnailCreateListGetAndReplace(t *testing.T) {
 	if findErr != nil || !found || firstRecord.DeleteAfter == nil {
 		t.Fatalf("old thumbnail must be retained for delayed GC: record=%#v found=%v err=%v", firstRecord, found, findErr)
 	}
-	oldReader, openErr := objects.NewReader(ctx, "_vfs-link-thumbnails/"+first.ID+".webp")
+	oldReader, openErr := thumbnailObjects.NewReader(ctx, "_vfs-link-thumbnails/"+first.ID+".webp")
 	if openErr != nil {
 		t.Fatalf("old thumbnail object must remain during grace period: %v", openErr)
 	}
@@ -119,13 +154,19 @@ func TestThumbnailCreateListGetAndReplace(t *testing.T) {
 	}
 	collector := store.(db.ThumbnailGarbageCollector)
 	deletedCount, err := collector.CleanupExpiredThumbnails(ctx, time.Now().UTC().Add(8*24*time.Hour), func(deleteCtx context.Context, orphan db.ThumbnailRecord) error {
-		return objects.Delete(deleteCtx, orphan.PhysicalHash)
+		return thumbnails.Delete(deleteCtx, orphan.PhysicalHash)
 	})
 	if err != nil || deletedCount != 2 {
 		t.Fatalf("cleanup deleted=%d err=%v", deletedCount, err)
 	}
 	if _, found, findErr = store.FindThumbnail(ctx, second.ID); findErr != nil || found {
 		t.Fatalf("expired thumbnail found=%v err=%v", found, findErr)
+	}
+	if got := primary.calls(); got != 0 {
+		t.Fatalf("primary store received %d thumbnail blob operations", got)
+	}
+	if thumbnails.newWriterCalls.Load() != 2 || thumbnails.newReaderCalls.Load() == 0 || thumbnails.deleteCalls.Load() != 2 {
+		t.Fatalf("thumbnail store calls writes=%d reads=%d deletes=%d", thumbnails.newWriterCalls.Load(), thumbnails.newReaderCalls.Load(), thumbnails.deleteCalls.Load())
 	}
 }
 
@@ -170,13 +211,19 @@ func TestThumbnailStoreFailurePreservesPublishedObjectOnly(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			handler := New(thumbnailFailureStore{Store: store, publish: test.publish}, objects, nil, "", "").Handler()
+			thumbnailObjects, err := blob.NewLocal(filepath.Join(root, "thumbnails"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			primary := &countingBlobStore{Store: objects}
+			thumbnails := &countingBlobStore{Store: thumbnailObjects}
+			handler := New(thumbnailFailureStore{Store: store, publish: test.publish}, primary, thumbnails, nil, "", "").Handler()
 			recorder := httptest.NewRecorder()
 			handler.ServeHTTP(recorder, newThumbnailRequest(t, []string{"archive.zip"}))
 			if recorder.Code != http.StatusInternalServerError {
 				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 			}
-			items, err := filepath.Glob(filepath.Join(root, "objects", "_vfs-link-thumbnails", "*.webp"))
+			items, err := filepath.Glob(filepath.Join(root, "thumbnails", "_vfs-link-thumbnails", "*.webp"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -192,6 +239,15 @@ func TestThumbnailStoreFailurePreservesPublishedObjectOnly(t *testing.T) {
 				if findErr != nil || linked[file.ID].ID == "" {
 					t.Fatalf("published thumbnail=%#v err=%v", linked, findErr)
 				}
+			}
+			if got := primary.calls(); got != 0 {
+				t.Fatalf("primary store received %d thumbnail failure-path operations", got)
+			}
+			if thumbnails.newWriterCalls.Load() != 1 {
+				t.Fatalf("thumbnail write calls=%d, want 1", thumbnails.newWriterCalls.Load())
+			}
+			if got, want := thumbnails.deleteCalls.Load(), map[bool]int64{false: 1, true: 0}[test.publish]; got != want {
+				t.Fatalf("thumbnail delete calls=%d, want %d", got, want)
 			}
 		})
 	}

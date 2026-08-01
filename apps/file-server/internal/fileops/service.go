@@ -13,18 +13,25 @@ import (
 )
 
 type Service struct {
-	store      db.Store
-	objects    blob.Store
-	mu         sync.Mutex
-	running    map[string]struct{}
-	idle       chan struct{}
-	resumeDone chan struct{}
+	store            db.Store
+	objects          blob.Store
+	thumbnailObjects blob.Store
+	mu               sync.Mutex
+	running          map[string]struct{}
+	idle             chan struct{}
+	resumeDone       chan struct{}
 }
 
-func New(store db.Store, objects blob.Store) *Service {
+// New requires an explicit store for derived thumbnail objects. Archive
+// deletions only ever touch objects; detached thumbnail cleanup only ever
+// touches thumbnailObjects.
+func New(store db.Store, objects blob.Store, thumbnailObjects blob.Store) *Service {
+	if thumbnailObjects == nil {
+		panic("thumbnail object store is required")
+	}
 	idle := make(chan struct{})
 	close(idle)
-	service := &Service{store: store, objects: objects, running: make(map[string]struct{}), idle: idle, resumeDone: make(chan struct{})}
+	service := &Service{store: store, objects: objects, thumbnailObjects: thumbnailObjects, running: make(map[string]struct{}), idle: idle, resumeDone: make(chan struct{})}
 	service.resumeOperations()
 	return service
 }
@@ -380,7 +387,7 @@ func (s *Service) deletePermanentlyWithCheckpoint(ctx context.Context, ids []str
 	for _, thumbnail := range orphanedThumbnails {
 		// Thumbnail objects are derived data. Metadata deletion is authoritative;
 		// a transient object cleanup failure must not strand trash forever.
-		_ = s.objects.Delete(ctx, thumbnail.PhysicalHash)
+		_ = s.thumbnailObjects.Delete(ctx, thumbnail.PhysicalHash)
 	}
 	deleted, err := s.store.DeleteTrash(ctx, claimedIDs)
 	if err != nil {

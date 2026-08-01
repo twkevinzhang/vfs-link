@@ -67,7 +67,7 @@ func TestStatusUsesMetadataStatsWithoutListingPhysicalBucket(t *testing.T) {
 	}
 
 	var status StatusResponse
-	requestJSON(t, New(store, rejectListBlobStore{objects}, nil, "", "").Handler(), http.MethodGet, "/api/status", nil, http.StatusOK, &status)
+	requestJSON(t, New(store, rejectListBlobStore{objects}, objects, nil, "", "").Handler(), http.MethodGet, "/api/status", nil, http.StatusOK, &status)
 	if status.Stats.FileCount != 1 || status.Stats.TotalBytes != 3 || status.Stats.ObjectCount != 1 || status.Stats.ObjectBytes != 3 {
 		t.Fatalf("status stats = %#v", status.Stats)
 	}
@@ -172,7 +172,7 @@ func TestFilesReturnsRecursiveFolderSummaryIndependentOfQuery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := New(store, objects, nil, "", "").Handler()
+	handler := New(store, objects, objects, nil, "", "").Handler()
 
 	var filtered FilesResponse
 	requestJSON(t, handler, http.MethodGet, "/api/files?path=&q=root", nil, http.StatusOK, &filtered)
@@ -215,7 +215,7 @@ func TestFilesRejectsLegacyAbsoluteLogicalPath(t *testing.T) {
 	}
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/api/files?path=%2Farchive", nil)
-	New(store, objects, nil, "", "").Handler().ServeHTTP(response, request)
+	New(store, objects, objects, nil, "", "").Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "must not start with a slash") {
 		t.Fatalf("legacy absolute path response = %d %s", response.Code, response.Body.String())
 	}
@@ -236,7 +236,7 @@ func TestDownloadContentDispositionPreservesUnicodeFilenames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := New(store, objects, nil, "", "").Handler()
+	handler := New(store, objects, objects, nil, "", "").Handler()
 
 	for _, test := range []struct {
 		name        string
@@ -333,7 +333,7 @@ func TestDownloadStreamsLargeFilesWithChunkedHTTP1Response(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	server := httptest.NewUnstartedServer(New(store, objects, nil, "", "").Handler())
+	server := httptest.NewUnstartedServer(New(store, objects, objects, nil, "", "").Handler())
 	server.EnableHTTP2 = false
 	server.Start()
 	t.Cleanup(server.Close)

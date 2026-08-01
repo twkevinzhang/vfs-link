@@ -15,6 +15,9 @@ services:
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL to the active ipproxy PostgreSQL database}
       STORAGE_DRIVER: local
       LOCAL_STORAGE_ROOT: /data/objects
+      THUMBNAIL_STORAGE_DRIVER: local
+      THUMBNAIL_LOCAL_ROOT: /data/thumbnails
+      THUMBNAIL_GCS_BUCKET: ${THUMBNAIL_GCS_BUCKET:-}
 
       FTP_ENABLED: ${FTP_ENABLED:-true}
       FTP_USER: ${FTP_USER:?Set FTP_USER}
@@ -55,6 +58,7 @@ services:
       PUB_SUB_PUSH_SERVICE_ACCOUNT: ${PUB_SUB_PUSH_SERVICE_ACCOUNT:-}
     volumes:
       - '${IPPROXY_RUNTIME_DIR:?Set IPPROXY_RUNTIME_DIR to /home/ipproxy/vfs-link-ipproxy}/data/objects:/data/objects'
+      - '${IPPROXY_RUNTIME_DIR:?Set IPPROXY_RUNTIME_DIR to /home/ipproxy/vfs-link-ipproxy}/data/thumbnails:/data/thumbnails'
     networks:
       - services
     healthcheck:

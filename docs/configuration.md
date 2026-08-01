@@ -33,6 +33,9 @@ Copy `.env.example` to `.env`. The `.env` file is deliberately ignored by Git.
 | `WEBDAV_TRUST_FORWARDED_HEADERS` | No | Accept `X-Forwarded-Proto=https`; default `false`. Enable only behind a trusted ingress that overwrites the header. |
 | `STORAGE_DRIVER` | No | `local` (default) or `gcs`. |
 | `GCS_BUCKET` | GCS primary storage | Bucket for primary file bytes. |
+| `THUMBNAIL_STORAGE_DRIVER` | No | `local` (default) or `gcs`; storage for derived WebP thumbnails. |
+| `THUMBNAIL_LOCAL_ROOT` | Local thumbnail storage | Persistent thumbnail root; default `./data/thumbnails`, separate from primary objects. |
+| `THUMBNAIL_GCS_BUCKET` | GCS thumbnail storage | Private dedicated thumbnail bucket. It is required for `THUMBNAIL_STORAGE_DRIVER=gcs` and must differ from `GCS_BUCKET`. |
 | `SHARE_GCS_BUCKET` | Sharing | Destination bucket for exported shares. |
 | `SHARE_GCS_PREFIX` | No | Object prefix for share exports; default `shares`. |
 | `SHARE_PUBLIC_BASE_URL` | No | Public base URL used in generated share links. |
@@ -46,15 +49,17 @@ Copy `.env.example` to `.env`. The `.env` file is deliberately ignored by Git.
 the primary store does not automatically configure file sharing, and changing a
 storage driver does not migrate existing files.
 
-For a binary started outside Docker, select the metadata and byte-storage
-drivers independently. PostgreSQL requires `DATABASE_URL`; JSON uses
+For a binary started outside Docker, select the metadata, primary-byte, and
+thumbnail-byte drivers independently. PostgreSQL requires `DATABASE_URL`; JSON uses
 `METADATA_STORAGE_DRIVER` with either `METADATA_LOCAL_ROOT` or
-`METADATA_GCS_BUCKET`. `STORAGE_DRIVER` controls only file bytes.
+`METADATA_GCS_BUCKET`. `STORAGE_DRIVER` controls primary file bytes and
+`THUMBNAIL_STORAGE_DRIVER` controls derived thumbnail bytes.
 `WEB_STATIC_ROOT` optionally serves the built browser UI and
 `WEB_BASE_PATH` sets its public path prefix.
 
 For the Cloud Run HTTP file-server, set `FTP_ENABLED=false`,
-`WEBDAV_ENABLED=false`, `STORAGE_DRIVER=gcs`, `DB_DRIVER=json`, and
+`WEBDAV_ENABLED=false`, `STORAGE_DRIVER=gcs`, `THUMBNAIL_STORAGE_DRIVER=gcs`,
+`DB_DRIVER=json`, and
 `PUB_SUB_DRIVER=pubsub`. Enable HTTP Basic Auth and supply its password and the
 Telegram bot token through Secret Manager. The Pub/Sub push route bypasses
 Basic Auth and instead validates Google's OIDC token, audience, and
