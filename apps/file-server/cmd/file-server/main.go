@@ -61,9 +61,19 @@ func run(logger *slog.Logger) error {
 	}
 	defer objects.Close()
 	logger.Info("initialized object storage", "driver", objects.Driver(), "root", objects.Root())
+	startThumbnailGarbageCollector(ctx, store, objects, logger)
 
-	if len(cfg.CommandArgs) > 0 && cfg.CommandArgs[0] == "rebuild-mapping" {
-		return rebuildMapping(ctx, cfg, store, objects, logger)
+	if len(cfg.CommandArgs) > 0 {
+		switch cfg.CommandArgs[0] {
+		case "rebuild-mapping":
+			return rebuildMapping(ctx, cfg, store, objects, logger)
+		case "rebuild-thumbnail-index":
+			if err := db.RebuildTreeThumbnailIndex(ctx, store); err != nil {
+				return fmt.Errorf("rebuild thumbnail index: %w", err)
+			}
+			logger.Info("thumbnail reverse index rebuild completed")
+			return nil
+		}
 	}
 
 	var shareOptions []share.Option

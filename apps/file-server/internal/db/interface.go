@@ -59,14 +59,36 @@ type Store interface {
 }
 
 type ThumbnailRecord struct {
-	ID           string    `json:"id"`
-	PhysicalHash string    `json:"physicalHash"`
-	ContentType  string    `json:"contentType"`
-	Size         int64     `json:"size"`
-	Width        int       `json:"width"`
-	Height       int       `json:"height"`
-	FileIDs      []int     `json:"fileIds,omitempty"`
-	CreatedAt    time.Time `json:"createdAt"`
+	ID           string     `json:"id"`
+	PhysicalHash string     `json:"physicalHash"`
+	ContentType  string     `json:"contentType"`
+	Size         int64      `json:"size"`
+	Width        int        `json:"width"`
+	Height       int        `json:"height"`
+	FileIDs      []int      `json:"fileIds,omitempty"`
+	CreatedAt    time.Time  `json:"createdAt"`
+	DeleteAfter  *time.Time `json:"deleteAfter,omitempty"`
+}
+
+// FileThumbnailLink is the canonical TreeStore lookup from a logical file to
+// its thumbnail. ThumbnailRecord.FileIDs is retained for backwards-compatible
+// imports and as a repair hint, but new TreeStore reads use this direct entity
+// instead of scanning every thumbnail record.
+//
+// A link is only written after its ThumbnailRecord has been persisted. This
+// ordering means an interrupted write can leave an unreferenced thumbnail, but
+// never a file pointing at a thumbnail record that does not exist.
+type FileThumbnailLink struct {
+	FileID      int       `json:"fileId"`
+	ThumbnailID string    `json:"thumbnailId"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+}
+
+// ThumbnailGarbageCollector is implemented by metadata stores that defer
+// thumbnail object deletion. Callers must delete the returned physical objects
+// only after this method has successfully removed their metadata records.
+type ThumbnailGarbageCollector interface {
+	CleanupExpiredThumbnails(context.Context, time.Time, func(context.Context, ThumbnailRecord) error) (int, error)
 }
 
 // MetadataStats is a cheap logical metadata summary maintained by stores that

@@ -90,6 +90,13 @@ func ExportTreeSnapshot(ctx context.Context, store Store) (TreeImportSnapshot, e
 		return snapshot, fmt.Errorf("list thumbnails: %w", err)
 	}
 	snapshot.Thumbnails = append(snapshot.Thumbnails, thumbnails...)
+	thumbnailLinks, err := tree.listEntities(ctx, fileThumbnailEntityKind, func() any { return &FileThumbnailLink{} })
+	if err != nil {
+		return snapshot, fmt.Errorf("list thumbnail links: %w", err)
+	}
+	for _, value := range thumbnailLinks {
+		snapshot.ThumbnailLinks = append(snapshot.ThumbnailLinks, *(value.(*FileThumbnailLink)))
+	}
 
 	sequenceObject, found, err := tree.objects.Get(ctx, tree.sequenceKey())
 	if err != nil {
@@ -154,6 +161,7 @@ func normalizeExportSnapshot(snapshot *TreeImportSnapshot) {
 	sort.Slice(snapshot.DAVLocks, func(i, j int) bool { return snapshot.DAVLocks[i].Token < snapshot.DAVLocks[j].Token })
 	sort.Slice(snapshot.Uploads, func(i, j int) bool { return snapshot.Uploads[i].ID < snapshot.Uploads[j].ID })
 	sort.Slice(snapshot.Thumbnails, func(i, j int) bool { return snapshot.Thumbnails[i].ID < snapshot.Thumbnails[j].ID })
+	sort.Slice(snapshot.ThumbnailLinks, func(i, j int) bool { return snapshot.ThumbnailLinks[i].FileID < snapshot.ThumbnailLinks[j].FileID })
 	if snapshot.NextFileID > 0 {
 		return
 	}

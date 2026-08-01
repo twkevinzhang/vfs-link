@@ -43,7 +43,7 @@ func TestExportTreeSnapshotRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snapshot.Records) != 3 || len(snapshot.Shares) != 1 || len(snapshot.DAVLocks) != 1 || len(snapshot.Uploads) != 1 || len(snapshot.Thumbnails) != 1 || snapshot.SourceSHA256 == "" {
+	if len(snapshot.Records) != 3 || len(snapshot.Shares) != 1 || len(snapshot.DAVLocks) != 1 || len(snapshot.Uploads) != 1 || len(snapshot.Thumbnails) != 1 || len(snapshot.ThumbnailLinks) != 1 || snapshot.SourceSHA256 == "" {
 		t.Fatalf("snapshot=%+v", snapshot)
 	}
 

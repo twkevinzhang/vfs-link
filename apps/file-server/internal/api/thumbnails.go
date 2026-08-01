@@ -117,7 +117,14 @@ func (s *Server) handleThumbnails(w http.ResponseWriter, r *http.Request) {
 	record := db.ThumbnailRecord{ID: id, PhysicalHash: objectName, ContentType: "image/webp", Size: int64(len(data)), Width: width, Height: height, CreatedAt: time.Now().UTC()}
 	orphans, err := s.store.ReplaceThumbnail(r.Context(), record, fileIDs)
 	if err != nil {
-		_ = s.objects.Delete(r.Context(), objectName)
+		// A TreeStore replacement spans multiple conditionally-written metadata
+		// objects. If it fails after publishing the new thumbnail record, deleting
+		// the WebP here would leave an already-published file link broken. Delete
+		// only when the metadata store can positively confirm that publication did
+		// not happen; otherwise retain a recoverable orphan for the GC path.
+		if _, found, findErr := s.store.FindThumbnail(r.Context(), id); findErr == nil && !found {
+			_ = s.objects.Delete(r.Context(), objectName)
+		}
 		writeError(w, http.StatusInternalServerError, "store thumbnail: "+err.Error())
 		return
 	}

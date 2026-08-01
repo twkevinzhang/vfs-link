@@ -978,6 +978,7 @@ type TreeImportSnapshot struct {
 	DAVLocks         []DAVLockRecord
 	Uploads          []UploadRecord
 	Thumbnails       []ThumbnailRecord
+	ThumbnailLinks   []FileThumbnailLink
 	NextFileID       int
 	SourceSHA256     string
 	SourceGeneration int64
@@ -1088,6 +1089,26 @@ func ValidateTreeImport(prefix string, snapshot TreeImportSnapshot) (TreeValidat
 			if !fileIDs[fileID] {
 				return v, fmt.Errorf("thumbnail %s references unknown file id %d", thumbnail.ID, fileID)
 			}
+		}
+	}
+	thumbnailIDs := make(map[string]bool, len(snapshot.Thumbnails))
+	for _, thumbnail := range snapshot.Thumbnails {
+		thumbnailIDs[thumbnail.ID] = true
+	}
+	linkedFiles := make(map[int]bool, len(snapshot.ThumbnailLinks))
+	for _, link := range snapshot.ThumbnailLinks {
+		if link.FileID <= 0 || !fileIDs[link.FileID] {
+			return v, fmt.Errorf("thumbnail link references unknown file id %d", link.FileID)
+		}
+		if !thumbnailIDs[link.ThumbnailID] {
+			return v, fmt.Errorf("thumbnail link for file id %d references unknown thumbnail %s", link.FileID, link.ThumbnailID)
+		}
+		if linkedFiles[link.FileID] {
+			return v, fmt.Errorf("duplicate thumbnail link for file id %d", link.FileID)
+		}
+		linkedFiles[link.FileID] = true
+		if e := validateUniqueKey(fake.entityKey(fileThumbnailEntityKind, fileThumbnailEntityID(link.FileID))); e != nil {
+			return v, e
 		}
 	}
 	return v, nil
@@ -1226,7 +1247,34 @@ func BulkImportTree(ctx context.Context, store Store, snapshot TreeImportSnapsho
 			return tree.putEntity(taskCtx, "thumbnails", rCopy.ID, rCopy, true)
 		})
 	}
-	entityCount := len(snapshot.Shares) + len(snapshot.DAVLocks) + len(snapshot.Uploads) + len(snapshot.Thumbnails)
+	// Direct links are canonical in new snapshots. For legacy snapshots which
+	// have only ThumbnailRecord.FileIDs, derive the equivalent link entities at
+	// import time. Explicit links always win in mixed snapshots.
+	linksByFile := make(map[int]FileThumbnailLink, len(snapshot.ThumbnailLinks))
+	for _, link := range snapshot.ThumbnailLinks {
+		linksByFile[link.FileID] = link
+	}
+	legacyByFile := make(map[int]ThumbnailRecord)
+	for _, thumbnail := range snapshot.Thumbnails {
+		for _, fileID := range normalizeFileIDs(thumbnail.FileIDs) {
+			current, exists := legacyByFile[fileID]
+			if !exists || thumbnail.CreatedAt.After(current.CreatedAt) || (thumbnail.CreatedAt.Equal(current.CreatedAt) && thumbnail.ID > current.ID) {
+				legacyByFile[fileID] = thumbnail
+			}
+		}
+	}
+	for fileID, thumbnail := range legacyByFile {
+		if _, exists := linksByFile[fileID]; !exists {
+			linksByFile[fileID] = FileThumbnailLink{FileID: fileID, ThumbnailID: thumbnail.ID, UpdatedAt: time.Now().UTC()}
+		}
+	}
+	for _, link := range linksByFile {
+		linkCopy := link
+		tasks = append(tasks, func(taskCtx context.Context) error {
+			return tree.putEntity(taskCtx, fileThumbnailEntityKind, fileThumbnailEntityID(linkCopy.FileID), linkCopy, true)
+		})
+	}
+	entityCount := len(snapshot.Shares) + len(snapshot.DAVLocks) + len(snapshot.Uploads) + len(snapshot.Thumbnails) + len(linksByFile)
 	if entityCount > 0 {
 		entityTasks := tasks[len(tasks)-entityCount:]
 		if e := runTreeImportTasks(ctx, 32, entityTasks); e != nil {
