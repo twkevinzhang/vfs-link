@@ -6,10 +6,22 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 )
+
+func TestNewGCSEmulatorDoesNotRequireADC(t *testing.T) {
+	t.Setenv("STORAGE_EMULATOR_HOST", "http://127.0.0.1:4443")
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", filepath.Join(t.TempDir(), "missing-credentials.json"))
+
+	store, err := NewGCS(context.Background(), "primary-objects")
+	if err != nil {
+		t.Fatalf("NewGCS() error = %v, want emulator client without ADC", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+}
 
 func TestGCSStoreCRUD(t *testing.T) {
 	var (

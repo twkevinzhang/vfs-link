@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 
@@ -32,10 +33,13 @@ func NewGCS(ctx context.Context, bucket string) (*GCSStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create GCS client: %w", err)
 	}
-	httpClient, err := google.DefaultClient(ctx, storage.ScopeReadWrite)
-	if err != nil {
-		_ = client.Close()
-		return nil, fmt.Errorf("create authenticated GCS HTTP client: %w", err)
+	httpClient := http.DefaultClient
+	if strings.TrimSpace(os.Getenv("STORAGE_EMULATOR_HOST")) == "" {
+		httpClient, err = google.DefaultClient(ctx, storage.ScopeReadWrite)
+		if err != nil {
+			_ = client.Close()
+			return nil, fmt.Errorf("create authenticated GCS HTTP client: %w", err)
+		}
 	}
 	return &GCSStore{
 		client:     client,
