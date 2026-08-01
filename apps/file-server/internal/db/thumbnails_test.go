@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -49,6 +50,22 @@ func TestTreeThumbnailReplacementPreservesSharedReferences(t *testing.T) {
 	if err != nil || len(orphans) != 0 {
 		t.Fatalf("partial replace removed shared thumbnail: %#v, %v", orphans, err)
 	}
+	thumbA, found, err := store.FindThumbnail(ctx, "thumb-a")
+	if err != nil || !found || thumbA.DeleteAfter == nil {
+		t.Fatalf("thumb-a must be marked after a partial replacement: %#v found=%v err=%v", thumbA, found, err)
+	}
+	collector := store.(ThumbnailGarbageCollector)
+	deleted, err := collector.CleanupExpiredThumbnails(ctx, thumbA.DeleteAfter.Add(time.Second), func(_ context.Context, thumbnail ThumbnailRecord) error {
+		t.Fatalf("shared thumbnail must not be deleted: %#v", thumbnail)
+		return nil
+	})
+	if err != nil || deleted != 0 {
+		t.Fatalf("cleanup shared thumb-a = %d, %v", deleted, err)
+	}
+	thumbA, found, err = store.FindThumbnail(ctx, "thumb-a")
+	if err != nil || !found || thumbA.DeleteAfter != nil {
+		t.Fatalf("GC must clear deletion mark for a referenced thumbnail: %#v found=%v err=%v", thumbA, found, err)
+	}
 	orphans, err = store.DetachThumbnails(ctx, []int{last.ID})
 	if err != nil {
 		t.Fatal(err)
@@ -56,12 +73,12 @@ func TestTreeThumbnailReplacementPreservesSharedReferences(t *testing.T) {
 	if len(orphans) != 0 {
 		t.Fatalf("detach must defer thumbnail deletion = %#v", orphans)
 	}
-	thumbA, found, err := store.FindThumbnail(ctx, "thumb-a")
+	thumbA, found, err = store.FindThumbnail(ctx, "thumb-a")
 	if err != nil || !found || thumbA.DeleteAfter == nil {
 		t.Fatalf("thumb-a must be retained as GC candidate: %#v found=%v err=%v", thumbA, found, err)
 	}
-	collector := store.(ThumbnailGarbageCollector)
-	deleted, err := collector.CleanupExpiredThumbnails(ctx, thumbA.DeleteAfter.Add(time.Second), func(_ context.Context, thumbnail ThumbnailRecord) error {
+	thumbACleanupAt := thumbA.DeleteAfter.Add(thumbnailGCMinInterval + time.Second)
+	deleted, err = collector.CleanupExpiredThumbnails(ctx, thumbACleanupAt, func(_ context.Context, thumbnail ThumbnailRecord) error {
 		if thumbnail.ID != "thumb-a" {
 			t.Fatalf("unexpected thumbnail deletion: %#v", thumbnail)
 		}
@@ -81,7 +98,7 @@ func TestTreeThumbnailReplacementPreservesSharedReferences(t *testing.T) {
 	if err != nil || !found || thumbB.DeleteAfter == nil {
 		t.Fatalf("thumb-b must be retained as GC candidate: %#v found=%v err=%v", thumbB, found, err)
 	}
-	deleted, err = collector.CleanupExpiredThumbnails(ctx, thumbB.DeleteAfter.Add(thumbnailGCMinInterval+time.Second), func(_ context.Context, thumbnail ThumbnailRecord) error {
+	deleted, err = collector.CleanupExpiredThumbnails(ctx, thumbACleanupAt.Add(thumbnailGCMinInterval+time.Second), func(_ context.Context, thumbnail ThumbnailRecord) error {
 		if thumbnail.ID != "thumb-b" {
 			t.Fatalf("unexpected thumbnail deletion: %#v", thumbnail)
 		}
@@ -89,6 +106,36 @@ func TestTreeThumbnailReplacementPreservesSharedReferences(t *testing.T) {
 	})
 	if err != nil || deleted != 1 {
 		t.Fatalf("cleanup thumb-b = %d, %v", deleted, err)
+	}
+}
+
+func TestTreeThumbnailMetadataExcludesForwardReferences(t *testing.T) {
+	ctx := context.Background()
+	storeRaw, err := NewTreeLocal(filepath.Join(t.TempDir(), "metadata"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := storeRaw.(*TreeStore)
+	t.Cleanup(store.Close)
+	if err = store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.UpsertFile(ctx, "thumbnail.bin", "object-thumbnail", 1); err != nil {
+		t.Fatal(err)
+	}
+	file, found, err := store.Find(ctx, "thumbnail.bin")
+	if err != nil || !found {
+		t.Fatalf("file found=%v err=%v", found, err)
+	}
+	if _, err = store.ReplaceThumbnail(ctx, ThumbnailRecord{ID: "no-file-ids", PhysicalHash: "no-file-ids.webp"}, []int{file.ID}); err != nil {
+		t.Fatal(err)
+	}
+	object, found, err := store.objects.Get(ctx, store.entityKey("thumbnails", "no-file-ids"))
+	if err != nil || !found {
+		t.Fatalf("thumbnail metadata found=%v err=%v", found, err)
+	}
+	if strings.Contains(string(object.Data), "fileIds") {
+		t.Fatalf("thumbnail metadata must not contain legacy fileIds: %s", object.Data)
 	}
 }
 
@@ -190,43 +237,6 @@ func TestTreeThumbnailIndexAvoidsCollectionScansForMissingAndReplacement(t *test
 	}
 }
 
-func TestRebuildTreeThumbnailIndexRepairsLegacyRecords(t *testing.T) {
-	ctx := context.Background()
-	storeRaw, err := NewTreeLocal(filepath.Join(t.TempDir(), "metadata"), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	store := storeRaw.(*TreeStore)
-	t.Cleanup(store.Close)
-	if err = store.EnsureSchema(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err = store.UpsertFile(ctx, "legacy.zip", "legacy-object", 1); err != nil {
-		t.Fatal(err)
-	}
-	file, found, err := store.Find(ctx, "legacy.zip")
-	if err != nil || !found {
-		t.Fatalf("legacy file found=%v err=%v", found, err)
-	}
-	if err = store.putEntity(ctx, "thumbnails", "legacy-old", ThumbnailRecord{ID: "legacy-old", PhysicalHash: "legacy-old.webp", FileIDs: []int{file.ID}, CreatedAt: time.Now().UTC().Add(-time.Hour)}, true); err != nil {
-		t.Fatal(err)
-	}
-	if err = store.putEntity(ctx, "thumbnails", "legacy-thumb", ThumbnailRecord{ID: "legacy-thumb", PhysicalHash: "legacy.webp", FileIDs: []int{file.ID}, CreatedAt: time.Now().UTC()}, true); err != nil {
-		t.Fatal(err)
-	}
-	before, err := store.FindThumbnailsForFiles(ctx, []int{file.ID})
-	if err != nil || len(before) != 0 {
-		t.Fatalf("legacy record must not trigger request-path scan: %#v, %v", before, err)
-	}
-	if err = RebuildTreeThumbnailIndex(ctx, store); err != nil {
-		t.Fatal(err)
-	}
-	after, err := store.FindThumbnailsForFiles(ctx, []int{file.ID})
-	if err != nil || after[file.ID].ID != "legacy-thumb" {
-		t.Fatalf("rebuilt thumbnail link = %#v, %v", after, err)
-	}
-}
-
 func TestTreeThumbnailGarbageCollectionMarksOrphansAndRetriesObjectFailures(t *testing.T) {
 	ctx := context.Background()
 	storeRaw, err := NewTreeLocal(filepath.Join(t.TempDir(), "metadata"), "")
@@ -239,7 +249,7 @@ func TestTreeThumbnailGarbageCollectionMarksOrphansAndRetriesObjectFailures(t *t
 		t.Fatal(err)
 	}
 	createdAt := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
-	thumbnail := ThumbnailRecord{ID: "interrupted-orphan", PhysicalHash: "orphan.webp", FileIDs: []int{999}, CreatedAt: createdAt}
+	thumbnail := ThumbnailRecord{ID: "interrupted-orphan", PhysicalHash: "orphan.webp", CreatedAt: createdAt}
 	if err = store.putEntity(ctx, "thumbnails", thumbnail.ID, thumbnail, true); err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +262,7 @@ func TestTreeThumbnailGarbageCollectionMarksOrphansAndRetriesObjectFailures(t *t
 		t.Fatalf("mark orphan deleted=%d err=%v", deleted, err)
 	}
 	marked, found, err := store.FindThumbnail(ctx, thumbnail.ID)
-	if err != nil || !found || marked.DeleteAfter == nil || !marked.DeleteAfter.Equal(createdAt.Add(7*24*time.Hour)) || len(marked.FileIDs) != 0 {
+	if err != nil || !found || marked.DeleteAfter == nil || !marked.DeleteAfter.Equal(createdAt.Add(7*24*time.Hour)) {
 		t.Fatalf("marked orphan=%#v found=%v err=%v", marked, found, err)
 	}
 

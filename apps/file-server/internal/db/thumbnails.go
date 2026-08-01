@@ -3,7 +3,6 @@ package db
 import (
 	"context"
 	"fmt"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -13,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func normalizeFileIDs(ids []int) []int {
+func normalizePositiveIDs(ids []int) []int {
 	seen := make(map[int]bool, len(ids))
 	result := make([]int, 0, len(ids))
 	for _, id := range ids {
@@ -27,7 +26,7 @@ func normalizeFileIDs(ids []int) []int {
 }
 
 func (s *PostgresStore) ReplaceThumbnail(ctx context.Context, record ThumbnailRecord, fileIDs []int) ([]ThumbnailRecord, error) {
-	fileIDs = normalizeFileIDs(fileIDs)
+	fileIDs = normalizePositiveIDs(fileIDs)
 	if strings.TrimSpace(record.ID) == "" || strings.TrimSpace(record.PhysicalHash) == "" || len(fileIDs) == 0 {
 		return nil, fmt.Errorf("thumbnail id, object, and file ids are required")
 	}
@@ -88,7 +87,7 @@ func (s *PostgresStore) ReplaceThumbnail(ctx context.Context, record ThumbnailRe
 
 func (s *PostgresStore) FindThumbnailsForFiles(ctx context.Context, fileIDs []int) (map[int]ThumbnailRecord, error) {
 	result := make(map[int]ThumbnailRecord)
-	fileIDs = normalizeFileIDs(fileIDs)
+	fileIDs = normalizePositiveIDs(fileIDs)
 	if len(fileIDs) == 0 {
 		return result, nil
 	}
@@ -121,7 +120,7 @@ func (s *PostgresStore) FindThumbnail(ctx context.Context, id string) (Thumbnail
 }
 
 func (s *PostgresStore) DetachThumbnails(ctx context.Context, fileIDs []int) ([]ThumbnailRecord, error) {
-	fileIDs = normalizeFileIDs(fileIDs)
+	fileIDs = normalizePositiveIDs(fileIDs)
 	if len(fileIDs) == 0 {
 		return nil, nil
 	}
@@ -179,18 +178,11 @@ func (s *TreeStore) thumbnailRecords(ctx context.Context) ([]ThumbnailRecord, er
 }
 
 const (
-	fileThumbnailEntityKind  = "file-thumbnails"
-	thumbnailIndexEntityKind = "thumbnail-index"
-	thumbnailIndexEntityID   = "state"
-	thumbnailGCEntityKind    = "thumbnail-gc"
-	thumbnailGCEntityID      = "state"
-	thumbnailGCMinInterval   = 24 * time.Hour
+	fileThumbnailEntityKind = "file-thumbnails"
+	thumbnailGCEntityKind   = "thumbnail-gc"
+	thumbnailGCEntityID     = "state"
+	thumbnailGCMinInterval  = 24 * time.Hour
 )
-
-type thumbnailIndexState struct {
-	Version int       `json:"version"`
-	ReadyAt time.Time `json:"readyAt"`
-}
 
 type thumbnailGCState struct {
 	LastCompletedAt time.Time `json:"lastCompletedAt"`
@@ -198,63 +190,8 @@ type thumbnailGCState struct {
 
 func fileThumbnailEntityID(fileID int) string { return strconv.Itoa(fileID) }
 
-// rebuildThumbnailIndex performs the explicit one-off migration from the
-// legacy ThumbnailRecord.FileIDs field. It must never be called by normal API
-// requests: a file without a thumbnail is common and must remain a direct
-// lookup miss, not a collection scan.
-func (s *TreeStore) rebuildThumbnailIndex(ctx context.Context) error {
-	var state thumbnailIndexState
-	ready, err := s.getEntity(ctx, thumbnailIndexEntityKind, thumbnailIndexEntityID, &state)
-	if err != nil || ready {
-		return err
-	}
-	legacy, err := s.thumbnailRecords(ctx)
-	if err != nil {
-		return err
-	}
-	selected := make(map[int]ThumbnailRecord)
-	for _, thumbnail := range legacy {
-		for _, fileID := range normalizeFileIDs(thumbnail.FileIDs) {
-			current, exists := selected[fileID]
-			if !exists || thumbnail.CreatedAt.After(current.CreatedAt) || (thumbnail.CreatedAt.Equal(current.CreatedAt) && thumbnail.ID > current.ID) {
-				selected[fileID] = thumbnail
-			}
-		}
-	}
-	for fileID, thumbnail := range selected {
-		link := FileThumbnailLink{FileID: fileID, ThumbnailID: thumbnail.ID, UpdatedAt: time.Now().UTC()}
-		if err = s.putEntity(ctx, fileThumbnailEntityKind, fileThumbnailEntityID(fileID), link, true); err != nil && !errorsIsConflict(err) {
-			return err
-		}
-	}
-	state = thumbnailIndexState{Version: 1, ReadyAt: time.Now().UTC()}
-	if err = s.putEntity(ctx, thumbnailIndexEntityKind, thumbnailIndexEntityID, state, true); err != nil && !errorsIsConflict(err) {
-		return err
-	}
-	return nil
-}
-
-// RebuildTreeThumbnailIndex creates the direct file-thumbnail entities from
-// legacy ThumbnailRecord.FileIDs values. It is intended for an operator-run
-// migration (or test), not the steady-state request path.
-func RebuildTreeThumbnailIndex(ctx context.Context, store Store) error {
-	tree, ok := store.(*TreeStore)
-	if !ok {
-		return fmt.Errorf("tree store is required")
-	}
-	tree.mu.Lock()
-	defer tree.mu.Unlock()
-	release, _, err := tree.acquireTreeMutationLease(ctx)
-	if err != nil {
-		return err
-	}
-	defer release()
-	return tree.rebuildThumbnailIndex(ctx)
-}
-
 // findThumbnailLinks returns direct links for fileIDs. A missing entity simply
-// means that file has no thumbnail. Legacy records are repaired only by the
-// explicit RebuildTreeThumbnailIndex maintenance operation.
+// means that file has no thumbnail.
 func (s *TreeStore) findThumbnailLinks(ctx context.Context, fileIDs []int) (map[int]FileThumbnailLink, error) {
 	result := make(map[int]FileThumbnailLink, len(fileIDs))
 	var mu sync.Mutex
@@ -328,17 +265,10 @@ func (s *TreeStore) deleteThumbnailLink(ctx context.Context, fileID int) (FileTh
 	return FileThumbnailLink{}, false, ErrMetadataConflict
 }
 
-// updateThumbnailFileIDs keeps the old forward field useful for legacy export
-// and repair. It is deliberately not used to decide whether a thumbnail is
-// safe to delete: the direct FileThumbnailLink entities are authoritative and
-// an interrupted request may leave this denormalized field temporarily stale.
-// A whole request is folded into one CAS per affected thumbnail so a batch does
-// not repeatedly rewrite an ever-growing FileIDs array.
-func (s *TreeStore) updateThumbnailFileIDs(ctx context.Context, thumbnailID string, add, remove []int) error {
-	removeSet := make(map[int]bool, len(remove))
-	for _, fileID := range remove {
-		removeSet[fileID] = true
-	}
+// markThumbnailForDeletion starts the grace period without scanning all link
+// entities. CleanupExpiredThumbnails remains the authority that verifies
+// whether the thumbnail is truly unreferenced before deleting it.
+func (s *TreeStore) markThumbnailForDeletion(ctx context.Context, thumbnailID string, now time.Time) error {
 	for attempt := 0; attempt < treeCASAttempts; attempt++ {
 		var thumbnail ThumbnailRecord
 		generation, found, err := s.getEntityGeneration(ctx, "thumbnails", thumbnailID, &thumbnail)
@@ -348,20 +278,8 @@ func (s *TreeStore) updateThumbnailFileIDs(ctx context.Context, thumbnailID stri
 		if !found {
 			return fmt.Errorf("thumbnail %s not found", thumbnailID)
 		}
-		ids := make([]int, 0, len(thumbnail.FileIDs)+len(add))
-		for _, id := range thumbnail.FileIDs {
-			if !removeSet[id] {
-				ids = append(ids, id)
-			}
-		}
-		ids = append(ids, add...)
-		thumbnail.FileIDs = normalizeFileIDs(ids)
-		if len(add) > 0 {
-			thumbnail.DeleteAfter = nil
-		} else if len(thumbnail.FileIDs) == 0 {
-			deleteAfter := time.Now().UTC().Add(7 * 24 * time.Hour)
-			thumbnail.DeleteAfter = &deleteAfter
-		}
+		deleteAfter := now.Add(7 * 24 * time.Hour)
+		thumbnail.DeleteAfter = &deleteAfter
 		if err = s.putEntityCAS(ctx, "thumbnails", thumbnailID, thumbnail, generation); err == nil {
 			return nil
 		}
@@ -373,7 +291,7 @@ func (s *TreeStore) updateThumbnailFileIDs(ctx context.Context, thumbnailID stri
 }
 
 func (s *TreeStore) ReplaceThumbnail(ctx context.Context, record ThumbnailRecord, fileIDs []int) ([]ThumbnailRecord, error) {
-	fileIDs = normalizeFileIDs(fileIDs)
+	fileIDs = normalizePositiveIDs(fileIDs)
 	if strings.TrimSpace(record.ID) == "" || strings.TrimSpace(record.PhysicalHash) == "" || len(fileIDs) == 0 {
 		return nil, fmt.Errorf("thumbnail id, object, and file ids are required")
 	}
@@ -387,7 +305,6 @@ func (s *TreeStore) ReplaceThumbnail(ctx context.Context, record ThumbnailRecord
 	// Persist the new record before publishing any links. An interrupted
 	// request may leave it orphaned, which is recoverable by GC, but no direct
 	// link can ever point to a record that has not been created.
-	record.FileIDs = nil
 	record.DeleteAfter = nil
 	if record.CreatedAt.IsZero() {
 		record.CreatedAt = time.Now().UTC()
@@ -399,21 +316,18 @@ func (s *TreeStore) ReplaceThumbnail(ctx context.Context, record ThumbnailRecord
 	if err != nil {
 		return nil, err
 	}
-	oldFileIDsByThumbnail := make(map[string][]int)
+	oldThumbnailIDs := make(map[string]bool)
 	for _, fileID := range fileIDs {
 		old := oldLinks[fileID]
 		if err = s.replaceThumbnailLink(ctx, FileThumbnailLink{FileID: fileID, ThumbnailID: record.ID}); err != nil {
 			return nil, err
 		}
 		if old.ThumbnailID != "" && old.ThumbnailID != record.ID {
-			oldFileIDsByThumbnail[old.ThumbnailID] = append(oldFileIDsByThumbnail[old.ThumbnailID], fileID)
+			oldThumbnailIDs[old.ThumbnailID] = true
 		}
 	}
-	if err = s.updateThumbnailFileIDs(ctx, record.ID, fileIDs, nil); err != nil {
-		return nil, err
-	}
-	for oldThumbnailID, removeFileIDs := range oldFileIDsByThumbnail {
-		if err = s.updateThumbnailFileIDs(ctx, oldThumbnailID, nil, removeFileIDs); err != nil {
+	for oldThumbnailID := range oldThumbnailIDs {
+		if err = s.markThumbnailForDeletion(ctx, oldThumbnailID, time.Now().UTC()); err != nil {
 			return nil, err
 		}
 	}
@@ -425,7 +339,7 @@ func (s *TreeStore) ReplaceThumbnail(ctx context.Context, record ThumbnailRecord
 
 func (s *TreeStore) FindThumbnailsForFiles(ctx context.Context, fileIDs []int) (map[int]ThumbnailRecord, error) {
 	result := make(map[int]ThumbnailRecord)
-	fileIDs = normalizeFileIDs(fileIDs)
+	fileIDs = normalizePositiveIDs(fileIDs)
 	if len(fileIDs) == 0 {
 		return result, nil
 	}
@@ -474,7 +388,7 @@ func (s *TreeStore) FindThumbnail(ctx context.Context, id string) (ThumbnailReco
 }
 
 func (s *TreeStore) DetachThumbnails(ctx context.Context, fileIDs []int) ([]ThumbnailRecord, error) {
-	fileIDs = normalizeFileIDs(fileIDs)
+	fileIDs = normalizePositiveIDs(fileIDs)
 	if len(fileIDs) == 0 {
 		return nil, nil
 	}
@@ -489,7 +403,7 @@ func (s *TreeStore) DetachThumbnails(ctx context.Context, fileIDs []int) ([]Thum
 	if err != nil {
 		return nil, err
 	}
-	oldFileIDsByThumbnail := make(map[string][]int)
+	oldThumbnailIDs := make(map[string]bool)
 	for _, id := range fileIDs {
 		link, found := links[id]
 		if !found {
@@ -500,10 +414,10 @@ func (s *TreeStore) DetachThumbnails(ctx context.Context, fileIDs []int) ([]Thum
 		} else if !deleted {
 			continue
 		}
-		oldFileIDsByThumbnail[link.ThumbnailID] = append(oldFileIDsByThumbnail[link.ThumbnailID], id)
+		oldThumbnailIDs[link.ThumbnailID] = true
 	}
-	for thumbnailID, removeFileIDs := range oldFileIDsByThumbnail {
-		if err = s.updateThumbnailFileIDs(ctx, thumbnailID, nil, removeFileIDs); err != nil {
+	for thumbnailID := range oldThumbnailIDs {
+		if err = s.markThumbnailForDeletion(ctx, thumbnailID, time.Now().UTC()); err != nil {
 			return nil, err
 		}
 	}
@@ -514,10 +428,10 @@ func (s *TreeStore) DetachThumbnails(ctx context.Context, fileIDs []int) ([]Thum
 }
 
 // CleanupExpiredThumbnails is a low-frequency maintenance operation. Unlike
-// the API request path it may list thumbnail/link entities. It reconciles the
-// denormalized FileIDs repair hint, starts the grace period for any orphan that
-// an interrupted request failed to mark, then deletes the physical object
-// before its metadata. That order makes every failure retryable on a later run.
+// the API request path it may list thumbnail/link entities. It starts the
+// grace period for an interrupted write's orphan and clears a stale deletion
+// mark when a canonical link still exists. It then deletes the physical object
+// before its metadata, making every failure retryable on a later run.
 func (s *TreeStore) CleanupExpiredThumbnails(ctx context.Context, now time.Time, deleteObject func(context.Context, ThumbnailRecord) error) (int, error) {
 	if deleteObject == nil {
 		return 0, fmt.Errorf("thumbnail object deleter is required")
@@ -545,13 +459,13 @@ func (s *TreeStore) CleanupExpiredThumbnails(ctx context.Context, now time.Time,
 	if err != nil {
 		return 0, err
 	}
-	references := make(map[string][]int, len(values))
+	references := make(map[string]bool, len(values))
 	for _, value := range values {
 		link := *(value.(*FileThumbnailLink))
 		if link.FileID <= 0 || strings.TrimSpace(link.ThumbnailID) == "" {
 			return 0, fmt.Errorf("invalid thumbnail link for file id %d", link.FileID)
 		}
-		references[link.ThumbnailID] = append(references[link.ThumbnailID], link.FileID)
+		references[link.ThumbnailID] = true
 	}
 	deleted := 0
 	for _, thumbnail := range thumbnails {
@@ -562,11 +476,8 @@ func (s *TreeStore) CleanupExpiredThumbnails(ctx context.Context, now time.Time,
 		if !found {
 			continue
 		}
-		canonicalFileIDs := normalizeFileIDs(references[thumbnail.ID])
-		if len(canonicalFileIDs) > 0 {
-			changed := thumbnail.DeleteAfter != nil || !slices.Equal(normalizeFileIDs(thumbnail.FileIDs), canonicalFileIDs)
-			if changed {
-				thumbnail.FileIDs = canonicalFileIDs
+		if references[thumbnail.ID] {
+			if thumbnail.DeleteAfter != nil {
 				thumbnail.DeleteAfter = nil
 				if err = s.putEntityCAS(ctx, "thumbnails", thumbnail.ID, thumbnail, generation); err != nil {
 					return deleted, err
@@ -576,7 +487,6 @@ func (s *TreeStore) CleanupExpiredThumbnails(ctx context.Context, now time.Time,
 		}
 		if thumbnail.DeleteAfter == nil {
 			deleteAfter := now.Add(7 * 24 * time.Hour)
-			thumbnail.FileIDs = nil
 			thumbnail.DeleteAfter = &deleteAfter
 			if err = s.putEntityCAS(ctx, "thumbnails", thumbnail.ID, thumbnail, generation); err != nil {
 				return deleted, err

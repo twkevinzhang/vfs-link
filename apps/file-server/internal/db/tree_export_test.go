@@ -92,3 +92,33 @@ func TestExportActiveRecordsReadsEveryNode(t *testing.T) {
 		t.Fatalf("records=%d, want 81 including /bulk", len(records))
 	}
 }
+
+func TestBulkImportTreeUsesOnlyExplicitThumbnailLinks(t *testing.T) {
+	ctx := context.Background()
+	target := newEmptyTree(t)
+	snapshot := TreeImportSnapshot{
+		Records: []FileRecord{{
+			ID:           7,
+			LogicPath:    "unlinked.bin",
+			PhysicalHash: "unlinked-object",
+			Size:         1,
+			UpdatedAt:    time.Now().UTC(),
+		}},
+		Thumbnails: []ThumbnailRecord{{
+			ID:           "unlinked-thumbnail",
+			PhysicalHash: "unlinked-thumbnail.webp",
+			CreatedAt:    time.Now().UTC(),
+		}},
+		NextFileID: 8,
+	}
+	if _, err := BulkImportTree(ctx, target, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	links, err := target.FindThumbnailsForFiles(ctx, []int{7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(links) != 0 {
+		t.Fatalf("thumbnail must require an explicit link: %#v", links)
+	}
+}

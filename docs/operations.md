@@ -67,9 +67,6 @@ The image includes three tools:
 # Rebuild mappings from objects in the active store. Review the warning first.
 docker compose exec file-server ./file-server rebuild-mapping --yes
 
-# Build the Tree/JSON file ID -> thumbnail ID index after a legacy import.
-docker compose exec file-server ./file-server rebuild-thumbnail-index
-
 # Compare database mappings with objects without changing data.
 docker compose exec file-server ./physical-health --fail-on-unhealthy
 
@@ -85,9 +82,5 @@ docker compose exec file-server ./metadata-migrate --help
 with a verified backup and an object-key layout it understands. `physical-health`
 is read-only and is the preferred first diagnostic step.
 
-`rebuild-thumbnail-index` is idempotent and must run while metadata writes are
-paused. If legacy thumbnail records conflict for one file, the newest
-`createdAt` wins, with thumbnail ID as a deterministic tie-breaker. Normal API
-requests never run this collection scan. Unreferenced thumbnails remain
-recoverable for seven days; the server then scans and removes them outside the
-request path.
+Unreferenced thumbnails remain recoverable for seven days; the server then
+scans and removes them outside the request path.

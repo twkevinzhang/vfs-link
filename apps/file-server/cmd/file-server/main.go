@@ -67,12 +67,6 @@ func run(logger *slog.Logger) error {
 		switch cfg.CommandArgs[0] {
 		case "rebuild-mapping":
 			return rebuildMapping(ctx, cfg, store, objects, logger)
-		case "rebuild-thumbnail-index":
-			if err := db.RebuildTreeThumbnailIndex(ctx, store); err != nil {
-				return fmt.Errorf("rebuild thumbnail index: %w", err)
-			}
-			logger.Info("thumbnail reverse index rebuild completed")
-			return nil
 		}
 	}
 

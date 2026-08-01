@@ -1085,11 +1085,6 @@ func ValidateTreeImport(prefix string, snapshot TreeImportSnapshot) (TreeValidat
 		if e := validateUniqueKey(fake.entityKey("thumbnails", thumbnail.ID)); e != nil {
 			return v, e
 		}
-		for _, fileID := range thumbnail.FileIDs {
-			if !fileIDs[fileID] {
-				return v, fmt.Errorf("thumbnail %s references unknown file id %d", thumbnail.ID, fileID)
-			}
-		}
 	}
 	thumbnailIDs := make(map[string]bool, len(snapshot.Thumbnails))
 	for _, thumbnail := range snapshot.Thumbnails {
@@ -1247,34 +1242,13 @@ func BulkImportTree(ctx context.Context, store Store, snapshot TreeImportSnapsho
 			return tree.putEntity(taskCtx, "thumbnails", rCopy.ID, rCopy, true)
 		})
 	}
-	// Direct links are canonical in new snapshots. For legacy snapshots which
-	// have only ThumbnailRecord.FileIDs, derive the equivalent link entities at
-	// import time. Explicit links always win in mixed snapshots.
-	linksByFile := make(map[int]FileThumbnailLink, len(snapshot.ThumbnailLinks))
 	for _, link := range snapshot.ThumbnailLinks {
-		linksByFile[link.FileID] = link
-	}
-	legacyByFile := make(map[int]ThumbnailRecord)
-	for _, thumbnail := range snapshot.Thumbnails {
-		for _, fileID := range normalizeFileIDs(thumbnail.FileIDs) {
-			current, exists := legacyByFile[fileID]
-			if !exists || thumbnail.CreatedAt.After(current.CreatedAt) || (thumbnail.CreatedAt.Equal(current.CreatedAt) && thumbnail.ID > current.ID) {
-				legacyByFile[fileID] = thumbnail
-			}
-		}
-	}
-	for fileID, thumbnail := range legacyByFile {
-		if _, exists := linksByFile[fileID]; !exists {
-			linksByFile[fileID] = FileThumbnailLink{FileID: fileID, ThumbnailID: thumbnail.ID, UpdatedAt: time.Now().UTC()}
-		}
-	}
-	for _, link := range linksByFile {
 		linkCopy := link
 		tasks = append(tasks, func(taskCtx context.Context) error {
 			return tree.putEntity(taskCtx, fileThumbnailEntityKind, fileThumbnailEntityID(linkCopy.FileID), linkCopy, true)
 		})
 	}
-	entityCount := len(snapshot.Shares) + len(snapshot.DAVLocks) + len(snapshot.Uploads) + len(snapshot.Thumbnails) + len(linksByFile)
+	entityCount := len(snapshot.Shares) + len(snapshot.DAVLocks) + len(snapshot.Uploads) + len(snapshot.Thumbnails) + len(snapshot.ThumbnailLinks)
 	if entityCount > 0 {
 		entityTasks := tasks[len(tasks)-entityCount:]
 		if e := runTreeImportTasks(ctx, 32, entityTasks); e != nil {

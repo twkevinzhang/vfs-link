@@ -65,15 +65,13 @@ type ThumbnailRecord struct {
 	Size         int64      `json:"size"`
 	Width        int        `json:"width"`
 	Height       int        `json:"height"`
-	FileIDs      []int      `json:"fileIds,omitempty"`
 	CreatedAt    time.Time  `json:"createdAt"`
 	DeleteAfter  *time.Time `json:"deleteAfter,omitempty"`
 }
 
 // FileThumbnailLink is the canonical TreeStore lookup from a logical file to
-// its thumbnail. ThumbnailRecord.FileIDs is retained for backwards-compatible
-// imports and as a repair hint, but new TreeStore reads use this direct entity
-// instead of scanning every thumbnail record.
+// its thumbnail. TreeStore reads use this direct entity instead of scanning
+// every thumbnail record.
 //
 // A link is only written after its ThumbnailRecord has been persisted. This
 // ordering means an interrupted write can leave an unreferenced thumbnail, but
