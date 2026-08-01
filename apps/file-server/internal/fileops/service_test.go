@@ -6,10 +6,106 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/blob"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/db"
 )
+
+type blockingResumeStore struct {
+	db.Store
+	operations  db.TreeOperationStore
+	listStarted chan struct{}
+	allowList   chan struct{}
+}
+
+func (s *blockingResumeStore) CreateMoveOperation(ctx context.Context, paths []string, destination string) (db.OperationRecord, error) {
+	return s.operations.CreateMoveOperation(ctx, paths, destination)
+}
+func (s *blockingResumeStore) CreateRenameOperation(ctx context.Context, path, name string) (db.OperationRecord, error) {
+	return s.operations.CreateRenameOperation(ctx, path, name)
+}
+func (s *blockingResumeStore) CreateTrashOperation(ctx context.Context, paths []db.TrashPath) (db.OperationRecord, error) {
+	return s.operations.CreateTrashOperation(ctx, paths)
+}
+func (s *blockingResumeStore) CreateRestoreOperation(ctx context.Context, ids []string) (db.OperationRecord, error) {
+	return s.operations.CreateRestoreOperation(ctx, ids)
+}
+func (s *blockingResumeStore) CreateDeleteTrashOperation(ctx context.Context, ids []string) (db.OperationRecord, error) {
+	return s.operations.CreateDeleteTrashOperation(ctx, ids)
+}
+func (s *blockingResumeStore) GetOperation(ctx context.Context, id string) (db.OperationRecord, bool, error) {
+	return s.operations.GetOperation(ctx, id)
+}
+func (s *blockingResumeStore) ListRunnableOperations(ctx context.Context) ([]db.OperationRecord, error) {
+	close(s.listStarted)
+	select {
+	case <-s.allowList:
+		return s.operations.ListRunnableOperations(ctx)
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+func (s *blockingResumeStore) RunOperation(ctx context.Context, id string) (db.OperationRecord, error) {
+	return s.operations.RunOperation(ctx, id)
+}
+func (s *blockingResumeStore) RunDeleteTrashOperation(ctx context.Context, id string, executor func(context.Context, []string, func(int, int) error) (int64, error)) (db.OperationRecord, error) {
+	return s.operations.RunDeleteTrashOperation(ctx, id, executor)
+}
+
+func TestMoveWaitsForInitialOperationResumeScan(t *testing.T) {
+	ctx := context.Background()
+	metadata, err := db.NewTreeLocal(filepath.Join(t.TempDir(), "metadata"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := metadata.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := metadata.UpsertDirectory(ctx, "target"); err != nil {
+		t.Fatal(err)
+	}
+	if err := metadata.UpsertFile(ctx, "a.txt", "object-a", 1); err != nil {
+		t.Fatal(err)
+	}
+	operations := metadata.(db.TreeOperationStore)
+	store := &blockingResumeStore{
+		Store:       metadata,
+		operations:  operations,
+		listStarted: make(chan struct{}),
+		allowList:   make(chan struct{}),
+	}
+	objects, err := blob.NewLocal(filepath.Join(t.TempDir(), "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := New(store, objects)
+	select {
+	case <-store.listStarted:
+	case <-time.After(time.Second):
+		t.Fatal("initial operation resume scan did not start")
+	}
+
+	result := make(chan error, 1)
+	go func() {
+		_, moveErr := service.Move(ctx, []string{"a.txt"}, "target")
+		result <- moveErr
+	}()
+	select {
+	case err := <-result:
+		t.Fatalf("Move() returned before resume scan completed: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(store.allowList)
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("Move() error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Move() did not complete after resume scan")
+	}
+}
 
 type failDeleteOnceStore struct {
 	blob.Store
