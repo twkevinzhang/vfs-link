@@ -341,6 +341,7 @@ func (s *Service) deletePermanentlyWithCheckpoint(ctx context.Context, ids []str
 	}
 	seen := map[string]bool{}
 	physicalHashes := make([]string, 0)
+	fileIDs := make([]int, 0)
 	claimedIDs := make([]string, 0)
 	claimedIDSet := map[string]bool{}
 	for _, record := range records {
@@ -353,6 +354,9 @@ func (s *Service) deletePermanentlyWithCheckpoint(ctx context.Context, ids []str
 		return 0, nil
 	}
 	for _, record := range records {
+		if !record.IsDirectory {
+			fileIDs = append(fileIDs, record.ID)
+		}
 		if record.IsDirectory || record.PhysicalHash == "" || seen[record.PhysicalHash] {
 			continue
 		}
@@ -368,6 +372,15 @@ func (s *Service) deletePermanentlyWithCheckpoint(ctx context.Context, ids []str
 				return 0, fmt.Errorf("checkpoint permanent deletion: %w", err)
 			}
 		}
+	}
+	orphanedThumbnails, err := s.store.DetachThumbnails(ctx, fileIDs)
+	if err != nil {
+		return 0, fmt.Errorf("detach thumbnails: %w", err)
+	}
+	for _, thumbnail := range orphanedThumbnails {
+		// Thumbnail objects are derived data. Metadata deletion is authoritative;
+		// a transient object cleanup failure must not strand trash forever.
+		_ = s.objects.Delete(ctx, thumbnail.PhysicalHash)
 	}
 	deleted, err := s.store.DeleteTrash(ctx, claimedIDs)
 	if err != nil {

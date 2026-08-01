@@ -85,6 +85,12 @@ func ExportTreeSnapshot(ctx context.Context, store Store) (TreeImportSnapshot, e
 		}
 	}
 
+	thumbnails, err := tree.thumbnailRecords(ctx)
+	if err != nil {
+		return snapshot, fmt.Errorf("list thumbnails: %w", err)
+	}
+	snapshot.Thumbnails = append(snapshot.Thumbnails, thumbnails...)
+
 	sequenceObject, found, err := tree.objects.Get(ctx, tree.sequenceKey())
 	if err != nil {
 		return snapshot, fmt.Errorf("read file sequence: %w", err)
@@ -147,6 +153,7 @@ func normalizeExportSnapshot(snapshot *TreeImportSnapshot) {
 	sort.Slice(snapshot.Shares, func(i, j int) bool { return snapshot.Shares[i].ID < snapshot.Shares[j].ID })
 	sort.Slice(snapshot.DAVLocks, func(i, j int) bool { return snapshot.DAVLocks[i].Token < snapshot.DAVLocks[j].Token })
 	sort.Slice(snapshot.Uploads, func(i, j int) bool { return snapshot.Uploads[i].ID < snapshot.Uploads[j].ID })
+	sort.Slice(snapshot.Thumbnails, func(i, j int) bool { return snapshot.Thumbnails[i].ID < snapshot.Thumbnails[j].ID })
 	if snapshot.NextFileID > 0 {
 		return
 	}

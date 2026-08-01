@@ -16,6 +16,12 @@ export type FileEntry = {
   updatedAt: string;
   trashId?: string;
   trashedAt?: string;
+  thumbnail?: {
+    id: string;
+    url: string;
+    width: number;
+    height: number;
+  };
 };
 
 export type TrashEntry = FileEntry & {

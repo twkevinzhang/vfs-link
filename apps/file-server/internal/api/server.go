@@ -58,15 +58,16 @@ func (s *Server) SetCORSOrigins(origins []string) *Server {
 }
 
 type Entry struct {
-	Name          string         `json:"name"`
-	Path          string         `json:"path"`
-	Kind          string         `json:"kind"`
-	Size          int64          `json:"size"`
-	FolderSummary *FolderSummary `json:"folderSummary,omitempty"`
-	UpdatedAt     time.Time      `json:"updatedAt"`
-	PhysicalHash  string         `json:"physicalHash,omitempty"`
-	TrashID       string         `json:"trashId,omitempty"`
-	TrashedAt     *time.Time     `json:"trashedAt,omitempty"`
+	Name          string             `json:"name"`
+	Path          string             `json:"path"`
+	Kind          string             `json:"kind"`
+	Size          int64              `json:"size"`
+	FolderSummary *FolderSummary     `json:"folderSummary,omitempty"`
+	UpdatedAt     time.Time          `json:"updatedAt"`
+	PhysicalHash  string             `json:"physicalHash,omitempty"`
+	TrashID       string             `json:"trashId,omitempty"`
+	TrashedAt     *time.Time         `json:"trashedAt,omitempty"`
+	Thumbnail     *thumbnailResponse `json:"thumbnail,omitempty"`
 }
 
 type FilesResponse struct {
@@ -180,6 +181,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/shares/", s.handleShare)
 	mux.HandleFunc("/api/uploads", s.handleCreateUpload)
 	mux.HandleFunc("/api/uploads/", s.handleUpload)
+	mux.HandleFunc("/api/thumbnails", s.handleThumbnails)
+	mux.HandleFunc("/api/thumbnails/", s.handleThumbnail)
 	mux.HandleFunc("/api/drift", s.handleDrift)
 	mux.HandleFunc("/api/drift/plans", s.handleDriftPlans)
 	mux.HandleFunc("/api/drift/actions", s.handleDriftActions)
@@ -241,7 +244,11 @@ func (s *Server) handleFiles(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	entries := entriesFromRecords(page.Records)
+	entries, err := s.entriesWithThumbnails(r.Context(), page.Records)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 
 	writeJSON(w, FilesResponse{
 		Path:        logicPath,
@@ -412,6 +419,27 @@ func entriesFromRecords(records []db.FileRecord) []Entry {
 	return entries
 }
 
+func (s *Server) entriesWithThumbnails(ctx context.Context, records []db.FileRecord) ([]Entry, error) {
+	entries := entriesFromRecords(records)
+	fileIDs := make([]int, 0, len(records))
+	for _, record := range records {
+		if !record.IsDirectory {
+			fileIDs = append(fileIDs, record.ID)
+		}
+	}
+	thumbnails, err := s.store.FindThumbnailsForFiles(ctx, fileIDs)
+	if err != nil {
+		return nil, err
+	}
+	for index, record := range records {
+		if thumbnail, ok := thumbnails[record.ID]; ok {
+			response := thumbnailToResponse(thumbnail)
+			entries[index].Thumbnail = &response
+		}
+	}
+	return entries, nil
+}
+
 func (s *Server) stats(ctx context.Context) (Stats, error) {
 	if provider, ok := s.store.(db.MetadataStatsProvider); ok {
 		metadataStats, err := provider.MetadataStats(ctx)
@@ -462,6 +490,8 @@ func entryFromRecord(record db.FileRecord) Entry {
 		Size:         record.Size,
 		UpdatedAt:    record.UpdatedAt,
 		PhysicalHash: record.PhysicalHash,
+		TrashID:      record.TrashID,
+		TrashedAt:    record.TrashedAt,
 	}
 	if record.FolderSummary != nil {
 		summary := folderSummaryFromDB(*record.FolderSummary)

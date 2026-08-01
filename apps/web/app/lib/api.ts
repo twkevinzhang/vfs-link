@@ -174,6 +174,54 @@ export function getPreviewUrl(path: string) {
   return `${API_BASE_URL}/api/download?${query.toString()}`;
 }
 
+export function getThumbnailUrl(id: string) {
+  return `${API_BASE_URL}/api/thumbnails/${encodeURIComponent(id)}`;
+}
+
+export async function createThumbnail(input: {
+  paths: string[];
+  blob: Blob;
+  width: number;
+  height: number;
+}) {
+  const body = new FormData();
+  body.set('paths', JSON.stringify(input.paths));
+  body.set('width', String(input.width));
+  body.set('height', String(input.height));
+  body.set('thumbnail', input.blob, 'thumbnail.webp');
+  const response = await fetch(`${API_BASE_URL}/api/thumbnails`, {
+    method: 'POST',
+    headers: { Accept: 'application/json' },
+    body,
+  });
+  if (!response.ok) {
+    let message = `${response.status} ${response.statusText}`;
+    try {
+      message =
+        ((await response.json()) as { error?: string }).error || message;
+    } catch {
+      // Use the HTTP fallback when the response is not JSON.
+    }
+    throw new Error(message);
+  }
+  return response.json() as Promise<{
+    id: string;
+    url: string;
+    width: number;
+    height: number;
+  }>;
+}
+
+export async function deleteThumbnails(paths: string[]) {
+  const response = await fetch(`${API_BASE_URL}/api/thumbnails`, {
+    method: 'DELETE',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ paths }),
+  });
+  if (!response.ok)
+    throw new Error(`${response.status} ${response.statusText}`);
+}
+
 export function createShareDraft(path: string) {
   return postJson<ShareRecord>('/api/shares/drafts', { path });
 }

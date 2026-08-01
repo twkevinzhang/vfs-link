@@ -1,6 +1,9 @@
 export type UploadCandidate = {
   file: File;
   relativePath: string;
+  selectionRoot: string;
+  selectionRootKind: 'file' | 'directory';
+  archiveGroupId?: string;
 };
 
 function cleanRelativePath(value: string) {
@@ -14,10 +17,19 @@ function cleanRelativePath(value: string) {
 export function filesToUploadCandidates(
   files: FileList | File[]
 ): UploadCandidate[] {
-  return Array.from(files).map((file) => ({
-    file,
-    relativePath: cleanRelativePath(file.webkitRelativePath || file.name),
-  }));
+  return Array.from(files).map((file) => {
+    const relativePath = cleanRelativePath(
+      file.webkitRelativePath || file.name
+    );
+    const parts = relativePath.split('/');
+    const directorySelection = parts.length > 1;
+    return {
+      file,
+      relativePath,
+      selectionRoot: directorySelection ? parts[0] : relativePath,
+      selectionRootKind: directorySelection ? 'directory' : 'file',
+    };
+  });
 }
 
 function readFileEntry(entry: FileSystemFileEntry) {
@@ -39,7 +51,9 @@ async function readDirectoryEntries(entry: FileSystemDirectoryEntry) {
 
 async function walkEntry(
   entry: FileSystemEntry,
-  parentPath: string
+  parentPath: string,
+  selectionRoot: string,
+  selectionRootKind: UploadCandidate['selectionRootKind']
 ): Promise<UploadCandidate[]> {
   if (entry.isFile) {
     const file = await readFileEntry(entry as FileSystemFileEntry);
@@ -47,6 +61,8 @@ async function walkEntry(
       {
         file,
         relativePath: cleanRelativePath(`${parentPath}/${file.name}`),
+        selectionRoot,
+        selectionRootKind,
       },
     ];
   }
@@ -57,7 +73,9 @@ async function walkEntry(
     entry as FileSystemDirectoryEntry
   );
   const nested = await Promise.all(
-    children.map((child) => walkEntry(child, directoryPath))
+    children.map((child) =>
+      walkEntry(child, directoryPath, selectionRoot, selectionRootKind)
+    )
   );
   return nested.flat();
 }
@@ -73,7 +91,9 @@ export async function collectDroppedFiles(
     return filesToUploadCandidates(dataTransfer.files);
   }
   const nested = await Promise.all(
-    entries.map((entry) => walkEntry(entry, ''))
+    entries.map((entry) =>
+      walkEntry(entry, '', entry.name, entry.isDirectory ? 'directory' : 'file')
+    )
   );
   return nested.flat();
 }

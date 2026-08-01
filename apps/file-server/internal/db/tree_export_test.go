@@ -31,12 +31,19 @@ func TestExportTreeSnapshotRoundTrip(t *testing.T) {
 	if _, err := source.CreateUpload(ctx, UploadRecord{ID: "upload-export", LogicPath: "future.bin", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
+	live, found, err := source.Find(ctx, "archive/live.bin")
+	if err != nil || !found {
+		t.Fatalf("find live file found=%v err=%v", found, err)
+	}
+	if _, err = source.ReplaceThumbnail(ctx, ThumbnailRecord{ID: "thumbnail-export", PhysicalHash: "thumbnail-export.webp", ContentType: "image/webp", Size: 12, Width: 8, Height: 6}, []int{live.ID}); err != nil {
+		t.Fatal(err)
+	}
 
 	snapshot, err := ExportTreeSnapshot(ctx, source)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snapshot.Records) != 3 || len(snapshot.Shares) != 1 || len(snapshot.DAVLocks) != 1 || len(snapshot.Uploads) != 1 || snapshot.SourceSHA256 == "" {
+	if len(snapshot.Records) != 3 || len(snapshot.Shares) != 1 || len(snapshot.DAVLocks) != 1 || len(snapshot.Uploads) != 1 || len(snapshot.Thumbnails) != 1 || snapshot.SourceSHA256 == "" {
 		t.Fatalf("snapshot=%+v", snapshot)
 	}
 
@@ -50,6 +57,14 @@ func TestExportTreeSnapshotRoundTrip(t *testing.T) {
 	}
 	if page.FolderSummary != (FolderSummary{Files: 1, Directories: 1, Bytes: 11}) {
 		t.Fatalf("summary=%+v", page.FolderSummary)
+	}
+	importedLive, found, err := target.Find(ctx, "archive/live.bin")
+	if err != nil || !found {
+		t.Fatalf("find imported live file found=%v err=%v", found, err)
+	}
+	importedThumbnails, err := target.FindThumbnailsForFiles(ctx, []int{importedLive.ID})
+	if err != nil || importedThumbnails[importedLive.ID].ID != "thumbnail-export" {
+		t.Fatalf("imported thumbnails=%+v err=%v", importedThumbnails, err)
 	}
 	trash, err := target.ListTrash(ctx)
 	if err != nil || len(trash) != 1 || trash[0].TrashID != "trash-export" {

@@ -42,7 +42,10 @@ import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Skeleton } from '../components/ui/skeleton';
-import { UploadDialog } from '../components/upload-panel';
+import {
+  UploadDialog,
+  type PreparedArchiveBatch,
+} from '../components/upload-panel';
 import {
   ConfirmPermanentDelete,
   ConfirmTrashDialog,
@@ -65,19 +68,23 @@ import {
 } from '../lib/file-route';
 import {
   createShareDraft,
+  createThumbnail,
   deleteTrash,
+  deleteThumbnails,
   emptyTrash,
   getDownloadUrl,
   getFiles,
   getFileOperation,
   getPreviewUrl,
   getStatus,
+  getThumbnailUrl,
   getTrash,
   moveFiles,
   moveFilesToTrash,
   renameFile,
   restoreTrash,
 } from '../lib/api';
+import { removeArchiveTemporaryFiles } from '../lib/archive-compression';
 import {
   formatBytes,
   formatDate,
@@ -119,6 +126,12 @@ type TextPreviewState =
   | { status: 'ready'; content: string; truncated: boolean }
   | { status: 'error'; message: string };
 
+type PendingArchiveBatch = PreparedArchiveBatch & {
+  paths: Set<string>;
+  completed: Set<string>;
+  processing: boolean;
+};
+
 export default function FileBrowserRoute() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -156,6 +169,7 @@ export default function FileBrowserRoute() {
   const uploadRefreshTimerRef = useRef<number | undefined>(undefined);
   const completedUploadDestinationsRef = useRef(new Set<string>());
   const handledCompletedUploadsRef = useRef(new Set<string>());
+  const archiveBatchesRef = useRef(new Map<string, PendingArchiveBatch>());
   const uploadRouteRef = useRef({
     currentPath,
     fileQuery,
@@ -280,9 +294,46 @@ export default function FileBrowserRoute() {
       ) {
         handledCompletedUploadsRef.current.add(item.key);
         handleUploadComplete(item);
+        if (item.archiveGroupId) {
+          const batch = archiveBatchesRef.current.get(item.archiveGroupId);
+          if (batch) {
+            batch.completed.add(item.logicPath);
+            const complete = [...batch.paths].every((path) =>
+              batch.completed.has(path)
+            );
+            if (complete && !batch.processing) {
+              batch.processing = true;
+              void (async () => {
+                try {
+                  if (batch.thumbnail) {
+                    await createThumbnail({
+                      paths: [...batch.paths],
+                      ...batch.thumbnail,
+                    });
+                  } else {
+                    await deleteThumbnails([...batch.paths]);
+                  }
+                } catch (error) {
+                  setActionError(
+                    error instanceof Error
+                      ? `縮圖儲存失敗：${error.message}`
+                      : '縮圖儲存失敗。'
+                  );
+                } finally {
+                  await removeArchiveTemporaryFiles(batch.temporaryNames);
+                  archiveBatchesRef.current.delete(batch.id);
+                  const route = uploadRouteRef.current;
+                  if (route.view === 'files') {
+                    void loadFiles(route.currentPath, route.fileQuery, 0);
+                  }
+                }
+              })();
+            }
+          }
+        }
       }
     }
-  }, [handleUploadComplete, uploadQueue.items]);
+  }, [handleUploadComplete, loadFiles, uploadQueue.items]);
 
   const refresh = useCallback(() => {
     const nextOffset = 0;
@@ -342,6 +393,28 @@ export default function FileBrowserRoute() {
   const existingNames = useMemo(
     () => new Set(visibleEntries.map((entry) => entry.name)),
     [visibleEntries]
+  );
+  const addArchiveBatches = useCallback(
+    (batches: PreparedArchiveBatch[]) => {
+      const allCandidates = batches.flatMap((batch) => {
+        const paths = new Set(
+          batch.candidates.map((candidate) =>
+            normalizePath(
+              [currentPath, candidate.relativePath].filter(Boolean).join('/')
+            )
+          )
+        );
+        archiveBatchesRef.current.set(batch.id, {
+          ...batch,
+          paths,
+          completed: new Set(),
+          processing: false,
+        });
+        return batch.candidates;
+      });
+      uploadQueue.add(allCandidates, currentPath, existingNames);
+    },
+    [currentPath, existingNames, uploadQueue]
   );
   const currentPagination = state.files?.pagination;
   const totalVisibleBytes = state.files?.visibleBytes ?? 0;
@@ -943,6 +1016,7 @@ export default function FileBrowserRoute() {
           onAddFiles={(candidates) =>
             uploadQueue.add(candidates, currentPath, existingNames)
           }
+          onAddArchives={addArchiveBatches}
           open={showUpload}
           onOpenChange={setShowUpload}
         />
@@ -1535,6 +1609,12 @@ function FileTable({
                           aria-hidden="true"
                           className="h-4 w-4 shrink-0 text-[#11615a]"
                         />
+                      ) : entry.thumbnail ? (
+                        <img
+                          src={getThumbnailUrl(entry.thumbnail.id)}
+                          alt=""
+                          className="h-7 w-7 shrink-0 rounded object-cover"
+                        />
                       ) : (
                         <File
                           aria-hidden="true"
@@ -1689,6 +1769,12 @@ function MobileFileList({
                 <Folder
                   aria-hidden="true"
                   className="mt-0.5 h-5 w-5 shrink-0 text-[#11615a]"
+                />
+              ) : entry.thumbnail ? (
+                <img
+                  src={getThumbnailUrl(entry.thumbnail.id)}
+                  alt=""
+                  className="h-10 w-10 shrink-0 rounded object-cover"
                 />
               ) : (
                 <File
@@ -2058,6 +2144,18 @@ function FilePreview({ file }: { file: FileEntry }) {
 
     return () => controller.abort();
   }, [file, previewKind, previewUrl]);
+
+  if (file.thumbnail) {
+    return (
+      <div className="grid min-h-0 flex-1 place-items-center overflow-auto bg-muted/20 p-4">
+        <img
+          src={getThumbnailUrl(file.thumbnail.id)}
+          alt={`${file.name} 的壓縮檔縮圖`}
+          className="max-h-full max-w-full rounded-md object-contain shadow-sm"
+        />
+      </div>
+    );
+  }
 
   if (previewKind === 'image') {
     return (

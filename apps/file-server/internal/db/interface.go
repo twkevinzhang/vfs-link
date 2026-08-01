@@ -38,6 +38,10 @@ type Store interface {
 	ListTrashRecords(context.Context, []string) ([]FileRecord, error)
 	ClaimTrash(context.Context, []string) ([]FileRecord, error)
 	DeleteTrash(context.Context, []string) (int64, error)
+	ReplaceThumbnail(context.Context, ThumbnailRecord, []int) ([]ThumbnailRecord, error)
+	FindThumbnail(context.Context, string) (ThumbnailRecord, bool, error)
+	FindThumbnailsForFiles(context.Context, []int) (map[int]ThumbnailRecord, error)
+	DetachThumbnails(context.Context, []int) ([]ThumbnailRecord, error)
 
 	CreateShare(context.Context, ShareRecord) (ShareRecord, error)
 	FindShare(context.Context, string) (ShareRecord, bool, error)
@@ -52,6 +56,17 @@ type Store interface {
 	FindUpload(context.Context, string) (UploadRecord, bool, error)
 	UpdateUpload(context.Context, UploadRecord) (UploadRecord, error)
 	DeleteUpload(context.Context, string) (bool, error)
+}
+
+type ThumbnailRecord struct {
+	ID           string    `json:"id"`
+	PhysicalHash string    `json:"physicalHash"`
+	ContentType  string    `json:"contentType"`
+	Size         int64     `json:"size"`
+	Width        int       `json:"width"`
+	Height       int       `json:"height"`
+	FileIDs      []int     `json:"fileIds,omitempty"`
+	CreatedAt    time.Time `json:"createdAt"`
 }
 
 // MetadataStats is a cheap logical metadata summary maintained by stores that

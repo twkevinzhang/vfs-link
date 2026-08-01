@@ -977,6 +977,7 @@ type TreeImportSnapshot struct {
 	Shares           []ShareRecord
 	DAVLocks         []DAVLockRecord
 	Uploads          []UploadRecord
+	Thumbnails       []ThumbnailRecord
 	NextFileID       int
 	SourceSHA256     string
 	SourceGeneration int64
@@ -989,6 +990,7 @@ type treeImportManifest struct {
 	Shares           int       `json:"shares"`
 	DAVLocks         int       `json:"davLocks"`
 	Uploads          int       `json:"uploads"`
+	Thumbnails       int       `json:"thumbnails"`
 	Active           int       `json:"active"`
 	Trash            int       `json:"trash"`
 	Files            int       `json:"files"`
@@ -1014,6 +1016,7 @@ func ValidateTreeImport(prefix string, snapshot TreeImportSnapshot) (TreeValidat
 	v := TreeValidation{Expected: len(snapshot.Records), Actual: len(snapshot.Records)}
 	dirs := map[string]bool{"": true}
 	trashRoots := map[string]bool{}
+	fileIDs := map[int]bool{}
 	for _, r := range snapshot.Records {
 		r = normalizeTreeRecord(r)
 		var key string
@@ -1045,6 +1048,7 @@ func ValidateTreeImport(prefix string, snapshot TreeImportSnapshot) (TreeValidat
 		} else {
 			v.Files++
 			v.Bytes += r.Size
+			fileIDs[r.ID] = true
 		}
 	}
 	for dir := range dirs {
@@ -1074,6 +1078,16 @@ func ValidateTreeImport(prefix string, snapshot TreeImportSnapshot) (TreeValidat
 	for _, upload := range snapshot.Uploads {
 		if e := validateUniqueKey(fake.entityKey("uploads", upload.ID)); e != nil {
 			return v, e
+		}
+	}
+	for _, thumbnail := range snapshot.Thumbnails {
+		if e := validateUniqueKey(fake.entityKey("thumbnails", thumbnail.ID)); e != nil {
+			return v, e
+		}
+		for _, fileID := range thumbnail.FileIDs {
+			if !fileIDs[fileID] {
+				return v, fmt.Errorf("thumbnail %s references unknown file id %d", thumbnail.ID, fileID)
+			}
 		}
 	}
 	return v, nil
@@ -1206,8 +1220,15 @@ func BulkImportTree(ctx context.Context, store Store, snapshot TreeImportSnapsho
 		rCopy := r
 		tasks = append(tasks, func(taskCtx context.Context) error { return tree.putEntity(taskCtx, "uploads", rCopy.ID, rCopy, true) })
 	}
-	if len(snapshot.Shares)+len(snapshot.DAVLocks)+len(snapshot.Uploads) > 0 {
-		entityTasks := tasks[len(tasks)-len(snapshot.Shares)-len(snapshot.DAVLocks)-len(snapshot.Uploads):]
+	for _, r := range snapshot.Thumbnails {
+		rCopy := r
+		tasks = append(tasks, func(taskCtx context.Context) error {
+			return tree.putEntity(taskCtx, "thumbnails", rCopy.ID, rCopy, true)
+		})
+	}
+	entityCount := len(snapshot.Shares) + len(snapshot.DAVLocks) + len(snapshot.Uploads) + len(snapshot.Thumbnails)
+	if entityCount > 0 {
+		entityTasks := tasks[len(tasks)-entityCount:]
 		if e := runTreeImportTasks(ctx, 32, entityTasks); e != nil {
 			return TreeValidation{}, e
 		}
@@ -1257,7 +1278,7 @@ func BulkImportTree(ctx context.Context, store Store, snapshot TreeImportSnapsho
 	if _, e := tree.objects.Put(ctx, tree.sequenceKey(), b, nil); e != nil {
 		return TreeValidation{}, e
 	}
-	im := treeImportManifest{Version: 1, SourceSHA256: snapshot.SourceSHA256, SourceGeneration: snapshot.SourceGeneration, Records: len(snapshot.Records), Shares: len(snapshot.Shares), DAVLocks: len(snapshot.DAVLocks), Uploads: len(snapshot.Uploads), Active: validation.Active, Trash: validation.Trash, Files: validation.Files, Directories: validation.Directories, Bytes: validation.Bytes, ImportedAt: time.Now().UTC()}
+	im := treeImportManifest{Version: 1, SourceSHA256: snapshot.SourceSHA256, SourceGeneration: snapshot.SourceGeneration, Records: len(snapshot.Records), Shares: len(snapshot.Shares), DAVLocks: len(snapshot.DAVLocks), Uploads: len(snapshot.Uploads), Thumbnails: len(snapshot.Thumbnails), Active: validation.Active, Trash: validation.Trash, Files: validation.Files, Directories: validation.Directories, Bytes: validation.Bytes, ImportedAt: time.Now().UTC()}
 	b, _ = marshalTree(im)
 	z := int64(0)
 	if _, e := tree.objects.Put(ctx, tree.prefix+"/migration/import.json", b, &z); e != nil {

@@ -187,6 +187,21 @@ CREATE TABLE IF NOT EXISTS "Upload" (
 ALTER TABLE "Upload" ADD COLUMN IF NOT EXISTS "uploadUrl" TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS "Upload_expiresAt_idx" ON "Upload" ("expiresAt");
 
+CREATE TABLE IF NOT EXISTS "Thumbnail" (
+  id TEXT PRIMARY KEY,
+  "physicalHash" TEXT NOT NULL,
+  "contentType" TEXT NOT NULL,
+  size BIGINT NOT NULL,
+  width INTEGER NOT NULL,
+  height INTEGER NOT NULL,
+  "createdAt" TIMESTAMPTZ NOT NULL
+);
+CREATE TABLE IF NOT EXISTS "FileThumbnail" (
+  "fileId" INTEGER PRIMARY KEY REFERENCES "File"(id) ON DELETE CASCADE,
+  "thumbnailId" TEXT NOT NULL REFERENCES "Thumbnail"(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS "FileThumbnail_thumbnailId_idx" ON "FileThumbnail" ("thumbnailId");
+
 CREATE TABLE IF NOT EXISTS "DriftPlan" (
   id TEXT PRIMARY KEY,
   fingerprint TEXT NOT NULL,

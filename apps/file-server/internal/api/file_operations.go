@@ -176,7 +176,12 @@ func (s *Server) handleTrash(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, entriesResponse{Entries: recordsToEntries(records), GeneratedAt: time.Now().Format(time.RFC3339)})
+	entries, err := s.entriesWithThumbnails(r.Context(), records)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, entriesResponse{Entries: entries, GeneratedAt: time.Now().Format(time.RFC3339)})
 }
 func (s *Server) handleRestoreTrash(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {

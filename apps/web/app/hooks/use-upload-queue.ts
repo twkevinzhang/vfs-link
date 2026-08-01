@@ -37,6 +37,7 @@ export type UploadQueueItem = {
   sessionId?: string;
   /** Whether a direct child with this name existed when the item was added. */
   overwrite: boolean;
+  archiveGroupId?: string;
 };
 
 type UploadQueueSummary = {
@@ -419,6 +420,7 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
               ? 'Existing file was not replaced'
               : undefined,
           overwrite,
+          archiveGroupId: candidate.archiveGroupId,
         };
       });
       if (additions.length === 0) return;
