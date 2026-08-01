@@ -224,9 +224,13 @@ Open the browser UI at `http://localhost:8080/` after the service is healthy.
 | Profile | Metadata | Payloads | Typical access |
 | --- | --- | --- | --- |
 | Private self-hosted server | PostgreSQL | Local persistent volume | Browser/API, optional WebDAV and FTP |
+| ipproxy host-managed services | Existing PostgreSQL (`vfs_link_ipproxy`) | Host bind mount | Browser/API, optional WebDAV and FTP |
 | Database-free local instance | Local JSON tree | Local persistent directory | Browser/API or development |
 | Serverless browser/API | JSON tree in dedicated GCS bucket | Primary GCS bucket | HTTP on Cloud Run or a similar platform |
 | Serverless WebDAV | External PostgreSQL | Primary GCS bucket | WebDAV over managed HTTPS ingress |
+
+See [ipproxy deployment profile](docs/ipproxy.md) for the immutable-image,
+external-network deployment that reuses ipproxy's managed PostgreSQL service.
 
 ### GCS-backed JSON metadata
 
@@ -340,6 +344,7 @@ used only with a verified backup.
 ## Documentation
 
 - [Self-hosting](docs/self-hosting.md)
+- [ipproxy deployment profile](docs/ipproxy.md)
 - [Configuration reference](docs/configuration.md)
 - [Storage and GCS](docs/storage.md)
 - [Distributed JSON metadata migration](docs/metadata-migration.md)
