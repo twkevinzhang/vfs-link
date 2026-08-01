@@ -1,6 +1,6 @@
 # Development
 
-Prerequisites: Go 1.23+, Node.js 22+, Corepack/pnpm, and Docker Compose v2.
+Prerequisites: Go 1.25+, Node.js 22+, Corepack/pnpm, and Docker Compose v2.
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d db

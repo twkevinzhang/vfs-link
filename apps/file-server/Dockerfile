@@ -16,7 +16,7 @@ ENV VITE_BASE_PATH=$VITE_BASE_PATH
 ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
 RUN pnpm --dir apps/web build
 
-FROM golang:1.23-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /src
 
