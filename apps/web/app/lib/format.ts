@@ -32,16 +32,16 @@ export function formatDate(value: string) {
 }
 
 export function normalizePath(value: string) {
-  if (!value || value === '.') {
-    return '/';
-  }
-  const withLeadingSlash = value.startsWith('/') ? value : `/${value}`;
-  return withLeadingSlash.replace(/\/+/g, '/').replace(/\/$/, '') || '/';
+  if (!value || value === '.') return '';
+  return value
+    .normalize('NFC')
+    .replace(/\/+/g, '/')
+    .replace(/^\/+|\/+$/g, '');
 }
 
 export function formatPathDisplayName(path: string, name?: string) {
   const normalizedPath = normalizePath(path);
-  if (normalizedPath === '/') {
+  if (normalizedPath === '') {
     return ROOT_LABEL;
   }
 
@@ -49,6 +49,6 @@ export function formatPathDisplayName(path: string, name?: string) {
     return name;
   }
 
-  const parts = normalizedPath.slice(1).split('/').filter(Boolean);
+  const parts = normalizedPath.split('/').filter(Boolean);
   return parts[parts.length - 1] ?? ROOT_LABEL;
 }

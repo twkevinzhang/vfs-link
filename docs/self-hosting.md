@@ -6,9 +6,9 @@ storage. It is suitable for a private server or trusted internal network.
 ## Prerequisites
 
 - Docker Engine and Docker Compose v2.
-- A firewall rule for TCP `21`, TCP `8080` when the browser API is needed, and
-  the selected passive FTP range (`30000-30100` by default).
-- A reverse proxy or VPN if HTTP access is required outside a trusted network.
+- An HTTPS reverse proxy in front of TCP `8080` for WebDAV and the browser API.
+- During FTP migration only, firewall rules for TCP `21` and the selected
+  passive range (`30000-30100` by default).
 
 ## Local storage deployment
 
@@ -18,7 +18,7 @@ cd vfs-link
 cp .env.example .env
 ```
 
-Edit `.env` before starting. At minimum, replace both `CHANGE_ME` passwords.
+Edit `.env` before starting. Replace every `CHANGE_ME` password.
 Set `FTP_PASV_URL` to the public DNS name or IP when remote FTP clients connect;
 `127.0.0.1` only works for clients on the same host. The bundled Compose file
 does not expose PostgreSQL to the host.
@@ -30,8 +30,10 @@ docker compose ps
 curl -fsS http://localhost:8080/api/status
 ```
 
-Use an FTP client with the `FTP_USER` and `FTP_PASS` values from `.env`.
-Upload a small test file, list it, download it, then check the browser API.
+After configuring HTTPS, use a WebDAV client with `WEBDAV_USER` and
+`WEBDAV_PASS` at `https://your-host.example/dav/`. Upload a small test file,
+list it, download it, then check the browser API. FTP remains available while
+`FTP_ENABLED=true`; disable it after client migration.
 
 ## GCS deployment
 
@@ -41,7 +43,9 @@ permissions required by the chosen mode, store it outside this repository, and
 set its absolute host path in `GOOGLE_APPLICATION_CREDENTIALS_HOST`.
 
 Set `GCS_BUCKET` when using GCS as primary storage. Set `SHARE_GCS_BUCKET` for
-sharing. Then start with the credential overlay:
+sharing. With `DB_DRIVER=json`, set `METADATA_STORAGE_DRIVER=gcs` and
+`METADATA_GCS_BUCKET` to a separate Standard-class bucket. Then start with the
+credential overlay:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.gcs.yml up -d --build
@@ -55,7 +59,7 @@ Never commit it, place it in a Docker image, or paste it into an issue.
 ```bash
 git pull --ff-only
 docker compose up -d --build
-docker compose logs --tail=100 ftp-server
+docker compose logs --tail=100 file-server
 ```
 
 `docker compose down` stops the stack while retaining data volumes. `docker

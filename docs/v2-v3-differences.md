@@ -2,6 +2,9 @@
 
 本文件記錄 `vfs-link` 從 v2 Go + GCS 版改為 v3 storage-adapter 版的差異。
 
+> 現行版本已將 runtime 統一命名為 `file-server`，並新增 WebDAV over HTTPS；
+> FTP 僅作為遷移期可選協定。本文件以下內容保留 v2/v3 當時的歷史脈絡。
+
 ## 摘要
 
 v2 已將 FTP server 從 Node.js 改寫為 Go，但 physical file bytes 固定存放於 Google Cloud Storage。v3 保留 Go FTP server 與 PostgreSQL mapping，新增可選擇 local 或 GCS 的 storage adapter，並加入 read-only HTTP API 與 React browser。預設 driver 為 local。
@@ -23,7 +26,7 @@ v2 已將 FTP server 從 Node.js 改寫為 Go，但 physical file bytes 固定�
 
 - PostgreSQL `"File"` table 與核心欄位保留。
 - FTP login、passive mode 與 port range 設定保留。
-- `logicPath` 仍是使用者看到的 FTP path。
+- `logicPath` 仍是使用者透過檔案協定看到的 path；現行 WebDAV 與過渡期 FTP 共用。
 - `physicalHash` 仍是實體 bytes 的 object key。
 - Rename 仍只更新 database path，不搬動 physical object。
 - `rebuild-mapping` 仍從實體 object store 重建 database mapping。
@@ -47,7 +50,7 @@ v3 將原本直接依賴 GCS client 的 VFS 改為依賴 `blob.Store` interface�
 
 影響：
 
-- FTP/VFS logic 與 storage implementation 解耦。
+- File protocol/VFS logic 與 storage implementation 解耦。
 - GCS 與 local 都透過相同的 `blob.Store` contract；後續增加 S3、R2 等 driver 時不必重寫 FTP path。
 - v3 不在不同 storage driver 之間自動同步或回填；切換 driver 前應自行確認目標 store 已具備資料庫 mapping 所指向的 objects。
 
@@ -69,7 +72,7 @@ v3 新增 `apps/web`，用 React Router、TypeScript、Tailwind、Radix/shadcn-s
 
 - 使用者可透過網頁瀏覽目錄、檔案、metadata 與 storage status。
 - 前端只讀取 vfs-link API，不直接存取 primary object store。
-- 預設 API endpoint 是 `http://localhost:8080`，可用 `VITE_API_BASE_URL` 覆寫。
+- 預設 API endpoint 使用瀏覽器目前 origin，可用 `VITE_API_BASE_URL` 覆寫。
 
 啟動方式：
 

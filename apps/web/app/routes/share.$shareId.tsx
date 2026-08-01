@@ -22,6 +22,7 @@ import {
 } from '../components/ui/card';
 import { Skeleton } from '../components/ui/skeleton';
 import { getShare, startShare } from '../lib/api';
+import { FILES_ROUTE } from '../lib/file-route';
 import { formatBytes, formatDate } from '../lib/format';
 import { ShareRecord, ShareStatus } from '../types/share';
 
@@ -132,7 +133,7 @@ export default function ShareRoute() {
         <header className="flex flex-col gap-4 border-b border-border pb-5 md:flex-row md:items-end md:justify-between">
           <div className="grid gap-2">
             <Link
-              to="/"
+              to={FILES_ROUTE}
               className="inline-flex w-fit items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
             >
               <ArrowLeft aria-hidden="true" className="h-4 w-4" />

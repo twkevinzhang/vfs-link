@@ -18,15 +18,15 @@ v2 的核心目標不是改變使用者看到的 FTP 行為，而是降低長期
 | GCS access | `@google-cloud/storage` | `cloud.google.com/go/storage` |
 | Schema setup | container startup runs `prisma generate` and `prisma db push` | server startup runs `CREATE TABLE IF NOT EXISTS` SQL |
 | Upload / download | Node streams to/from GCS | Go `io.Reader` / `io.Writer` streams to/from GCS |
-| Docker runtime | Node Alpine image with pnpm and npm dependencies | Alpine image with a single compiled `ftp-server` binary |
-| Rebuild mapping | `npx tsx scripts/rebuild-mapping-table.ts` | `./ftp-server rebuild-mapping` subcommand |
-| Local build | Nx esbuild target | Nx target invoking `apps/ftp-server/scripts/go.sh` |
+| Docker runtime | Node Alpine image with pnpm and npm dependencies | Alpine image with a single compiled Go binary（目前名為 `file-server`） |
+| Rebuild mapping | `npx tsx scripts/rebuild-mapping-table.ts` | `./file-server rebuild-mapping` subcommand |
+| Local build | Nx esbuild target | Nx target invoking `apps/file-server/scripts/go.sh` |
 
 ## 保留的行為
 
 - FTP 帳號密碼仍使用 `FTP_USER` 與 `FTP_PASS`。
 - Passive mode 仍使用 `FTP_PASV_URL`、`FTP_PASV_MIN` 與 `FTP_PASV_MAX`。
-- Docker service 與 image path 仍維持 `ftp-server` 與 `vfs-link/ftp-server`。
+- v2 當時保留既有 Docker 命名；目前已統一改為 `file-server` 與 `vfs-link/file-server`。
 - PostgreSQL table 仍維持 `"File"`，並保留相同核心欄位：
   - `logicPath`
   - `physicalHash`
@@ -90,22 +90,22 @@ v1 將 schema synchronization 交給 Prisma。v2 在 startup 時直接用 SQL �
 
 ### 6. Build 與 deployment path 維持熟悉
 
-Docker image name、compose service 與 Nx targets 都保留下來。`npx nx up ftp-server` 仍是文件中的高階啟動命令。
+v2 當時保留既有 Docker 與 Nx 命名，以減少部署變動；目前的高階啟動 target 為 `npx nx up file-server`。
 
 影響：
 
-- CI 仍以 `apps/ftp-server/Dockerfile` 建置 image，並發佈不可變的 commit SHA tag 到 GHCR。
+- CI 目前以 `apps/file-server/Dockerfile` 建置 image，並可發佈不可變的 commit SHA tag 到 GHCR。
 - Compose networking、ports、env vars 與 GCS credential mounting 維持不變。
-- CD runner 只 pull 已發佈的 image 並 recreate `ftp-server` service，不在 production host fetch Git 或 build source。
+- CD runner 應只 pull 已發佈的 image 並 recreate `file-server` service，不在 production host fetch Git 或 build source。
 
 ## 操作注意事項
 
-- `apps/ftp-server/scripts/go.sh` 的存在是因為目前本機 asdf Go install 暴露出的 `GOROOT` 指向 asdf package root，而不是實際 Go root。這個 wrapper 只會在偵測到這種形狀時調整 `GOROOT`，並提供預設 `GOPROXY` / `GOSUMDB`，讓 local build 可重現。
+- `apps/file-server/scripts/go.sh` 的存在是因為目前本機 asdf Go install 暴露出的 `GOROOT` 指向 asdf package root，而不是實際 Go root。這個 wrapper 只會在偵測到這種形狀時調整 `GOROOT`，並提供預設 `GOPROXY` / `GOSUMDB`，讓 local build 可重現。
 - `ftpserverlib` 釘在 `v0.26.0`，因為更新版本需要比本次改寫所用 Go 1.23.5 更高的 Go toolchain。
 - v2 已用以下方式驗證：
-  - `cd apps/ftp-server && ./scripts/go.sh test ./...`
-  - `npx nx build ftp-server`
-  - `docker build -t vfs-link/ftp-server:golang-v2-test -f apps/ftp-server/Dockerfile .`
+  - `cd apps/file-server && ./scripts/go.sh test ./...`
+  - `npx nx build file-server`
+  - `docker build -t vfs-link/file-server:test -f apps/file-server/Dockerfile .`
 
 ## 仍需實機驗證的相容性風險
 

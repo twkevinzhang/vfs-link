@@ -50,7 +50,7 @@ records.csv.tmp
 .specstory
 .github/copilot-instructions.md
 .auth
-apps/ftp-server/ftp-server
+apps/file-server/file-server
 mount/db
 /data
 .env
