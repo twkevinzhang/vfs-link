@@ -43,8 +43,8 @@
     "@radix-ui/react-alert-dialog": "^1.1.19",
     "@radix-ui/react-dialog": "^1.1.19",
     "@radix-ui/react-dropdown-menu": "^2.1.20",
-    "@react-router/fs-routes": "^8.0.1",
-    "@react-router/node": "^8.0.1",
+    "@react-router/fs-routes": "^8.3.0",
+    "@react-router/node": "^8.3.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "isbot": "^5",
@@ -56,7 +56,7 @@
     "tailwind-merge": "^3.4.0"
   },
   "devDependencies": {
-    "@react-router/dev": "^8.0.1",
+    "@react-router/dev": "^8.3.0",
     "@tailwindcss/vite": "^4.1.14",
     "@types/node": "^24.5.2",
     "@types/react": "^19.2.17",
