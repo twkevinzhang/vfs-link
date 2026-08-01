@@ -13,17 +13,18 @@ import (
 )
 
 type Service struct {
-	store   db.Store
-	objects blob.Store
-	mu      sync.Mutex
-	running map[string]struct{}
-	idle    chan struct{}
+	store      db.Store
+	objects    blob.Store
+	mu         sync.Mutex
+	running    map[string]struct{}
+	idle       chan struct{}
+	resumeDone chan struct{}
 }
 
 func New(store db.Store, objects blob.Store) *Service {
 	idle := make(chan struct{})
 	close(idle)
-	service := &Service{store: store, objects: objects, running: make(map[string]struct{}), idle: idle}
+	service := &Service{store: store, objects: objects, running: make(map[string]struct{}), idle: idle, resumeDone: make(chan struct{})}
 	service.resumeOperations()
 	return service
 }
@@ -69,6 +70,9 @@ type deleteTrashOperationRunner interface {
 }
 
 func (s *Service) Move(ctx context.Context, paths []string, destination string) (MoveResult, error) {
+	if err := s.waitForResume(ctx); err != nil {
+		return MoveResult{}, err
+	}
 	operations, supportsOperations := s.store.(db.TreeOperationStore)
 	if supportsOperations {
 		containsDirectory := false
@@ -99,6 +103,9 @@ func (s *Service) Move(ctx context.Context, paths []string, destination string) 
 // Rename changes one active item's final path. Tree-backed directory renames
 // run as durable operations because every descendant is an individual object.
 func (s *Service) Rename(ctx context.Context, logicPath, name string) (RenameResult, error) {
+	if err := s.waitForResume(ctx); err != nil {
+		return RenameResult{}, err
+	}
 	from, to, err := db.RenameTarget(logicPath, name)
 	if err != nil {
 		return RenameResult{}, err
@@ -152,11 +159,12 @@ func (s *Service) Operation(ctx context.Context, id string) (db.OperationRecord,
 }
 
 func (s *Service) resumeOperations() {
-	operations, ok := s.store.(db.TreeOperationStore)
-	if !ok {
-		return
-	}
 	go func() {
+		defer close(s.resumeDone)
+		operations, ok := s.store.(db.TreeOperationStore)
+		if !ok {
+			return
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		runnable, err := operations.ListRunnableOperations(ctx)
@@ -167,6 +175,15 @@ func (s *Service) resumeOperations() {
 			s.kickOperation(operation.ID)
 		}
 	}()
+}
+
+func (s *Service) waitForResume(ctx context.Context) error {
+	select {
+	case <-s.resumeDone:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (s *Service) kickOperation(id string) {
@@ -228,6 +245,9 @@ func (s *Service) WaitOperations(ctx context.Context) error {
 }
 
 func (s *Service) Trash(ctx context.Context, paths []string) (RecordsResult, error) {
+	if err := s.waitForResume(ctx); err != nil {
+		return RecordsResult{}, err
+	}
 	items := make([]db.TrashPath, 0, len(paths))
 	containsDirectory := false
 	for _, path := range paths {
@@ -261,6 +281,9 @@ func (s *Service) ListTrash(ctx context.Context) ([]db.FileRecord, error) {
 	return s.store.ListTrash(ctx)
 }
 func (s *Service) Restore(ctx context.Context, ids []string) (RecordsResult, error) {
+	if err := s.waitForResume(ctx); err != nil {
+		return RecordsResult{}, err
+	}
 	if operations, ok := s.store.(restoreOperationStore); ok {
 		roots, err := s.store.ListTrash(ctx)
 		if err != nil {
@@ -283,6 +306,9 @@ func (s *Service) Restore(ctx context.Context, ids []string) (RecordsResult, err
 }
 
 func (s *Service) DeletePermanently(ctx context.Context, ids []string) (DeleteResult, error) {
+	if err := s.waitForResume(ctx); err != nil {
+		return DeleteResult{}, err
+	}
 	if operations, ok := s.store.(deleteTrashOperationStore); ok {
 		roots, err := s.store.ListTrash(ctx)
 		if err != nil {
