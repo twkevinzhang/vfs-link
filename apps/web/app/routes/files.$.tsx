@@ -9,6 +9,8 @@ import {
   File,
   Folder,
   FolderInput,
+  Grid2X2,
+  List,
   LoaderCircle,
   Pencil,
   Play,
@@ -66,6 +68,11 @@ import {
   logicalPathFromRoute,
   TRASH_ROUTE,
 } from '../lib/file-route';
+import {
+  type FileViewMode,
+  readFileViewMode,
+  writeFileViewMode,
+} from '../lib/file-view-mode';
 import {
   createShareDraft,
   createThumbnail,
@@ -144,6 +151,11 @@ export default function FileBrowserRoute() {
   const view = normalizedRoutePath === TRASH_ROUTE ? 'trash' : 'files';
   const [query, setQuery] = useState('');
   const [fileQuery, setFileQuery] = useState('');
+  const [fileViewMode, setFileViewMode] = useState<FileViewMode>(() =>
+    readFileViewMode(
+      typeof window === 'undefined' ? undefined : window.localStorage
+    )
+  );
   const [pageOffset, setPageOffset] = useState(0);
   const [state, setState] = useState<LoadState>({ loading: true });
   const [shareError, setShareError] = useState<string>();
@@ -343,6 +355,14 @@ export default function FileBrowserRoute() {
       loadFiles(currentPath, fileQuery, nextOffset),
     ]);
   }, [currentPath, fileQuery, loadFiles, loadStatus]);
+
+  const changeFileViewMode = useCallback((mode: FileViewMode) => {
+    setFileViewMode(mode);
+    writeFileViewMode(
+      typeof window === 'undefined' ? undefined : window.localStorage,
+      mode
+    );
+  }, []);
 
   const loadTrash = useCallback(async () => {
     setTrashLoading(true);
@@ -754,8 +774,8 @@ export default function FileBrowserRoute() {
         </header>
 
         <section className="flex min-w-0 flex-col gap-4 lg:min-h-0 lg:flex-1">
-          <div className="overflow-hidden rounded-lg border border-border bg-white p-4">
-            <div className="min-w-0">
+          <div className="flex items-center gap-3 overflow-hidden rounded-lg border border-border bg-white p-4">
+            <div className="min-w-0 flex-1">
               {view === 'files' ? (
                 <Breadcrumbs
                   entries={state.files?.breadcrumbs ?? []}
@@ -769,6 +789,38 @@ export default function FileBrowserRoute() {
                 </div>
               )}
             </div>
+            {view === 'files' && (
+              <div
+                className="flex shrink-0 items-center rounded-md border border-border p-0.5"
+                role="group"
+                aria-label="File display mode"
+              >
+                <Button
+                  type="button"
+                  variant={fileViewMode === 'list' ? 'secondary' : 'ghost'}
+                  size="icon"
+                  className="h-8 w-8"
+                  aria-label="List view"
+                  aria-pressed={fileViewMode === 'list'}
+                  title="List view"
+                  onClick={() => changeFileViewMode('list')}
+                >
+                  <List aria-hidden="true" className="h-4 w-4" />
+                </Button>
+                <Button
+                  type="button"
+                  variant={fileViewMode === 'grid' ? 'secondary' : 'ghost'}
+                  size="icon"
+                  className="h-8 w-8"
+                  aria-label="Grid view"
+                  aria-pressed={fileViewMode === 'grid'}
+                  title="Grid view"
+                  onClick={() => changeFileViewMode('grid')}
+                >
+                  <Grid2X2 aria-hidden="true" className="h-4 w-4" />
+                </Button>
+              </div>
+            )}
           </div>
 
           {view === 'trash' &&
@@ -807,6 +859,7 @@ export default function FileBrowserRoute() {
               ) : (
                 <FileTable
                   entries={currentEntries}
+                  viewMode={view === 'files' ? fileViewMode : 'list'}
                   pagination={view === 'files' ? currentPagination : undefined}
                   visibleBytes={
                     view === 'files'
@@ -1476,6 +1529,7 @@ function Breadcrumbs({
 
 function FileTable({
   entries,
+  viewMode,
   pagination,
   visibleBytes,
   sharingPath,
@@ -1494,6 +1548,7 @@ function FileTable({
   onShareFile,
 }: {
   entries: FileEntry[];
+  viewMode: FileViewMode;
   pagination?: Pagination;
   visibleBytes: number;
   sharingPath?: string;
@@ -1524,169 +1579,191 @@ function FileTable({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="md:hidden">
-        <MobileFileList
+      {viewMode === 'grid' && !trashView ? (
+        <FileGrid
           entries={entries}
           sharingPath={sharingPath}
-          trashView={trashView}
+          selectedPaths={selectedPaths}
           entryKey={entryKey}
           onOpenFolder={onOpenFolder}
           onSelectFile={onSelectFile}
+          onSelect={onSelect}
           onMove={onMove}
           onRename={onRename}
           onTrash={onTrash}
-          onRestore={onRestore}
-          onPermanentDelete={onPermanentDelete}
           onShareFile={onShareFile}
         />
-      </div>
-      <div className="hidden min-h-0 flex-1 overflow-auto md:block">
-        <table className="w-full min-w-[820px] border-collapse text-sm">
-          <thead>
-            <tr className="border-b border-border bg-muted/70 text-left text-xs uppercase tracking-normal text-muted-foreground">
-              <th className="w-12 px-4 py-3">
-                <span className="sr-only">Select</span>
-              </th>
-              <th className="px-4 py-3 font-semibold">Name</th>
-              <th className="px-4 py-3 font-semibold">Type</th>
-              <th className="px-4 py-3 text-right font-semibold">Size</th>
-              <th className="px-4 py-3 font-semibold">
-                {trashView ? 'Trashed' : 'Modified'}
-              </th>
-              <th className="px-4 py-3 text-right font-semibold">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {entries.map((entry) => {
-              const isDirectory = entry.kind === 'directory';
-              const selectionKey = entryKey(entry);
-              const isSelected = selectedPaths.has(selectionKey);
+      ) : (
+        <>
+          <div className="md:hidden">
+            <MobileFileList
+              entries={entries}
+              sharingPath={sharingPath}
+              trashView={trashView}
+              entryKey={entryKey}
+              onOpenFolder={onOpenFolder}
+              onSelectFile={onSelectFile}
+              onMove={onMove}
+              onRename={onRename}
+              onTrash={onTrash}
+              onRestore={onRestore}
+              onPermanentDelete={onPermanentDelete}
+              onShareFile={onShareFile}
+            />
+          </div>
+          <div className="hidden min-h-0 flex-1 overflow-auto md:block">
+            <table className="w-full min-w-[820px] border-collapse text-sm">
+              <thead>
+                <tr className="border-b border-border bg-muted/70 text-left text-xs uppercase tracking-normal text-muted-foreground">
+                  <th className="w-12 px-4 py-3">
+                    <span className="sr-only">Select</span>
+                  </th>
+                  <th className="px-4 py-3 font-semibold">Name</th>
+                  <th className="px-4 py-3 font-semibold">Type</th>
+                  <th className="px-4 py-3 text-right font-semibold">Size</th>
+                  <th className="px-4 py-3 font-semibold">
+                    {trashView ? 'Trashed' : 'Modified'}
+                  </th>
+                  <th className="px-4 py-3 text-right font-semibold">
+                    Actions
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {entries.map((entry) => {
+                  const isDirectory = entry.kind === 'directory';
+                  const selectionKey = entryKey(entry);
+                  const isSelected = selectedPaths.has(selectionKey);
 
-              return (
-                <tr
-                  key={selectionKey}
-                  className={cn(
-                    'border-b border-border last:border-b-0 hover:bg-muted/30',
-                    isSelected && 'bg-muted/50'
-                  )}
-                  onClick={(event) =>
-                    onSelect(entry, {
-                      toggle: event.metaKey || event.ctrlKey,
-                      range: event.shiftKey,
-                    })
-                  }
-                  onDoubleClick={() => {
-                    if (!trashView) {
-                      if (isDirectory) onOpenFolder(entry.path);
-                      else onSelectFile(entry);
-                    }
-                  }}
-                >
-                  <td
-                    className="px-4 py-3"
-                    onClick={(event) => event.stopPropagation()}
-                  >
-                    <Checkbox
-                      checked={isSelected}
-                      onChange={(event) =>
+                  return (
+                    <tr
+                      key={selectionKey}
+                      className={cn(
+                        'border-b border-border last:border-b-0 hover:bg-muted/30',
+                        isSelected && 'bg-muted/50'
+                      )}
+                      onClick={(event) =>
                         onSelect(entry, {
-                          toggle: true,
-                          range:
-                            event.nativeEvent instanceof MouseEvent &&
-                            event.nativeEvent.shiftKey,
+                          toggle: event.metaKey || event.ctrlKey,
+                          range: event.shiftKey,
                         })
                       }
-                      aria-label={`Select ${entry.name}`}
-                    />
-                  </td>
-                  <td className="px-4 py-3">
-                    <div
-                      className="flex max-w-[360px] items-center gap-2 overflow-hidden text-left font-medium"
-                      title={entry.path}
-                    >
-                      {isDirectory ? (
-                        <Folder
-                          aria-hidden="true"
-                          className="h-4 w-4 shrink-0 text-[#11615a]"
-                        />
-                      ) : entry.thumbnail ? (
-                        <img
-                          src={getThumbnailUrl(entry.thumbnail.id)}
-                          alt=""
-                          className="h-7 w-7 shrink-0 rounded object-cover"
-                        />
-                      ) : (
-                        <File
-                          aria-hidden="true"
-                          className="h-4 w-4 shrink-0 text-[#276c93]"
-                        />
-                      )}
-                      <span className="truncate">{entry.name}</span>
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <Badge variant={isDirectory ? 'secondary' : 'outline'}>
-                      {entry.kind}
-                    </Badge>
-                  </td>
-                  <td className="px-4 py-3 text-right tabular-nums">
-                    {formatBytes(
-                      isDirectory ? entry.folderSummary?.bytes ?? 0 : entry.size
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-muted-foreground">
-                    {formatDate(
-                      trashView
-                        ? entry.trashedAt ?? entry.updatedAt
-                        : entry.updatedAt
-                    )}
-                  </td>
-                  <td
-                    className="px-4 py-3 text-right"
-                    onClick={(event) => event.stopPropagation()}
-                  >
-                    {trashView ? (
-                      <div className="flex justify-end gap-1">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => onRestore(entry)}
-                        >
-                          <RotateCcw className="h-4 w-4" />
-                          Restore
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8 text-destructive"
-                          aria-label={`Delete ${entry.name} permanently`}
-                          onClick={() => onPermanentDelete(entry)}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    ) : (
-                      <FileActionMenu
-                        entry={entry}
-                        sharing={sharingPath === entry.path}
-                        onOpen={() =>
-                          isDirectory
-                            ? onOpenFolder(entry.path)
-                            : onSelectFile(entry)
+                      onDoubleClick={() => {
+                        if (!trashView) {
+                          if (isDirectory) onOpenFolder(entry.path);
+                          else onSelectFile(entry);
                         }
-                        onShare={() => onShareFile(entry.path)}
-                        onRename={() => onRename(entry)}
-                        onMove={() => onMove(entry)}
-                        onTrash={() => onTrash(entry)}
-                      />
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+                      }}
+                    >
+                      <td
+                        className="px-4 py-3"
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        <Checkbox
+                          checked={isSelected}
+                          onChange={(event) =>
+                            onSelect(entry, {
+                              toggle: true,
+                              range:
+                                event.nativeEvent instanceof MouseEvent &&
+                                event.nativeEvent.shiftKey,
+                            })
+                          }
+                          aria-label={`Select ${entry.name}`}
+                        />
+                      </td>
+                      <td className="px-4 py-3">
+                        <div
+                          className="flex max-w-[360px] items-center gap-2 overflow-hidden text-left font-medium"
+                          title={entry.path}
+                        >
+                          {isDirectory ? (
+                            <Folder
+                              aria-hidden="true"
+                              className="h-4 w-4 shrink-0 text-[#11615a]"
+                            />
+                          ) : entry.thumbnail ? (
+                            <img
+                              src={getThumbnailUrl(entry.thumbnail.id)}
+                              alt=""
+                              className="h-7 w-7 shrink-0 rounded object-cover"
+                            />
+                          ) : (
+                            <File
+                              aria-hidden="true"
+                              className="h-4 w-4 shrink-0 text-[#276c93]"
+                            />
+                          )}
+                          <span className="truncate">{entry.name}</span>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <Badge variant={isDirectory ? 'secondary' : 'outline'}>
+                          {entry.kind}
+                        </Badge>
+                      </td>
+                      <td className="px-4 py-3 text-right tabular-nums">
+                        {formatBytes(
+                          isDirectory
+                            ? entry.folderSummary?.bytes ?? 0
+                            : entry.size
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-muted-foreground">
+                        {formatDate(
+                          trashView
+                            ? entry.trashedAt ?? entry.updatedAt
+                            : entry.updatedAt
+                        )}
+                      </td>
+                      <td
+                        className="px-4 py-3 text-right"
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        {trashView ? (
+                          <div className="flex justify-end gap-1">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => onRestore(entry)}
+                            >
+                              <RotateCcw className="h-4 w-4" />
+                              Restore
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8 text-destructive"
+                              aria-label={`Delete ${entry.name} permanently`}
+                              onClick={() => onPermanentDelete(entry)}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        ) : (
+                          <FileActionMenu
+                            entry={entry}
+                            sharing={sharingPath === entry.path}
+                            onOpen={() =>
+                              isDirectory
+                                ? onOpenFolder(entry.path)
+                                : onSelectFile(entry)
+                            }
+                            onShare={() => onShareFile(entry.path)}
+                            onRename={() => onRename(entry)}
+                            onMove={() => onMove(entry)}
+                            onTrash={() => onTrash(entry)}
+                          />
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
       <div className="flex flex-col gap-2 border-t border-border bg-muted/30 px-4 py-3 text-sm text-muted-foreground md:flex-row md:items-center md:justify-between">
         <span>
           Showing {pageStart}-{pageEnd} of {total}
@@ -1717,6 +1794,170 @@ function FileTable({
             </Button>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function FileGrid({
+  entries,
+  sharingPath,
+  selectedPaths,
+  entryKey,
+  onOpenFolder,
+  onSelectFile,
+  onSelect,
+  onMove,
+  onRename,
+  onTrash,
+  onShareFile,
+}: {
+  entries: FileEntry[];
+  sharingPath?: string;
+  selectedPaths: Set<string>;
+  entryKey: (entry: FileEntry) => string;
+  onOpenFolder: (path: string) => void;
+  onSelectFile: (entry: FileEntry) => void;
+  onSelect: (
+    entry: FileEntry,
+    options: { toggle?: boolean; range?: boolean }
+  ) => void;
+  onMove: (entry: FileEntry) => void;
+  onRename: (entry: FileEntry) => void;
+  onTrash: (entry: FileEntry) => void;
+  onShareFile: (path: string) => void;
+}) {
+  const openEntry = (entry: FileEntry) => {
+    if (entry.kind === 'directory') onOpenFolder(entry.path);
+    else onSelectFile(entry);
+  };
+
+  return (
+    <div className="min-h-0 flex-1 overflow-auto p-3 sm:p-4">
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-3 2xl:grid-cols-4">
+        {entries.map((entry) => {
+          const isDirectory = entry.kind === 'directory';
+          const selectionKey = entryKey(entry);
+          const isSelected = selectedPaths.has(selectionKey);
+
+          return (
+            <article
+              key={selectionKey}
+              className={cn(
+                'group relative min-w-0 overflow-hidden rounded-lg border border-border bg-white transition-colors hover:bg-muted/20',
+                isSelected && 'border-accent bg-accent/5 ring-2 ring-accent/30'
+              )}
+            >
+              <div
+                className="absolute left-2 top-2 z-10 rounded bg-white/90 p-1 shadow-sm backdrop-blur-sm"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <Checkbox
+                  checked={isSelected}
+                  onChange={(event) =>
+                    onSelect(entry, {
+                      toggle: true,
+                      range:
+                        event.nativeEvent instanceof MouseEvent &&
+                        event.nativeEvent.shiftKey,
+                    })
+                  }
+                  aria-label={`Select ${entry.name}`}
+                />
+              </div>
+
+              <div
+                className="absolute right-2 top-2 z-10 rounded bg-white/90 shadow-sm backdrop-blur-sm"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <FileActionMenu
+                  entry={entry}
+                  sharing={sharingPath === entry.path}
+                  onOpen={() => openEntry(entry)}
+                  onShare={() => onShareFile(entry.path)}
+                  onRename={() => onRename(entry)}
+                  onMove={() => onMove(entry)}
+                  onTrash={() => onTrash(entry)}
+                />
+              </div>
+
+              <div
+                role="button"
+                tabIndex={0}
+                className="cursor-default outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+                title={entry.path}
+                onClick={(event) => {
+                  if (window.matchMedia('(max-width: 767px)').matches) {
+                    openEntry(entry);
+                    return;
+                  }
+                  onSelect(entry, {
+                    toggle: event.metaKey || event.ctrlKey,
+                    range: event.shiftKey,
+                  });
+                }}
+                onDoubleClick={() => {
+                  if (!window.matchMedia('(max-width: 767px)').matches) {
+                    openEntry(entry);
+                  }
+                }}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Enter' && event.key !== ' ') return;
+                  event.preventDefault();
+                  if (window.matchMedia('(max-width: 767px)').matches) {
+                    openEntry(entry);
+                  } else {
+                    onSelect(entry, {});
+                  }
+                }}
+              >
+                <div className="flex aspect-[4/3] items-center justify-center overflow-hidden bg-muted/25">
+                  {isDirectory ? (
+                    <Folder
+                      aria-hidden="true"
+                      className="h-16 w-16 text-[#11615a] sm:h-20 sm:w-20"
+                    />
+                  ) : entry.thumbnail ? (
+                    <img
+                      src={getThumbnailUrl(entry.thumbnail.id)}
+                      alt=""
+                      className="h-full w-full object-contain"
+                    />
+                  ) : (
+                    <File
+                      aria-hidden="true"
+                      className="h-14 w-14 text-[#276c93] sm:h-16 sm:w-16"
+                    />
+                  )}
+                </div>
+
+                <div className="grid min-w-0 gap-1.5 p-3">
+                  <h3
+                    className="truncate text-sm font-medium"
+                    title={entry.name}
+                  >
+                    {entry.name}
+                  </h3>
+                  <div className="flex min-w-0 items-center justify-between gap-2 text-xs text-muted-foreground">
+                    <span className="shrink-0 tabular-nums">
+                      {formatBytes(
+                        isDirectory
+                          ? entry.folderSummary?.bytes ?? 0
+                          : entry.size
+                      )}
+                    </span>
+                    <span
+                      className="truncate"
+                      title={formatDate(entry.updatedAt)}
+                    >
+                      {formatDate(entry.updatedAt)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </article>
+          );
+        })}
       </div>
     </div>
   );
