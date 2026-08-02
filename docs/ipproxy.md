@@ -54,7 +54,9 @@ FTP_PASV_URL=<public-ftp-hostname>
 FTP_PASV_MIN=30000
 FTP_PASV_MAX=30100
 HTTP_PORT=18080
-WEB_BASE_PATH=/vfs-link/index
+WEB_BASE_PATH=/vfs-link/viewer
+VITE_BASE_PATH=/vfs-link/viewer
+VITE_API_BASE_URL=/vfs-link
 
 HTTP_BASIC_AUTH_ENABLED=true
 HTTP_BASIC_AUTH_USER=<http-user>
@@ -74,10 +76,12 @@ PUB_SUB_DRIVER=goroutine
 `VFS_LINK_IMAGE` is deliberately required and must be a content-addressed
 registry digest or a verified local image ID. It is not safe to use a mutable
 tag such as `latest`. The direct ipproxy build uses
-`VITE_BASE_PATH=/vfs-link/index` and an empty `VITE_API_BASE_URL`, then records
-the resulting local image ID in this file. This preserves the browser path
-without depending on the retired aiotlab gateway to strip `/vfs-link` from API
-requests. `HTTP_PORT` is the host-facing port in this profile; the application
+`VITE_BASE_PATH=/vfs-link/viewer` and `VITE_API_BASE_URL=/vfs-link`, then records
+the resulting local image ID in this file. The first value gives the Viewer its
+public route; the second makes browser requests such as `/api/files` use the
+Nginx API prefix and become `/vfs-link/api/files`. These build-time values are
+specific to ipproxy. GCP serves the Viewer and API without this basename or API
+prefix. `HTTP_PORT` is the host-facing port in this profile; the application
 always listens on container port `8080`. The ipproxy host publishes that port
 as `18080`; the base infrastructure Nginx owns the user-facing ZeroTier port
 `80` and routes `/vfs-link` traffic to it.
@@ -91,20 +95,26 @@ profile for compatibility. Leave them unset for this local-storage deployment
 unless the corresponding external Google Cloud credentials and services have
 also been explicitly configured.
 
-## Build the direct-host image
+## Build the ipproxy image
 
-The public CI image is built for the retired `/vfs-link` gateway API prefix.
-For a direct ipproxy deployment, build the verified source revision on ipproxy
-and record the resulting image ID in the runtime `.env`:
+The GCP image uses the root Viewer path and an empty API base. For ipproxy,
+build the verified source revision with the ipproxy-only path arguments and
+record the resulting image ID in the runtime `.env`:
 
 ```bash
 release_sha=<verified-git-commit>
+runtime_env=/home/ipproxy/vfs-link-ipproxy/.env
 build_dir=/home/ipproxy/vfs-link-ipproxy/build/$release_sha
 image_tag=vfs-link/file-server:ipproxy-$release_sha
+vite_base_path=$(sed -n 's/^VITE_BASE_PATH=//p' "$runtime_env")
+vite_api_base_url=$(sed -n 's/^VITE_API_BASE_URL=//p' "$runtime_env")
+
+test "$vite_base_path" = /vfs-link/viewer
+test "$vite_api_base_url" = /vfs-link
 
 docker build \
-  --build-arg VITE_BASE_PATH=/vfs-link/index \
-  --build-arg VITE_API_BASE_URL= \
+  --build-arg VITE_BASE_PATH="$vite_base_path" \
+  --build-arg VITE_API_BASE_URL="$vite_api_base_url" \
   --label "org.opencontainers.image.revision=$release_sha" \
   --label org.opencontainers.image.title=vfs-link-ipproxy \
   -f "$build_dir/apps/file-server/Dockerfile" \
@@ -115,6 +125,25 @@ docker image inspect --format '{{.Id}}' "$image_tag"
 
 Set `VFS_LINK_IMAGE` to that `sha256:...` image ID. Keep the source tree at
 `build/$release_sha` so the deployed binary remains reproducible and auditable.
+
+Before deployment, extract the generated web assets and verify both ipproxy
+build-time values are present. This check is read-only for the image and can be
+rerun for every candidate image:
+
+```bash
+container_id=$(docker create "$image_tag")
+artifact_dir=$(mktemp -d)
+trap 'docker rm -f "$container_id" >/dev/null 2>&1 || true; rm -rf "$artifact_dir"' EXIT
+docker cp "$container_id:/app/web/." "$artifact_dir/"
+docker rm "$container_id"
+
+rg --fixed-strings '/vfs-link/viewer/' "$artifact_dir/index.html"
+rg --glob 'api-*.js' --fixed-strings '"/vfs-link"' "$artifact_dir/assets"
+```
+
+The static check confirms the requested build inputs reached the bundle. The
+deployment acceptance check must still confirm in browser developer tools that
+loading `/vfs-link/viewer/` requests `/vfs-link/api/files`, not `/api/files`.
 
 ## Deploy
 

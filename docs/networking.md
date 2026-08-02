@@ -27,9 +27,17 @@ also reveals operational details and should remain private.
 
 When using a path prefix with a reverse proxy, build the web assets with matching
 `VITE_BASE_PATH` and `VITE_API_BASE_URL` build arguments. The API base defaults
-to the browser's current origin; set `VITE_API_BASE_URL` only when the Web UI
-and API are intentionally hosted on different origins. Test browser refreshes
-and download URLs through the final public proxy path.
+to the browser's current origin and root path. Set `VITE_API_BASE_URL` when the
+API uses either a different origin or a path prefix on the same origin.
+
+| Deployment | `VITE_BASE_PATH` | `VITE_API_BASE_URL` | Files request |
+| --- | --- | --- | --- |
+| GCP | `/` | empty | `/api/files` |
+| ipproxy | `/vfs-link/viewer` | `/vfs-link` | `/vfs-link/api/files` |
+
+These are build-time values embedded in the web assets, not runtime container
+environment overrides. Test browser refreshes, API requests, and download URLs
+through the final public proxy path.
 
 An HTTP-only serverless deployment listens only on the platform-provided HTTP
 port with `FTP_ENABLED=false`. Use GCS instead of the ephemeral local filesystem
