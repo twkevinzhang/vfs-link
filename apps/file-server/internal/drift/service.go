@@ -196,6 +196,15 @@ func cloneSnapshot(in Snapshot) Snapshot {
 // Refresh performs exactly one logical metadata scan and one paged object
 // listing. In particular, it never calls Stat once per object.
 func (s *Service) Refresh(ctx context.Context) (Snapshot, error) {
+	return s.refresh(ctx, nil)
+}
+
+func (s *Service) refresh(ctx context.Context, onPhase func(string) error) (Snapshot, error) {
+	if onPhase != nil {
+		if err := onPhase(ScanPhaseMetadata); err != nil {
+			return Snapshot{}, err
+		}
+	}
 	var active, trash []db.FileRecord
 	var err error
 	if scanner, ok := s.metadata.(db.DriftRecordScanner); ok {
@@ -208,6 +217,11 @@ func (s *Service) Refresh(ctx context.Context) (Snapshot, error) {
 	}
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("scan metadata: %w", err)
+	}
+	if onPhase != nil {
+		if err := onPhase(ScanPhaseObjects); err != nil {
+			return Snapshot{}, err
+		}
 	}
 	objects, err := s.objects.ListDriftObjects(ctx)
 	if err != nil {
@@ -280,6 +294,11 @@ func (s *Service) Refresh(ctx context.Context) (Snapshot, error) {
 	payload, err := json.Marshal(snapshot)
 	if err != nil {
 		return Snapshot{}, err
+	}
+	if onPhase != nil {
+		if err := onPhase(ScanPhaseSaving); err != nil {
+			return Snapshot{}, err
+		}
 	}
 	if err := s.state.SaveDriftSnapshot(ctx, payload); err != nil {
 		return Snapshot{}, fmt.Errorf("persist drift snapshot: %w", err)

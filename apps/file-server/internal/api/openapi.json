@@ -618,6 +618,50 @@
         }
       }
     },
+    "/api/drift/scans": {
+      "post": {
+        "tags": ["Drift"],
+        "summary": "Start or join the current asynchronous drift rescan",
+        "description": "Starts one server-owned read-only rescan. If a pending or running job already exists, the same job is returned instead of starting a duplicate. The job survives browser disconnects and can be resumed after an expired lease.",
+        "operationId": "startDriftScan",
+        "responses": {
+          "202": {
+            "description": "The new or existing rescan job was accepted",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DriftScanResponse" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "500": { "$ref": "#/components/responses/InternalServerError" },
+          "501": { "$ref": "#/components/responses/NotImplemented" }
+        }
+      }
+    },
+    "/api/drift/scans/current": {
+      "get": {
+        "tags": ["Drift"],
+        "summary": "Get and, when necessary, resume the current drift rescan",
+        "description": "Returns the singleton rescan job on every device. Reading a pending or expired running job can kick background processing. A completed or failed job remains current until the next manual rescan starts.",
+        "operationId": "getCurrentDriftScan",
+        "responses": {
+          "200": {
+            "description": "Current rescan state, or null before the first rescan",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DriftCurrentScanResponse" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "500": { "$ref": "#/components/responses/InternalServerError" },
+          "501": { "$ref": "#/components/responses/NotImplemented" }
+        }
+      }
+    },
     "/api/drift/plans": {
       "post": {
         "tags": ["Drift"],
@@ -1303,6 +1347,33 @@
             "type": "array",
             "minItems": 1,
             "items": { "$ref": "#/components/schemas/LogicalPath" }
+          }
+        }
+      },
+      "DriftScanResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "status", "phase", "createdAt", "updatedAt"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "status": { "type": "string", "enum": ["pending", "running", "completed", "failed"] },
+          "phase": { "type": "string", "enum": ["queued", "metadata", "objects", "saving", "completed", "failed"] },
+          "error": { "type": "string" },
+          "createdAt": { "$ref": "#/components/schemas/Timestamp" },
+          "updatedAt": { "$ref": "#/components/schemas/Timestamp" },
+          "completedAt": { "$ref": "#/components/schemas/Timestamp" }
+        }
+      },
+      "DriftCurrentScanResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["scan"],
+        "properties": {
+          "scan": {
+            "oneOf": [
+              { "$ref": "#/components/schemas/DriftScanResponse" },
+              { "type": "null" }
+            ]
           }
         }
       },

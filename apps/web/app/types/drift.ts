@@ -113,3 +113,17 @@ export type DriftAction = {
 export type DriftActionsResponse = {
   actions: DriftAction[];
 };
+
+export type DriftScan = {
+  id: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  phase: 'queued' | 'metadata' | 'objects' | 'saving' | 'completed' | 'failed';
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+};
+
+export type DriftCurrentScanResponse = {
+  scan?: DriftScan | null;
+};

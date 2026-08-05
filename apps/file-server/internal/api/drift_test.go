@@ -241,3 +241,67 @@ func TestDriftActionListAndDismissAPI(t *testing.T) {
 		t.Fatalf("invalid limit status = %d, want 400", badPage.Code)
 	}
 }
+
+func TestDriftScanAPIStartsAndRestoresServerJob(t *testing.T) {
+	ctx := context.Background()
+	metadata, err := db.NewTreeLocal(filepath.Join(t.TempDir(), "metadata"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(metadata.Close)
+	if err := metadata.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	objects, err := blob.NewLocal(filepath.Join(t.TempDir(), "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := db.AsDriftStateStore(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := driftdomain.NewForTest(metadata, objects, state, func(path string) (string, error) { return path, nil })
+	handler := (&Server{drift: service}).Handler()
+
+	empty := httptest.NewRecorder()
+	handler.ServeHTTP(empty, httptest.NewRequest(http.MethodGet, "/api/drift/scans/current", nil))
+	if empty.Code != http.StatusOK || empty.Body.String() != "{\"scan\":null}\n" {
+		t.Fatalf("empty current scan = %d %s", empty.Code, empty.Body.String())
+	}
+
+	started := httptest.NewRecorder()
+	handler.ServeHTTP(started, httptest.NewRequest(http.MethodPost, "/api/drift/scans", nil))
+	if started.Code != http.StatusAccepted {
+		t.Fatalf("start scan = %d %s", started.Code, started.Body.String())
+	}
+	var initial driftScanResponse
+	if err := json.Unmarshal(started.Body.Bytes(), &initial); err != nil {
+		t.Fatal(err)
+	}
+	if initial.ID == "" || (initial.Status != "pending" && initial.Status != "running") {
+		t.Fatalf("initial scan = %+v", initial)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		current := httptest.NewRecorder()
+		handler.ServeHTTP(current, httptest.NewRequest(http.MethodGet, "/api/drift/scans/current", nil))
+		if current.Code != http.StatusOK {
+			t.Fatalf("current scan = %d %s", current.Code, current.Body.String())
+		}
+		var body driftCurrentScanResponse
+		if err := json.Unmarshal(current.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body.Scan != nil && body.Scan.Status == "completed" {
+			if body.Scan.ID != initial.ID || body.Scan.Phase != driftdomain.ScanPhaseComplete {
+				t.Fatalf("completed scan = %+v", body.Scan)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("scan did not complete; last response %s", current.Body.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

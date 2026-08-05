@@ -43,9 +43,11 @@ import {
   createDriftAction,
   createDriftPlan,
   dismissDriftAction,
+  getCurrentDriftScan,
   getDrift,
   getDriftAction,
   getDriftActions,
+  startDriftScan,
 } from '../lib/api';
 import {
   createDriftActionListResponseGuard,
@@ -70,6 +72,7 @@ import type {
   DriftItem,
   DriftPlan,
   DriftResponse,
+  DriftScan,
 } from '../types/drift';
 
 export const meta: MetaFunction = () => [
@@ -84,6 +87,8 @@ const PAGE_SIZE = 50;
 const SEARCH_DEBOUNCE_MS = 250;
 const ACTION_POLL_MS = 1500;
 const ACTION_LIST_SYNC_MS = 30000;
+const SCAN_ACTIVE_POLL_MS = 2000;
+const SCAN_BACKGROUND_SYNC_MS = 30000;
 
 type LoadState = {
   data?: DriftResponse;
@@ -113,12 +118,18 @@ export default function DriftRoute() {
     new Set()
   );
   const [startingAction, setStartingAction] = useState(false);
+  const [scan, setScan] = useState<DriftScan>();
+  const [startingScan, setStartingScan] = useState(false);
+  const [scanError, setScanError] = useState<string>();
   const requestRef = useRef(0);
   const disposedRef = useRef(false);
   const actionsRef = useRef<DriftAction[]>([]);
   const pollingActionsRef = useRef(false);
   const listingActionsRef = useRef(false);
   const actionListGuardRef = useRef(createDriftActionListResponseGuard());
+  const scanRequestRef = useRef(0);
+  const loadingScanRef = useRef(false);
+  const appliedCompletedScanRef = useRef<string | undefined>(undefined);
 
   const loadDrift = useCallback(
     async (nextOffset = offset, refresh = false) => {
@@ -214,6 +225,8 @@ export default function DriftRoute() {
       data.readOnly !== true &&
       storageIsGcs
   );
+  const canScan = Boolean(data && data.available !== false);
+  const scanRunning = scan?.status === 'pending' || scan?.status === 'running';
   const actionableItems = useMemo(
     () => items.filter(isActionableDriftItem),
     [items]
@@ -328,6 +341,66 @@ export default function DriftRoute() {
     }, ACTION_POLL_MS);
     return () => window.clearInterval(interval);
   }, []);
+
+  const loadScan = useCallback(async () => {
+    if (loadingScanRef.current) return;
+    loadingScanRef.current = true;
+    const requestId = scanRequestRef.current;
+    try {
+      const next = await getCurrentDriftScan();
+      if (disposedRef.current || requestId !== scanRequestRef.current) return;
+      setScan(next);
+      setScanError(undefined);
+    } catch (error) {
+      if (disposedRef.current || requestId !== scanRequestRef.current) return;
+      setScanError(
+        error instanceof Error ? error.message : 'Unable to load rescan status'
+      );
+    } finally {
+      loadingScanRef.current = false;
+    }
+  }, []);
+
+  const beginScan = useCallback(async () => {
+    if (startingScan || scanRunning) return;
+    setStartingScan(true);
+    setScanError(undefined);
+    scanRequestRef.current += 1;
+    try {
+      const next = await startDriftScan();
+      if (disposedRef.current) return;
+      setScan(next);
+    } catch (error) {
+      if (disposedRef.current) return;
+      setScanError(
+        error instanceof Error ? error.message : 'Unable to start rescan'
+      );
+    } finally {
+      if (!disposedRef.current) setStartingScan(false);
+    }
+  }, [scanRunning, startingScan]);
+
+  useEffect(() => {
+    if (!canScan) return;
+    void loadScan();
+    const interval = window.setInterval(
+      () => void loadScan(),
+      scanRunning ? SCAN_ACTIVE_POLL_MS : SCAN_BACKGROUND_SYNC_MS
+    );
+    return () => window.clearInterval(interval);
+  }, [canScan, loadScan, scanRunning]);
+
+  useEffect(() => {
+    if (
+      scan?.status === 'completed' &&
+      appliedCompletedScanRef.current !== scan.id
+    ) {
+      appliedCompletedScanRef.current = scan.id;
+      setOffset(0);
+      setSelected(new Set());
+      void loadDrift(0, false);
+    }
+  }, [loadDrift, scan]);
 
   const toggleItem = (path: string, checked: boolean) => {
     setSelected((previous) => {
@@ -480,11 +553,14 @@ export default function DriftRoute() {
               <Button
                 variant="outline"
                 className="border-white/25 bg-white/5 text-white hover:bg-white/10 hover:text-white"
-                onClick={() => void loadDrift(0, true)}
-                disabled={state.loading || data?.available === false}
+                onClick={() => void beginScan()}
+                disabled={startingScan || scanRunning || !canScan}
               >
                 <RefreshCcw
-                  className={cn('h-4 w-4', state.loading && 'animate-spin')}
+                  className={cn(
+                    'h-4 w-4',
+                    (startingScan || scanRunning) && 'animate-spin'
+                  )}
                 />
                 Manual rescan
               </Button>
@@ -522,14 +598,14 @@ export default function DriftRoute() {
           </Alert>
         )}
 
-        {(state.error || planError || actionsError) && (
+        {(state.error || planError || actionsError || scanError) && (
           <Alert className="border-destructive/30 bg-red-50 text-destructive">
             <div className="flex items-start gap-3">
               <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
               <div>
                 <p className="font-semibold">Drift operation unavailable</p>
                 <p className="mt-1 text-sm text-foreground">
-                  {planError || state.error || actionsError}
+                  {planError || state.error || actionsError || scanError}
                 </p>
                 {actionsError && (
                   <Button
@@ -548,6 +624,14 @@ export default function DriftRoute() {
               </div>
             </div>
           </Alert>
+        )}
+
+        {scan && (
+          <ScanProgress
+            scan={scan}
+            retrying={startingScan}
+            onRetry={() => void beginScan()}
+          />
         )}
 
         {actions.length > 0 && (
@@ -633,8 +717,8 @@ export default function DriftRoute() {
             <EmptyDriftState
               hasFilter={Boolean(debouncedQuery || status !== 'all')}
               hasSnapshot={Boolean(data?.generatedAt)}
-              scanning={state.loading}
-              onRescan={() => void loadDrift(0, true)}
+              scanning={startingScan || scanRunning}
+              onRescan={() => void beginScan()}
             />
           ) : (
             <>
@@ -1501,6 +1585,97 @@ function ActionProgress({
         <div
           className="h-full rounded-full bg-primary transition-[width] duration-500"
           style={{ width: `${percent}%` }}
+        />
+      </div>
+    </section>
+  );
+}
+
+function scanPhaseLabel(phase: DriftScan['phase']) {
+  switch (phase) {
+    case 'queued':
+      return 'Waiting to start';
+    case 'metadata':
+      return 'Scanning file metadata';
+    case 'objects':
+      return 'Listing storage objects';
+    case 'saving':
+      return 'Saving the new snapshot';
+    case 'completed':
+      return 'Snapshot refreshed';
+    case 'failed':
+      return 'Rescan failed';
+  }
+}
+
+function ScanProgress({
+  scan,
+  retrying,
+  onRetry,
+}: {
+  scan: DriftScan;
+  retrying: boolean;
+  onRetry: () => void;
+}) {
+  const running = scan.status === 'pending' || scan.status === 'running';
+  const completed = scan.status === 'completed';
+  return (
+    <section
+      className="rounded-xl border border-primary/25 bg-white p-4 shadow-sm"
+      aria-live="polite"
+    >
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex items-start gap-3">
+          {running ? (
+            <LoaderCircle className="mt-0.5 h-5 w-5 animate-spin text-primary" />
+          ) : completed ? (
+            <CheckCircle2 className="mt-0.5 h-5 w-5 text-emerald-700" />
+          ) : (
+            <AlertTriangle className="mt-0.5 h-5 w-5 text-amber-700" />
+          )}
+          <div>
+            <p className="font-semibold">Storage rescan {scan.status}</p>
+            <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground">
+              {scan.id}
+            </p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {scanPhaseLabel(scan.phase)} · started{' '}
+              {formatDate(scan.createdAt)}
+            </p>
+            {scan.error && (
+              <p className="mt-1 text-sm text-destructive">{scan.error}</p>
+            )}
+          </div>
+        </div>
+        {scan.status === 'failed' && (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={retrying}
+            onClick={onRetry}
+          >
+            {retrying ? (
+              <LoaderCircle className="h-4 w-4 animate-spin" />
+            ) : (
+              <RotateCcw className="h-4 w-4" />
+            )}
+            Retry rescan
+          </Button>
+        )}
+      </div>
+      <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted">
+        <div
+          className={cn(
+            'h-full rounded-full transition-[width] duration-500',
+            completed
+              ? 'bg-primary'
+              : scan.status === 'failed'
+              ? 'bg-destructive'
+              : 'animate-pulse bg-primary'
+          )}
+          style={{
+            width: completed || scan.status === 'failed' ? '100%' : '65%',
+          }}
         />
       </div>
     </section>

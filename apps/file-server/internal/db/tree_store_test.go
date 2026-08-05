@@ -83,6 +83,45 @@ func TestTreeDriftActionsListPaginateAndDismiss(t *testing.T) {
 	}
 }
 
+func TestTreeDriftScanIsSingletonAndUsesCAS(t *testing.T) {
+	ctx := context.Background()
+	store := newTestTree(t)
+	now := time.Date(2026, 8, 5, 9, 0, 0, 0, time.UTC)
+	newRecord := func(id string) DriftScanRecord {
+		record := DriftScanRecord{ID: id, Status: "pending", Phase: "queued", CreatedAt: now, UpdatedAt: now}
+		record.Payload, _ = json.Marshal(record)
+		return record
+	}
+
+	first, created, err := store.StartDriftScan(ctx, newRecord("scan-one"))
+	if err != nil || !created || first.ID != "scan-one" {
+		t.Fatalf("first scan = %+v, created %t, error %v", first, created, err)
+	}
+	duplicate, created, err := store.StartDriftScan(ctx, newRecord("scan-duplicate"))
+	if err != nil || created || duplicate.ID != first.ID {
+		t.Fatalf("duplicate scan = %+v, created %t, error %v", duplicate, created, err)
+	}
+
+	first.Status, first.Phase, first.UpdatedAt = "completed", "completed", now.Add(time.Minute)
+	first.Payload, _ = json.Marshal(first)
+	completed, err := store.UpdateDriftScan(ctx, first, first.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpdateDriftScan(ctx, first, first.Version); !errors.Is(err, ErrDriftStateConflict) {
+		t.Fatalf("stale scan update error = %v, want conflict", err)
+	}
+
+	next, created, err := store.StartDriftScan(ctx, newRecord("scan-two"))
+	if err != nil || !created || next.ID != "scan-two" || next.Version == completed.Version {
+		t.Fatalf("next scan = %+v, created %t, error %v", next, created, err)
+	}
+	stored, found, err := store.FindDriftScan(ctx)
+	if err != nil || !found || stored.ID != next.ID {
+		t.Fatalf("stored scan = %+v, found %t, error %v", stored, found, err)
+	}
+}
+
 type dismissRaceTreeBackend struct {
 	treeBackend
 	store   *TreeStore

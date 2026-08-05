@@ -216,6 +216,17 @@ CREATE TABLE IF NOT EXISTS "DriftSnapshot" (
   "updatedAt" TIMESTAMPTZ NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS "DriftScan" (
+  id SMALLINT PRIMARY KEY CHECK (id = 1),
+  "scanId" TEXT NOT NULL,
+  status TEXT NOT NULL,
+  phase TEXT NOT NULL,
+  payload JSONB NOT NULL,
+  version BIGINT NOT NULL DEFAULT 1,
+  "createdAt" TIMESTAMPTZ NOT NULL,
+  "updatedAt" TIMESTAMPTZ NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS "DriftAction" (
   id TEXT PRIMARY KEY,
   "planId" TEXT NOT NULL REFERENCES "DriftPlan"(id),

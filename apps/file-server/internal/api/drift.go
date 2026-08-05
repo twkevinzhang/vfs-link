@@ -285,6 +285,69 @@ type driftActionsResponse struct {
 	Actions []driftActionResponse `json:"actions"`
 }
 
+type driftScanResponse struct {
+	ID          string     `json:"id"`
+	Status      string     `json:"status"`
+	Phase       string     `json:"phase"`
+	Error       string     `json:"error,omitempty"`
+	CreatedAt   time.Time  `json:"createdAt"`
+	UpdatedAt   time.Time  `json:"updatedAt"`
+	CompletedAt *time.Time `json:"completedAt,omitempty"`
+}
+
+type driftCurrentScanResponse struct {
+	Scan *driftScanResponse `json:"scan"`
+}
+
+func scanResponse(scan driftdomain.Scan) driftScanResponse {
+	return driftScanResponse{
+		ID: scan.ID, Status: scan.Status, Phase: scan.Phase, Error: scan.Error,
+		CreatedAt: scan.CreatedAt, UpdatedAt: scan.UpdatedAt, CompletedAt: scan.CompletedAt,
+	}
+}
+
+func (s *Server) handleDriftScans(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if s.driftErr != nil {
+		writeError(w, http.StatusNotImplemented, s.driftErr.Error())
+		return
+	}
+	scan, _, err := s.drift.StartScan(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeDriftJSONStatus(w, http.StatusAccepted, scanResponse(scan))
+}
+
+func (s *Server) handleDriftScanCurrent(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if s.driftErr != nil {
+		writeError(w, http.StatusNotImplemented, s.driftErr.Error())
+		return
+	}
+	scan, ok, err := s.drift.GetScan(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !ok {
+		writeJSON(w, driftCurrentScanResponse{})
+		return
+	}
+	if scan.NeedsKick(time.Now()) {
+		s.drift.KickScan(scan.ID)
+	}
+	response := scanResponse(scan)
+	writeJSON(w, driftCurrentScanResponse{Scan: &response})
+}
+
 func (s *Server) actionResponse(r *http.Request, action driftdomain.Action) (driftActionResponse, error) {
 	plan, ok, err := s.drift.GetPlan(r.Context(), action.PlanID)
 	if err != nil || !ok {

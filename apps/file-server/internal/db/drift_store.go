@@ -42,6 +42,16 @@ type DriftActionDismissalRecord struct {
 	DismissedAt time.Time `json:"dismissedAt"`
 }
 
+type DriftScanRecord struct {
+	ID        string          `json:"id"`
+	Status    string          `json:"status"`
+	Phase     string          `json:"phase"`
+	Payload   json.RawMessage `json:"payload"`
+	Version   int64           `json:"version"`
+	CreatedAt time.Time       `json:"createdAt"`
+	UpdatedAt time.Time       `json:"updatedAt"`
+}
+
 // DriftStateStore is intentionally additive to Store. Existing metadata
 // consumers do not need drift privileges, while both production backends can
 // persist restartable actions.
@@ -56,6 +66,9 @@ type DriftStateStore interface {
 	DismissDriftAction(context.Context, string, time.Time) (bool, error)
 	RestoreDriftAction(context.Context, string) error
 	UpdateDriftAction(context.Context, DriftActionRecord, int64) (DriftActionRecord, error)
+	StartDriftScan(context.Context, DriftScanRecord) (DriftScanRecord, bool, error)
+	FindDriftScan(context.Context) (DriftScanRecord, bool, error)
+	UpdateDriftScan(context.Context, DriftScanRecord, int64) (DriftScanRecord, error)
 }
 
 func (s *PostgresStore) SaveDriftSnapshot(ctx context.Context, payload json.RawMessage) error {
@@ -217,6 +230,71 @@ func (s *PostgresStore) UpdateDriftAction(ctx context.Context, r DriftActionReco
 	return r, err
 }
 
+func scanDriftScan(row pgx.Row) (DriftScanRecord, error) {
+	var r DriftScanRecord
+	err := row.Scan(&r.ID, &r.Status, &r.Phase, &r.Payload, &r.Version, &r.CreatedAt, &r.UpdatedAt)
+	return r, err
+}
+
+func (s *PostgresStore) StartDriftScan(ctx context.Context, candidate DriftScanRecord) (DriftScanRecord, bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return DriftScanRecord{}, false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	existing, err := scanDriftScan(tx.QueryRow(ctx, `SELECT "scanId",status,phase,payload,version,"createdAt","updatedAt" FROM "DriftScan" WHERE id=1 FOR UPDATE`))
+	if err == nil && (existing.Status == "pending" || existing.Status == "running") {
+		return existing, false, nil
+	}
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return DriftScanRecord{}, false, err
+	}
+
+	created := errors.Is(err, pgx.ErrNoRows)
+	if created {
+		candidate.Version = 1
+		err = tx.QueryRow(ctx, `
+INSERT INTO "DriftScan" (id,"scanId",status,phase,payload,version,"createdAt","updatedAt")
+VALUES (1,$1,$2,$3,$4,1,$5,$6)
+RETURNING "scanId",status,phase,payload,version,"createdAt","updatedAt"`, candidate.ID, candidate.Status, candidate.Phase, candidate.Payload, candidate.CreatedAt, candidate.UpdatedAt).
+			Scan(&candidate.ID, &candidate.Status, &candidate.Phase, &candidate.Payload, &candidate.Version, &candidate.CreatedAt, &candidate.UpdatedAt)
+	} else {
+		err = tx.QueryRow(ctx, `
+UPDATE "DriftScan" SET "scanId"=$1,status=$2,phase=$3,payload=$4,version=version+1,"createdAt"=$5,"updatedAt"=$6
+WHERE id=1
+RETURNING "scanId",status,phase,payload,version,"createdAt","updatedAt"`, candidate.ID, candidate.Status, candidate.Phase, candidate.Payload, candidate.CreatedAt, candidate.UpdatedAt).
+			Scan(&candidate.ID, &candidate.Status, &candidate.Phase, &candidate.Payload, &candidate.Version, &candidate.CreatedAt, &candidate.UpdatedAt)
+	}
+	if err != nil {
+		return DriftScanRecord{}, false, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return DriftScanRecord{}, false, err
+	}
+	return candidate, true, nil
+}
+
+func (s *PostgresStore) FindDriftScan(ctx context.Context) (DriftScanRecord, bool, error) {
+	r, err := scanDriftScan(s.pool.QueryRow(ctx, `SELECT "scanId",status,phase,payload,version,"createdAt","updatedAt" FROM "DriftScan" WHERE id=1`))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return DriftScanRecord{}, false, nil
+	}
+	return r, err == nil, err
+}
+
+func (s *PostgresStore) UpdateDriftScan(ctx context.Context, r DriftScanRecord, expected int64) (DriftScanRecord, error) {
+	err := s.pool.QueryRow(ctx, `
+UPDATE "DriftScan" SET status=$2,phase=$3,payload=$4,version=version+1,"updatedAt"=$5
+WHERE id=1 AND "scanId"=$1 AND version=$6
+RETURNING "scanId",status,phase,payload,version,"createdAt","updatedAt"`, r.ID, r.Status, r.Phase, r.Payload, r.UpdatedAt, expected).
+		Scan(&r.ID, &r.Status, &r.Phase, &r.Payload, &r.Version, &r.CreatedAt, &r.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return DriftScanRecord{}, ErrDriftStateConflict
+	}
+	return r, err
+}
+
 func (s *TreeStore) driftPlanKey(id string) string { return s.prefix + "/drift/plans/" + id + ".json" }
 func (s *TreeStore) driftActionKey(id string) string {
 	return s.prefix + "/drift/actions/" + id + ".json"
@@ -225,6 +303,7 @@ func (s *TreeStore) driftActionDismissalKey(id string) string {
 	return s.prefix + "/drift/action-dismissals/" + id + ".json"
 }
 func (s *TreeStore) driftSnapshotKey() string { return s.prefix + "/drift/snapshots/current.json" }
+func (s *TreeStore) driftScanKey() string     { return s.prefix + "/drift/scans/current.json" }
 
 func (s *TreeStore) SaveDriftSnapshot(ctx context.Context, payload json.RawMessage) error {
 	key := s.driftSnapshotKey()
@@ -468,6 +547,67 @@ func (s *TreeStore) UpdateDriftAction(ctx context.Context, r DriftActionRecord, 
 	generation, err := s.objects.Put(ctx, s.driftActionKey(r.ID), append(b, '\n'), &expected)
 	if errors.Is(err, ErrMetadataConflict) {
 		return r, ErrDriftStateConflict
+	}
+	r.Version = generation
+	return r, err
+}
+
+func (s *TreeStore) StartDriftScan(ctx context.Context, candidate DriftScanRecord) (DriftScanRecord, bool, error) {
+	key := s.driftScanKey()
+	for attempt := 0; attempt < treeCASAttempts; attempt++ {
+		o, ok, err := s.objects.Get(ctx, key)
+		if err != nil {
+			return DriftScanRecord{}, false, err
+		}
+		expected := int64(0)
+		if ok {
+			var existing DriftScanRecord
+			if err := json.Unmarshal(o.Data, &existing); err != nil {
+				return DriftScanRecord{}, false, err
+			}
+			existing.Version = o.Generation
+			if existing.Status == "pending" || existing.Status == "running" {
+				return existing, false, nil
+			}
+			expected = o.Generation
+		}
+		candidate.Version = expected
+		payload, err := json.Marshal(candidate)
+		if err != nil {
+			return DriftScanRecord{}, false, err
+		}
+		generation, err := s.objects.Put(ctx, key, append(payload, '\n'), &expected)
+		if errors.Is(err, ErrMetadataConflict) {
+			continue
+		}
+		candidate.Version = generation
+		return candidate, true, err
+	}
+	return DriftScanRecord{}, false, ErrDriftStateConflict
+}
+
+func (s *TreeStore) FindDriftScan(ctx context.Context) (DriftScanRecord, bool, error) {
+	o, ok, err := s.objects.Get(ctx, s.driftScanKey())
+	if err != nil || !ok {
+		return DriftScanRecord{}, ok, err
+	}
+	var r DriftScanRecord
+	if err := json.Unmarshal(o.Data, &r); err != nil {
+		return DriftScanRecord{}, false, err
+	}
+	r.Version = o.Generation
+	return r, true, nil
+}
+
+func (s *TreeStore) UpdateDriftScan(ctx context.Context, r DriftScanRecord, expected int64) (DriftScanRecord, error) {
+	r.Version = expected
+	payload, err := json.Marshal(r)
+	if err != nil {
+		return DriftScanRecord{}, err
+	}
+	generation, err := s.objects.Put(ctx, s.driftScanKey(), append(payload, '\n'), &expected)
+	if errors.Is(err, ErrMetadataConflict) {
+		return DriftScanRecord{}, ErrDriftStateConflict
 	}
 	r.Version = generation
 	return r, err

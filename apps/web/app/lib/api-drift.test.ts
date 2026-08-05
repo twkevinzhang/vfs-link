@@ -4,8 +4,10 @@ import {
   createDriftAction,
   createDriftPlan,
   dismissDriftAction,
+  getCurrentDriftScan,
   getDrift,
   getDriftActions,
+  startDriftScan,
 } from './api';
 
 const emptyResponse = {
@@ -50,6 +52,57 @@ afterEach(() => {
 });
 
 describe('drift API query contract', () => {
+  it('starts and restores a server-authoritative rescan job', async () => {
+    const scan = {
+      id: 'scan-one',
+      status: 'running',
+      phase: 'objects',
+      createdAt: '2026-08-05T09:00:00Z',
+      updatedAt: '2026-08-05T09:01:00Z',
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(scan), {
+          status: 202,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ scan }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(startDriftScan()).resolves.toEqual(scan);
+    await expect(getCurrentDriftScan()).resolves.toEqual(scan);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      '/api/drift/scans',
+      expect.objectContaining({ method: 'POST', body: '{}' })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      '/api/drift/scans/current',
+      expect.objectContaining({ headers: { Accept: 'application/json' } })
+    );
+  });
+
+  it('returns no current rescan before the first job exists', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ scan: null }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      )
+    );
+
+    await expect(getCurrentDriftScan()).resolves.toBeUndefined();
+  });
   it('reads the cached snapshot without triggering a refresh by default', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify(emptyResponse), {

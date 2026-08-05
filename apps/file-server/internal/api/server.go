@@ -194,6 +194,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/thumbnails", s.handleThumbnails)
 	mux.HandleFunc("/api/thumbnails/", s.handleThumbnail)
 	mux.HandleFunc("/api/drift", s.handleDrift)
+	mux.HandleFunc("/api/drift/scans", s.handleDriftScans)
+	mux.HandleFunc("/api/drift/scans/current", s.handleDriftScanCurrent)
 	mux.HandleFunc("/api/drift/plans", s.handleDriftPlans)
 	mux.HandleFunc("/api/drift/actions", s.handleDriftActions)
 	mux.HandleFunc("/api/drift/actions/", s.handleDriftAction)

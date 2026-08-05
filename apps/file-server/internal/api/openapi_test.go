@@ -112,6 +112,8 @@ func TestOpenAPIDocumentCoversPublicRESTOperations(t *testing.T) {
 		"DELETE /api/thumbnails":                {},
 		"GET /api/thumbnails/{thumbnailId}":     {},
 		"GET /api/drift":                        {},
+		"POST /api/drift/scans":                 {},
+		"GET /api/drift/scans/current":          {},
 		"POST /api/drift/plans":                 {},
 		"POST /api/drift/actions":               {},
 		"GET /api/drift/actions":                {},

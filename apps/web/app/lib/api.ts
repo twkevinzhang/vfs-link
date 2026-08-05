@@ -12,8 +12,10 @@ import { CreateUploadInput, UploadSession } from '../types/upload';
 import {
   DriftAction,
   DriftActionsResponse,
+  DriftCurrentScanResponse,
   DriftPlan,
   DriftResponse,
+  DriftScan,
 } from '../types/drift';
 
 // An empty base keeps browser requests on the same origin as the Web UI.
@@ -546,6 +548,17 @@ export async function getDriftActions() {
 
 export function dismissDriftAction(id: string) {
   return deleteResource(`/api/drift/actions/${encodeURIComponent(id)}`);
+}
+
+export async function getCurrentDriftScan() {
+  const response = await requestJson<DriftCurrentScanResponse>(
+    '/api/drift/scans/current'
+  );
+  return response.scan ?? undefined;
+}
+
+export function startDriftScan() {
+  return postJson<DriftScan>('/api/drift/scans', {});
 }
 
 // Passing the File directly to XMLHttpRequest keeps large files out of JS
