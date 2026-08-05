@@ -23,6 +23,8 @@ const (
 	CheckpointCompleted       = "completed"
 )
 
+var ErrActionNotTerminal = db.ErrDriftActionNotTerminal
+
 func (s *Service) GetPlan(ctx context.Context, id string) (Plan, bool, error) {
 	record, ok, err := s.state.FindDriftPlan(ctx, strings.TrimSpace(id))
 	if err != nil || !ok {
@@ -68,6 +70,11 @@ func (s *Service) CreateAction(ctx context.Context, planID, idempotencyKey strin
 	if action.Status == "completed" {
 		return action, nil
 	}
+	if action.Status == "failed" {
+		if err := s.state.RestoreDriftAction(ctx, action.ID); err != nil {
+			return Action{}, fmt.Errorf("restore drift action for retry: %w", err)
+		}
+	}
 	if s.autoKick {
 		s.KickAction(action.ID)
 	}
@@ -107,6 +114,9 @@ func (s *Service) ResumeAction(ctx context.Context, id string) (Action, error) {
 	if err != nil {
 		return action, err
 	}
+	if err := s.state.RestoreDriftAction(ctx, action.ID); err != nil {
+		return action, fmt.Errorf("restore running drift action: %w", err)
+	}
 	plan, ok, err := s.GetPlan(ctx, action.PlanID)
 	if err != nil || !ok {
 		return s.fail(ctx, action, errors.New("drift plan not found")), err
@@ -137,6 +147,45 @@ func (s *Service) GetAction(ctx context.Context, id string) (Action, bool, error
 	}
 	action.Version = record.Version
 	return action, true, nil
+}
+
+func (s *Service) ListActions(ctx context.Context, offset, limit int) ([]Action, error) {
+	if offset < 0 || limit < 0 || (limit == 0 && offset != 0) {
+		return nil, errors.New("action list offset must be non-negative; limit zero requires offset zero")
+	}
+	records, err := s.state.ListDriftActions(ctx, offset, limit)
+	if err != nil {
+		return nil, err
+	}
+	actions := make([]Action, 0, len(records))
+	for _, record := range records {
+		var action Action
+		if err := json.Unmarshal(record.Payload, &action); err != nil {
+			return nil, fmt.Errorf("decode drift action %s: %w", record.ID, err)
+		}
+		action.Version = record.Version
+		actions = append(actions, action)
+	}
+	return actions, nil
+}
+
+func (s *Service) DismissAction(ctx context.Context, id string) (bool, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false, nil
+	}
+	action, found, err := s.GetAction(ctx, id)
+	if err != nil || !found {
+		return found, err
+	}
+	if action.Status != "completed" && action.Status != "failed" {
+		return true, ErrActionNotTerminal
+	}
+	return s.state.DismissDriftAction(ctx, id, time.Now().UTC())
+}
+
+func (action Action) NeedsKick(now time.Time) bool {
+	return action.Status == "pending" || (action.Status == "running" && action.LeaseUntil != nil && action.LeaseUntil.Before(now))
 }
 
 func (s *Service) saveAction(ctx context.Context, action Action) (Action, error) {

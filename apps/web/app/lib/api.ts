@@ -9,7 +9,12 @@ import {
 } from '../types/files';
 import { ShareRecord } from '../types/share';
 import { CreateUploadInput, UploadSession } from '../types/upload';
-import { DriftAction, DriftPlan, DriftResponse } from '../types/drift';
+import {
+  DriftAction,
+  DriftActionsResponse,
+  DriftPlan,
+  DriftResponse,
+} from '../types/drift';
 
 // An empty base keeps browser requests on the same origin as the Web UI.
 // Set VITE_API_BASE_URL only for an intentionally separate API deployment.
@@ -71,6 +76,25 @@ async function postJson<T>(
   }
 
   return response.json() as Promise<T>;
+}
+
+async function deleteResource(path: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: 'DELETE',
+    headers: { Accept: 'application/json' },
+  });
+
+  if (!response.ok) {
+    const fallback = `${response.status} ${response.statusText}`;
+    let message = fallback;
+    try {
+      const responseBody = (await response.json()) as { error?: string };
+      message = responseBody.error || fallback;
+    } catch {
+      message = fallback;
+    }
+    throw new Error(message);
+  }
 }
 
 function apiUrl(pathOrUrl: string) {
@@ -494,6 +518,9 @@ export async function createDriftAction(
   return {
     ...action,
     idempotencyKey: action.idempotencyKey || idempotencyKey,
+    results:
+      action.results ??
+      paths.map((logicPath) => ({ logicPath, status: 'pending' })),
   };
 }
 
@@ -502,6 +529,23 @@ export async function getDriftAction(id: string, paths: string[]) {
     `/api/drift/actions/${encodeURIComponent(id)}`
   );
   return normalizeDriftAction(response, paths);
+}
+
+export async function getDriftActions() {
+  const response = await requestJson<
+    DriftActionsResponse | { actions: RawDriftAction[] }
+  >('/api/drift/actions?all=true');
+  return response.actions.map((action) => {
+    const paths =
+      'results' in action
+        ? (action.results ?? []).map((result) => result.logicPath)
+        : [];
+    return normalizeDriftAction(action, paths);
+  });
+}
+
+export function dismissDriftAction(id: string) {
+  return deleteResource(`/api/drift/actions/${encodeURIComponent(id)}`);
 }
 
 // Passing the File directly to XMLHttpRequest keeps large files out of JS

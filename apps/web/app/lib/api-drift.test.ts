@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createDriftAction, createDriftPlan, getDrift } from './api';
+import {
+  createDriftAction,
+  createDriftPlan,
+  dismissDriftAction,
+  getDrift,
+  getDriftActions,
+} from './api';
 
 const emptyResponse = {
   summary: {
@@ -251,5 +257,57 @@ describe('drift API query contract', () => {
     const plan = await createDriftPlan(['report.pdf']);
 
     expect(plan.paths).toEqual(['report.pdf']);
+  });
+
+  it('lists server-authoritative actions and preserves result paths', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          actions: [
+            {
+              id: 'action-2',
+              planId: 'plan-2',
+              idempotencyKey: 'key-2',
+              status: 'running',
+              progress: 1,
+              total: 2,
+              succeeded: 1,
+              failed: 0,
+              results: [
+                { logicPath: '/done', status: 'completed' },
+                { logicPath: '/next', status: 'pending' },
+              ],
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const actions = await getDriftActions();
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/drift/actions?all=true',
+      expect.any(Object)
+    );
+    expect(actions[0].results?.map((result) => result.logicPath)).toEqual([
+      '/done',
+      '/next',
+    ]);
+  });
+
+  it('soft-dismisses an action globally without expecting a JSON body', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await dismissDriftAction('action/2');
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/drift/actions/action%2F2', {
+      method: 'DELETE',
+      headers: { Accept: 'application/json' },
+    });
   });
 });

@@ -42,11 +42,15 @@ import { Input } from '../components/ui/input';
 import {
   createDriftAction,
   createDriftPlan,
+  dismissDriftAction,
   getDrift,
   getDriftAction,
+  getDriftActions,
 } from '../lib/api';
 import {
+  createDriftActionListResponseGuard,
   driftActionFailedPaths,
+  driftActionPaths,
   driftActionPercent,
   driftMethodLabel,
   driftStatusLabel,
@@ -54,6 +58,8 @@ import {
   formatUsdRange,
   isActionableDriftItem,
   isDriftActionTerminal,
+  markDriftActionRetrying,
+  upsertDriftAction,
 } from '../lib/drift';
 import { FILES_ROUTE } from '../lib/file-route';
 import { formatBytes, formatDate } from '../lib/format';
@@ -77,6 +83,7 @@ export const meta: MetaFunction = () => [
 const PAGE_SIZE = 50;
 const SEARCH_DEBOUNCE_MS = 250;
 const ACTION_POLL_MS = 1500;
+const ACTION_LIST_SYNC_MS = 30000;
 
 type LoadState = {
   data?: DriftResponse;
@@ -96,11 +103,22 @@ export default function DriftRoute() {
   const [planning, setPlanning] = useState(false);
   const [planError, setPlanError] = useState<string>();
   const [costAcknowledged, setCostAcknowledged] = useState(false);
-  const [activeAction, setActiveAction] = useState<DriftAction>();
-  const [activeActionPaths, setActiveActionPaths] = useState<string[]>([]);
+  const [actions, setActions] = useState<DriftAction[]>([]);
+  const [actionsLoading, setActionsLoading] = useState(true);
+  const [actionsError, setActionsError] = useState<string>();
+  const [retryingActionIds, setRetryingActionIds] = useState<Set<string>>(
+    new Set()
+  );
+  const [dismissingActionIds, setDismissingActionIds] = useState<Set<string>>(
+    new Set()
+  );
   const [startingAction, setStartingAction] = useState(false);
   const requestRef = useRef(0);
   const disposedRef = useRef(false);
+  const actionsRef = useRef<DriftAction[]>([]);
+  const pollingActionsRef = useRef(false);
+  const listingActionsRef = useRef(false);
+  const actionListGuardRef = useRef(createDriftActionListResponseGuard());
 
   const loadDrift = useCallback(
     async (nextOffset = offset, refresh = false) => {
@@ -176,38 +194,15 @@ export default function DriftRoute() {
     setSelected(new Set());
   }, [debouncedQuery, offset, status]);
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    disposedRef.current = false;
+    return () => {
       disposedRef.current = true;
-    },
-    []
-  );
-
-  const watchAction = useCallback(async (id: string, paths: string[]) => {
-    try {
-      for (;;) {
-        const next = await getDriftAction(id, paths);
-        if (disposedRef.current) return;
-        setActiveAction(next);
-        if (isDriftActionTerminal(next.status)) {
-          return;
-        }
-        await new Promise((resolve) =>
-          window.setTimeout(resolve, ACTION_POLL_MS)
-        );
-        if (disposedRef.current) return;
-      }
-    } catch (error) {
-      if (disposedRef.current) return;
-      setPlanError(
-        error instanceof Error
-          ? error.message
-          : 'Unable to monitor drift action'
-      );
-    }
+    };
   }, []);
 
   const data = state.data;
+  const driftCapabilityKnown = Boolean(data);
   const items = data?.items ?? [];
   const pagination = data?.pagination;
   const storageIsGcs =
@@ -226,7 +221,113 @@ export default function DriftRoute() {
   const allActionableSelected =
     actionableItems.length > 0 &&
     actionableItems.every((item) => selected.has(item.logicPath));
-  const failedPaths = activeAction ? driftActionFailedPaths(activeAction) : [];
+
+  const loadActions = useCallback(async (background = false) => {
+    if (listingActionsRef.current) return;
+    listingActionsRef.current = true;
+    const requestToken = actionListGuardRef.current.beginRequest();
+    if (!background) setActionsLoading(true);
+    try {
+      const next = await getDriftActions();
+      if (
+        disposedRef.current ||
+        !actionListGuardRef.current.isCurrent(requestToken)
+      ) {
+        return;
+      }
+      setActions(next);
+      setActionsError(undefined);
+    } catch (error) {
+      if (
+        disposedRef.current ||
+        !actionListGuardRef.current.isCurrent(requestToken)
+      ) {
+        return;
+      }
+      setActionsError(
+        error instanceof Error ? error.message : 'Unable to load drift actions'
+      );
+    } finally {
+      listingActionsRef.current = false;
+      if (!background && !disposedRef.current) setActionsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    actionsRef.current = actions;
+  }, [actions]);
+
+  useEffect(() => {
+    if (!canAct) {
+      if (driftCapabilityKnown) {
+        actionListGuardRef.current.markMutation();
+        setActions([]);
+        setActionsLoading(false);
+      }
+      return;
+    }
+    void loadActions();
+  }, [canAct, driftCapabilityKnown, loadActions]);
+
+  useEffect(() => {
+    if (!canAct) return;
+    const interval = window.setInterval(() => {
+      void loadActions(true);
+    }, ACTION_LIST_SYNC_MS);
+    return () => window.clearInterval(interval);
+  }, [canAct, loadActions]);
+
+  useEffect(() => {
+    const pollActions = async () => {
+      if (disposedRef.current || pollingActionsRef.current) return;
+      const runningActions = actionsRef.current.filter(
+        (action) => !isDriftActionTerminal(action.status)
+      );
+      if (runningActions.length === 0) return;
+
+      pollingActionsRef.current = true;
+      try {
+        const results = await Promise.allSettled(
+          runningActions.map((action) => {
+            const id = action.id || action.actionId;
+            if (!id) throw new Error('Drift action is missing an ID');
+            return getDriftAction(id, driftActionPaths(action));
+          })
+        );
+        if (disposedRef.current) return;
+        const updates = results.flatMap((result) =>
+          result.status === 'fulfilled' ? [result.value] : []
+        );
+        if (updates.length > 0) {
+          actionListGuardRef.current.markMutation();
+          setActions((previous) =>
+            updates.reduce(
+              (next, action) => upsertDriftAction(next, action),
+              previous
+            )
+          );
+        }
+        const failure = results.find(
+          (result): result is PromiseRejectedResult =>
+            result.status === 'rejected'
+        );
+        setActionsError(
+          failure
+            ? failure.reason instanceof Error
+              ? failure.reason.message
+              : 'Unable to monitor drift actions'
+            : undefined
+        );
+      } finally {
+        pollingActionsRef.current = false;
+      }
+    };
+
+    const interval = window.setInterval(() => {
+      void pollActions();
+    }, ACTION_POLL_MS);
+    return () => window.clearInterval(interval);
+  }, []);
 
   const toggleItem = (path: string, checked: boolean) => {
     setSelected((previous) => {
@@ -273,12 +374,8 @@ export default function DriftRoute() {
       const action = await createDriftAction(plan.planId, plan.paths);
       setPlan(undefined);
       setSelected(new Set());
-      setActiveAction(action);
-      setActiveActionPaths(plan.paths);
-      const id = action.id || action.actionId;
-      if (id && !isDriftActionTerminal(action.status)) {
-        void watchAction(id, plan.paths);
-      }
+      actionListGuardRef.current.markMutation();
+      setActions((previous) => upsertDriftAction(previous, action, true));
     } catch (error) {
       setPlanError(
         error instanceof Error ? error.message : 'Unable to start drift action'
@@ -288,27 +385,60 @@ export default function DriftRoute() {
     }
   };
 
-  const retryAction = async () => {
-    if (!activeAction || !activeAction.idempotencyKey) return;
-    setPlanning(true);
+  const retryAction = async (action: DriftAction) => {
+    const id = action.id || action.actionId;
+    const paths = driftActionPaths(action);
+    if (!id || !action.idempotencyKey || paths.length === 0) return;
+    setRetryingActionIds((previous) => new Set(previous).add(id));
     setPlanError(undefined);
     try {
-      const action = await createDriftAction(
-        activeAction.planId,
-        activeActionPaths,
-        activeAction.idempotencyKey
+      const next = await createDriftAction(
+        action.planId,
+        paths,
+        action.idempotencyKey
       );
-      setActiveAction(action);
-      const id = action.id || action.actionId;
-      if (id && !isDriftActionTerminal(action.status)) {
-        void watchAction(id, activeActionPaths);
-      }
+      actionListGuardRef.current.markMutation();
+      setActions((previous) =>
+        upsertDriftAction(previous, markDriftActionRetrying(next))
+      );
     } catch (error) {
       setPlanError(
         error instanceof Error ? error.message : 'Unable to retry drift action'
       );
     } finally {
-      setPlanning(false);
+      setRetryingActionIds((previous) => {
+        const next = new Set(previous);
+        next.delete(id);
+        return next;
+      });
+    }
+  };
+
+  const dismissAction = async (action: DriftAction) => {
+    const id = action.id || action.actionId;
+    if (!id) return;
+    setDismissingActionIds((previous) => new Set(previous).add(id));
+    setActionsError(undefined);
+    try {
+      await dismissDriftAction(id);
+      actionListGuardRef.current.markMutation();
+      setActions((previous) =>
+        previous.filter(
+          (candidate) => (candidate.id || candidate.actionId) !== id
+        )
+      );
+    } catch (error) {
+      setActionsError(
+        error instanceof Error
+          ? error.message
+          : 'Unable to dismiss drift action'
+      );
+    } finally {
+      setDismissingActionIds((previous) => {
+        const next = new Set(previous);
+        next.delete(id);
+        return next;
+      });
     }
   };
 
@@ -392,29 +522,57 @@ export default function DriftRoute() {
           </Alert>
         )}
 
-        {(state.error || planError) && (
+        {(state.error || planError || actionsError) && (
           <Alert className="border-destructive/30 bg-red-50 text-destructive">
             <div className="flex items-start gap-3">
               <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
               <div>
                 <p className="font-semibold">Drift operation unavailable</p>
                 <p className="mt-1 text-sm text-foreground">
-                  {planError || state.error}
+                  {planError || state.error || actionsError}
                 </p>
+                {actionsError && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="mt-3"
+                    disabled={actionsLoading}
+                    onClick={() => void loadActions()}
+                  >
+                    {actionsLoading && (
+                      <LoaderCircle className="h-4 w-4 animate-spin" />
+                    )}
+                    Retry action sync
+                  </Button>
+                )}
               </div>
             </div>
           </Alert>
         )}
 
-        {activeAction && (
-          <ActionProgress
-            action={activeAction}
-            failedPaths={failedPaths}
-            canRetry={canAct && Boolean(activeAction.idempotencyKey)}
-            retrying={planning}
-            onRetry={() => void retryAction()}
-            onDismiss={() => setActiveAction(undefined)}
-          />
+        {actions.length > 0 && (
+          <section className="grid gap-3" aria-label="Physical move actions">
+            {actions.map((action) => {
+              const id = (action.id || action.actionId) ?? '';
+              const failedPaths = driftActionFailedPaths(action);
+              return (
+                <ActionProgress
+                  key={id}
+                  action={action}
+                  failedPaths={failedPaths}
+                  canRetry={
+                    canAct &&
+                    Boolean(action.idempotencyKey) &&
+                    driftActionPaths(action).length > 0
+                  }
+                  retrying={retryingActionIds.has(id)}
+                  dismissing={dismissingActionIds.has(id)}
+                  onRetry={() => void retryAction(action)}
+                  onDismiss={() => void dismissAction(action)}
+                />
+              );
+            })}
+          </section>
         )}
 
         <SummaryGrid data={data} loading={state.loading && !data} />
@@ -1260,6 +1418,7 @@ function ActionProgress({
   failedPaths,
   canRetry,
   retrying,
+  dismissing,
   onRetry,
   onDismiss,
 }: {
@@ -1267,6 +1426,7 @@ function ActionProgress({
   failedPaths: string[];
   canRetry: boolean;
   retrying: boolean;
+  dismissing: boolean;
   onRetry: () => void;
   onDismiss: () => void;
 }) {
@@ -1291,6 +1451,9 @@ function ActionProgress({
           <div>
             <p className="font-semibold">
               Physical move {driftStatusLabel(action.status).toLowerCase()}
+            </p>
+            <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground">
+              {action.id || action.actionId}
             </p>
             <p className="mt-1 text-sm text-muted-foreground">
               {action.progress.toLocaleString()} of{' '}
@@ -1322,8 +1485,14 @@ function ActionProgress({
             </Button>
           )}
           {terminal && (
-            <Button variant="ghost" size="sm" onClick={onDismiss}>
-              Dismiss
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={dismissing}
+              onClick={onDismiss}
+            >
+              {dismissing && <LoaderCircle className="h-4 w-4 animate-spin" />}
+              {dismissing ? 'Dismissing' : 'Dismiss'}
             </Button>
           )}
         </div>

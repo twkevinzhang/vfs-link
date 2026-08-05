@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -16,10 +17,14 @@ type measuredTreeBackend struct {
 	activeGets int
 	maxGets    int
 	delay      time.Duration
+	gets       map[string]int
 }
 
 func (b *measuredTreeBackend) Get(ctx context.Context, key string) (treeObject, bool, error) {
 	b.mu.Lock()
+	if b.gets != nil {
+		b.gets[key]++
+	}
 	b.activeGets++
 	if b.activeGets > b.maxGets {
 		b.maxGets = b.activeGets
@@ -51,6 +56,36 @@ func (b *measuredTreeBackend) List(_ context.Context, prefix string) ([]string, 
 	return keys, nil
 }
 func (*measuredTreeBackend) Close() error { return nil }
+
+func TestTreeDriftActionListSkipsDismissedObjectReads(t *testing.T) {
+	base := time.Date(2026, 8, 5, 8, 0, 0, 0, time.UTC)
+	backend := &measuredTreeBackend{objects: map[string]treeObject{}, gets: map[string]int{}}
+	store := newTreeStore(backend, "count-actions")
+	for index, id := range []string{"dismissed", "visible"} {
+		record := DriftActionRecord{ID: id, PlanID: "plan", IdempotencyKey: id, Status: "completed", Checkpoint: "completed", CreatedAt: base.Add(time.Duration(index) * time.Minute), UpdatedAt: base}
+		payload, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		backend.objects[store.driftActionKey(id)] = treeObject{Data: payload, Generation: int64(index + 1)}
+	}
+	backend.objects[store.driftActionDismissalKey("dismissed")] = treeObject{Data: []byte(`{"actionId":"dismissed"}`), Generation: 3}
+
+	actions, err := store.ListDriftActions(context.Background(), 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(actions) != 1 || actions[0].ID != "visible" {
+		t.Fatalf("actions = %+v, want visible only", actions)
+	}
+	backend.mu.Lock()
+	dismissedGets := backend.gets[store.driftActionKey("dismissed")]
+	visibleGets := backend.gets[store.driftActionKey("visible")]
+	backend.mu.Unlock()
+	if dismissedGets != 0 || visibleGets != 1 {
+		t.Fatalf("action object GETs = dismissed %d, visible %d; want 0 and 1", dismissedGets, visibleGets)
+	}
+}
 
 func TestTreeDriftScannerIsBoundedAndDeterministic(t *testing.T) {
 	backend := &measuredTreeBackend{objects: map[string]treeObject{}, delay: time.Millisecond}

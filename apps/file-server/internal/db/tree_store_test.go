@@ -2,12 +2,140 @@ package db
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestTreeDriftActionsListPaginateAndDismiss(t *testing.T) {
+	ctx := context.Background()
+	store := newTestTree(t)
+	base := time.Date(2026, 8, 5, 8, 0, 0, 0, time.UTC)
+	for index, id := range []string{"old", "middle", "new"} {
+		action := DriftActionRecord{
+			ID: id, PlanID: "plan", IdempotencyKey: "key-" + id,
+			Status: "completed", Checkpoint: "completed",
+			CreatedAt: base.Add(time.Duration(index) * time.Minute),
+			UpdatedAt: base.Add(time.Duration(index) * time.Minute),
+		}
+		action.Payload, _ = json.Marshal(action)
+		if _, err := store.CreateDriftAction(ctx, action); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	page, err := store.ListDriftActions(ctx, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page) != 1 || page[0].ID != "middle" {
+		t.Fatalf("page = %+v, want middle", page)
+	}
+	all, err := store.ListDriftActions(ctx, 0, 0)
+	if err != nil || len(all) != 3 {
+		t.Fatalf("all = %+v, error %v", all, err)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		found, err := store.DismissDriftAction(ctx, "middle", base.Add(time.Hour))
+		if err != nil || !found {
+			t.Fatalf("DismissDriftAction attempt %d = %t, %v", attempt+1, found, err)
+		}
+	}
+	if found, err := store.DismissDriftAction(ctx, "missing", base); err != nil || found {
+		t.Fatalf("dismiss missing = %t, %v", found, err)
+	}
+
+	visible, err := store.ListDriftActions(ctx, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(visible) != 2 || visible[0].ID != "new" || visible[1].ID != "old" {
+		t.Fatalf("visible = %+v, want new and old", visible)
+	}
+	stored, ok, err := store.FindDriftAction(ctx, "middle")
+	if err != nil || !ok {
+		t.Fatalf("dismissed action lookup = %t, %v", ok, err)
+	}
+	stored.UpdatedAt = base.Add(2 * time.Hour)
+	if _, err := store.UpdateDriftAction(ctx, stored, stored.Version); err != nil {
+		t.Fatalf("update dismissed action: %v", err)
+	}
+	visible, err = store.ListDriftActions(ctx, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(visible) != 2 {
+		t.Fatalf("visible after dismissed action update = %+v, want dismissal to remain", visible)
+	}
+	if err := store.RestoreDriftAction(ctx, "middle"); err != nil {
+		t.Fatal(err)
+	}
+	visible, err = store.ListDriftActions(ctx, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(visible) != 3 || visible[0].ID != "new" || visible[1].ID != "middle" {
+		t.Fatalf("visible after restore = %+v, want stable createdAt order with middle visible", visible)
+	}
+}
+
+type dismissRaceTreeBackend struct {
+	treeBackend
+	store   *TreeStore
+	action  string
+	raced   bool
+	raceErr error
+}
+
+func (b *dismissRaceTreeBackend) Put(ctx context.Context, key string, data []byte, expected *int64) (int64, error) {
+	generation, err := b.treeBackend.Put(ctx, key, data, expected)
+	if err != nil || b.raced || !strings.Contains(key, "/drift/action-dismissals/") {
+		return generation, err
+	}
+	b.raced = true
+	action, found, raceErr := b.store.FindDriftAction(ctx, b.action)
+	if raceErr == nil && found {
+		action.Status = "running"
+		var payload map[string]any
+		if json.Unmarshal(action.Payload, &payload) == nil {
+			payload["status"] = "running"
+			action.Payload, _ = json.Marshal(payload)
+		}
+		_, raceErr = b.store.UpdateDriftAction(ctx, action, action.Version)
+	}
+	b.raceErr = raceErr
+	return generation, err
+}
+
+func TestTreeDismissRemovesTombstoneWhenActionStartsRunningConcurrently(t *testing.T) {
+	base, err := newLocalTreeBackend(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := &dismissRaceTreeBackend{treeBackend: base, action: "race"}
+	store := newTreeStore(backend, "race-dismiss")
+	backend.store = store
+	now := time.Now().UTC()
+	record := DriftActionRecord{ID: "race", PlanID: "plan", IdempotencyKey: "race", Status: "failed", Checkpoint: "pending", CreatedAt: now, UpdatedAt: now}
+	record.Payload, _ = json.Marshal(record)
+	if _, err := store.CreateDriftAction(context.Background(), record); err != nil {
+		t.Fatal(err)
+	}
+	found, err := store.DismissDriftAction(context.Background(), record.ID, now)
+	if !found || !errors.Is(err, ErrDriftActionNotTerminal) {
+		t.Fatalf("DismissDriftAction = found %t, error %v", found, err)
+	}
+	if backend.raceErr != nil {
+		t.Fatalf("race hook: %v", backend.raceErr)
+	}
+	if _, markerFound, err := backend.Get(context.Background(), store.driftActionDismissalKey(record.ID)); err != nil || markerFound {
+		t.Fatalf("dismissal marker remains = %t, error %v", markerFound, err)
+	}
+}
 
 func newTestTree(t *testing.T) *TreeStore {
 	t.Helper()

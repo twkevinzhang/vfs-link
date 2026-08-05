@@ -114,7 +114,9 @@ func TestOpenAPIDocumentCoversPublicRESTOperations(t *testing.T) {
 		"GET /api/drift":                        {},
 		"POST /api/drift/plans":                 {},
 		"POST /api/drift/actions":               {},
+		"GET /api/drift/actions":                {},
 		"GET /api/drift/actions/{actionId}":     {},
+		"DELETE /api/drift/actions/{actionId}":  {},
 	}
 
 	actual := make(map[string]struct{})

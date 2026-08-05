@@ -19,6 +19,16 @@ type conflictState struct {
 	failOn  int
 }
 
+type restoreCountingState struct {
+	db.DriftStateStore
+	restores int
+}
+
+func (s *restoreCountingState) RestoreDriftAction(ctx context.Context, id string) error {
+	s.restores++
+	return s.DriftStateStore.RestoreDriftAction(ctx, id)
+}
+
 func (s *conflictState) UpdateDriftAction(ctx context.Context, record db.DriftActionRecord, expected int64) (db.DriftActionRecord, error) {
 	s.mu.Lock()
 	s.updates++
@@ -326,5 +336,83 @@ func TestActionRecoversWhenCheckpointCASConflicts(t *testing.T) {
 	}
 	if completed.Status != "completed" {
 		t.Fatalf("retry status = %s checkpoint=%s error=%s", completed.Status, completed.Checkpoint, completed.Error)
+	}
+}
+
+func TestFailedActionIsTerminalUntilExplicitRetry(t *testing.T) {
+	now := time.Now().UTC()
+	if (Action{Status: "failed"}).NeedsKick(now) {
+		t.Fatal("failed action must not be kicked by list or GET")
+	}
+	if !(Action{Status: "pending"}).NeedsKick(now) {
+		t.Fatal("pending action should be kicked")
+	}
+	expired := now.Add(-time.Second)
+	future := now.Add(time.Second)
+	if !(Action{Status: "running", LeaseUntil: &expired}).NeedsKick(now) {
+		t.Fatal("expired running action should be kicked")
+	}
+	if (Action{Status: "running", LeaseUntil: &future}).NeedsKick(now) {
+		t.Fatal("leased running action must not be kicked")
+	}
+}
+
+func TestDismissActionRequiresTerminalStatusAndHidesCompletedAction(t *testing.T) {
+	service, _, _, _, action := newActionFixture(t, 0, 0)
+	ctx := context.Background()
+	if found, err := service.DismissAction(ctx, action.ID); !found || !errors.Is(err, ErrActionNotTerminal) {
+		t.Fatalf("dismiss pending = found %t, error %v", found, err)
+	}
+	completed, err := service.ResumeAction(ctx, action.ID)
+	if err != nil || completed.Status != "completed" {
+		t.Fatalf("ResumeAction = status %q, error %v", completed.Status, err)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if found, err := service.DismissAction(ctx, action.ID); err != nil || !found {
+			t.Fatalf("dismiss terminal attempt %d = found %t, error %v", attempt+1, found, err)
+		}
+	}
+	actions, err := service.ListActions(ctx, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(actions) != 0 {
+		t.Fatalf("visible actions = %+v, want none", actions)
+	}
+}
+
+func TestExplicitFailedActionRetryRestoresDismissedAction(t *testing.T) {
+	service, metadata, _, plan, action := newActionFixture(t, 1, 0)
+	ctx := context.Background()
+	failed, err := service.ResumeAction(ctx, action.ID)
+	if err != nil || failed.Status != "failed" {
+		t.Fatalf("ResumeAction = status %q, error %v", failed.Status, err)
+	}
+	if found, err := service.DismissAction(ctx, action.ID); err != nil || !found {
+		t.Fatalf("DismissAction = found %t, error %v", found, err)
+	}
+	actions, err := service.ListActions(ctx, 0, 100)
+	if err != nil || len(actions) != 0 {
+		t.Fatalf("actions before retry = %+v, error %v", actions, err)
+	}
+	base, err := db.AsDriftStateStore(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counting := &restoreCountingState{DriftStateStore: base}
+	service.state = counting
+	retried, err := service.CreateAction(ctx, plan.ID, "retry-key")
+	if err != nil || retried.ID != action.ID || retried.Status != "failed" {
+		t.Fatalf("CreateAction retry = %+v, error %v", retried, err)
+	}
+	actions, err = service.ListActions(ctx, 0, 100)
+	if err != nil || len(actions) != 1 || actions[0].ID != action.ID {
+		t.Fatalf("actions after retry = %+v, error %v", actions, err)
+	}
+	if _, err := service.ResumeAction(ctx, retried.ID); err != nil {
+		t.Fatal(err)
+	}
+	if counting.restores < 2 {
+		t.Fatalf("RestoreDriftAction calls = %d, want pre-retry and post-running restore", counting.restores)
 	}
 }

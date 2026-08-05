@@ -651,6 +651,45 @@
       }
     },
     "/api/drift/actions": {
+      "get": {
+        "tags": ["Drift"],
+        "summary": "List visible drift repair actions",
+        "description": "Returns completed, failed, pending, and running actions that have not been globally dismissed. Results use a stable createdAt and id descending order. Use limit and offset for bounded pages, or all=true for a single complete snapshot. all=true is mutually exclusive with limit and offset.",
+        "operationId": "listDriftActions",
+        "parameters": [
+          {
+            "name": "all",
+            "in": "query",
+            "schema": { "type": "boolean", "default": false },
+            "description": "When true, returns all visible actions in one response and must not be combined with limit or offset."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": { "type": "integer", "minimum": 1, "maximum": 500, "default": 100 }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": { "type": "integer", "minimum": 0, "default": 0 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Visible action page",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DriftActionsResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "500": { "$ref": "#/components/responses/InternalServerError" },
+          "501": { "$ref": "#/components/responses/NotImplemented" }
+        }
+      },
       "post": {
         "tags": ["Drift"],
         "summary": "Start an asynchronous drift repair action",
@@ -687,7 +726,7 @@
       "get": {
         "tags": ["Drift"],
         "summary": "Get and, when necessary, resume a drift repair action",
-        "description": "Reading a pending, failed, or expired running action can kick its background processing. Poll until status is completed or failed.",
+        "description": "Reading a pending or expired running action can kick its background processing. Failed actions remain terminal until an explicit retry POST. Poll until status is completed or failed.",
         "operationId": "getDriftAction",
         "parameters": [
           { "$ref": "#/components/parameters/ActionId" }
@@ -704,6 +743,24 @@
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "404": { "$ref": "#/components/responses/NotFound" },
           "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "500": { "$ref": "#/components/responses/InternalServerError" },
+          "501": { "$ref": "#/components/responses/NotImplemented" }
+        }
+      },
+      "delete": {
+        "tags": ["Drift"],
+        "summary": "Globally dismiss a terminal drift repair action",
+        "description": "Soft-dismisses a completed or failed action from action lists on every device. The action record remains available by id. Repeated dismissal is idempotent.",
+        "operationId": "dismissDriftAction",
+        "parameters": [
+          { "$ref": "#/components/parameters/ActionId" }
+        ],
+        "responses": {
+          "204": { "description": "Action dismissed" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "409": { "$ref": "#/components/responses/Conflict" },
           "500": { "$ref": "#/components/responses/InternalServerError" },
           "501": { "$ref": "#/components/responses/NotImplemented" }
         }
@@ -1303,6 +1360,14 @@
           "error": { "type": "string" },
           "createdAt": { "$ref": "#/components/schemas/Timestamp" },
           "updatedAt": { "$ref": "#/components/schemas/Timestamp" }
+        }
+      },
+      "DriftActionsResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["actions"],
+        "properties": {
+          "actions": { "type": "array", "items": { "$ref": "#/components/schemas/DriftActionResponse" } }
         }
       }
     }

@@ -281,6 +281,10 @@ type driftActionResponse struct {
 	UpdatedAt      time.Time           `json:"updatedAt"`
 }
 
+type driftActionsResponse struct {
+	Actions []driftActionResponse `json:"actions"`
+}
+
 func (s *Server) actionResponse(r *http.Request, action driftdomain.Action) (driftActionResponse, error) {
 	plan, ok, err := s.drift.GetPlan(r.Context(), action.PlanID)
 	if err != nil || !ok {
@@ -305,6 +309,64 @@ func (s *Server) actionResponse(r *http.Request, action driftdomain.Action) (dri
 }
 
 func (s *Server) handleDriftActions(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		if s.driftErr != nil {
+			writeError(w, http.StatusNotImplemented, s.driftErr.Error())
+			return
+		}
+		limit, offset := 100, 0
+		all := false
+		if raw := strings.TrimSpace(r.URL.Query().Get("all")); raw != "" {
+			parsed, err := strconv.ParseBool(raw)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "all must be a boolean")
+				return
+			}
+			all = parsed
+		}
+		if all && (r.URL.Query().Has("limit") || r.URL.Query().Has("offset")) {
+			writeError(w, http.StatusBadRequest, "all=true cannot be combined with limit or offset")
+			return
+		}
+		if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed < 1 || parsed > 500 {
+				writeError(w, http.StatusBadRequest, "limit must be an integer between 1 and 500")
+				return
+			}
+			limit = parsed
+		}
+		if raw := strings.TrimSpace(r.URL.Query().Get("offset")); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed < 0 {
+				writeError(w, http.StatusBadRequest, "offset must be a non-negative integer")
+				return
+			}
+			offset = parsed
+		}
+		if all {
+			limit, offset = 0, 0
+		}
+		actions, err := s.drift.ListActions(r.Context(), offset, limit)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		response := driftActionsResponse{Actions: make([]driftActionResponse, 0, len(actions))}
+		for _, action := range actions {
+			if action.NeedsKick(time.Now()) {
+				s.drift.KickAction(action.ID)
+			}
+			item, err := s.actionResponse(r, action)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			response.Actions = append(response.Actions, item)
+		}
+		writeJSON(w, response)
+		return
+	}
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -337,7 +399,7 @@ func (s *Server) handleDriftActions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDriftAction(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	if r.Method != http.MethodGet && r.Method != http.MethodDelete {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
@@ -346,6 +408,23 @@ func (s *Server) handleDriftAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/drift/actions/"), "/")
+	if r.Method == http.MethodDelete {
+		dismissed, err := s.drift.DismissAction(r.Context(), id)
+		if errors.Is(err, driftdomain.ErrActionNotTerminal) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if !dismissed {
+			writeError(w, http.StatusNotFound, "drift action not found")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	action, ok, err := s.drift.GetAction(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -355,7 +434,7 @@ func (s *Server) handleDriftAction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "drift action not found")
 		return
 	}
-	if action.Status == "pending" || action.Status == "failed" || (action.Status == "running" && action.LeaseUntil != nil && action.LeaseUntil.Before(time.Now())) {
+	if action.NeedsKick(time.Now()) {
 		s.drift.KickAction(action.ID)
 	}
 	response, err := s.actionResponse(r, action)

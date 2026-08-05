@@ -24,6 +24,77 @@ export function driftActionFailedPaths(action: DriftAction) {
   return [...new Set([...(action.failedPaths ?? []), ...resultPaths])];
 }
 
+export function driftActionPaths(action: DriftAction) {
+  return [
+    ...new Set(
+      (action.results ?? [])
+        .map((result) => result.logicPath)
+        .filter((path) => path.length > 0)
+    ),
+  ];
+}
+
+export function upsertDriftAction(
+  actions: DriftAction[],
+  action: DriftAction,
+  prepend = false
+) {
+  const id = action.id || action.actionId;
+  const existingIndex = actions.findIndex(
+    (candidate) => (candidate.id || candidate.actionId) === id
+  );
+  if (existingIndex < 0) {
+    return prepend ? [action, ...actions] : [...actions, action];
+  }
+  const next = [...actions];
+  const existing = next[existingIndex];
+  next[existingIndex] = {
+    ...action,
+    idempotencyKey: action.idempotencyKey || existing.idempotencyKey,
+    total: action.total || existing.total,
+    failedPaths:
+      action.failedPaths && action.failedPaths.length > 0
+        ? action.failedPaths
+        : existing.failedPaths,
+    results:
+      action.results && action.results.length > 0
+        ? action.results
+        : existing.results,
+  };
+  return next;
+}
+
+export function markDriftActionRetrying(action: DriftAction) {
+  if (!isDriftActionTerminal(action.status)) return action;
+  return { ...action, status: 'pending', error: undefined };
+}
+
+export type DriftActionListRequestToken = Readonly<{
+  requestGeneration: number;
+  mutationGeneration: number;
+}>;
+
+export function createDriftActionListResponseGuard() {
+  let requestGeneration = 0;
+  let mutationGeneration = 0;
+
+  return {
+    beginRequest(): DriftActionListRequestToken {
+      requestGeneration += 1;
+      return { requestGeneration, mutationGeneration };
+    },
+    markMutation() {
+      mutationGeneration += 1;
+    },
+    isCurrent(token: DriftActionListRequestToken) {
+      return (
+        token.requestGeneration === requestGeneration &&
+        token.mutationGeneration === mutationGeneration
+      );
+    },
+  };
+}
+
 export function driftActionPercent(action: DriftAction) {
   if (action.total <= 0) return 0;
   return Math.min(100, Math.max(0, (action.progress / action.total) * 100));

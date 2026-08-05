@@ -109,3 +109,7 @@ export type DriftAction = {
   createdAt?: string;
   updatedAt?: string;
 };
+
+export type DriftActionsResponse = {
+  actions: DriftAction[];
+};

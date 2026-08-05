@@ -228,6 +228,11 @@ CREATE TABLE IF NOT EXISTS "DriftAction" (
   "updatedAt" TIMESTAMPTZ NOT NULL
 );
 CREATE INDEX IF NOT EXISTS "DriftAction_planId_idx" ON "DriftAction" ("planId");
+
+CREATE TABLE IF NOT EXISTS "DriftActionDismissal" (
+  "actionId" TEXT PRIMARY KEY REFERENCES "DriftAction"(id) ON DELETE CASCADE,
+  "dismissedAt" TIMESTAMPTZ NOT NULL
+);
 `)
 	return err
 }
