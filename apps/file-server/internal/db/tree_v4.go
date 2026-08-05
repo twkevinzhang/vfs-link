@@ -710,6 +710,48 @@ func (n *treeV4Namespace) normalizeEnvelope(ctx context.Context, key string, gen
 }
 
 func (n *treeV4Namespace) transact(ctx context.Context, resources []string, derived *treeV4DerivedPayload, build func(context.Context, map[string]int64) ([]treeV4Mutation, any, error)) (any, string, error) {
+	normalized, err := n.normalizeLeaseResources(resources)
+	if err != nil {
+		return nil, "", err
+	}
+	var baseline *treeV4DerivedPayload
+	if derived != nil {
+		copy := *derived
+		copy.AncestorDirectoryIDs = append([]string(nil), derived.AncestorDirectoryIDs...)
+		baseline = &copy
+	}
+	var lastID string
+	retrySeed := uuid.NewString()
+	for attempt := 0; attempt < treeCASAttempts; attempt++ {
+		if baseline != nil {
+			*derived = *baseline
+			derived.AncestorDirectoryIDs = append([]string(nil), baseline.AncestorDirectoryIDs...)
+		}
+		result, id, transactErr := n.transactOnce(ctx, normalized, derived, build)
+		lastID = id
+		if !errors.Is(transactErr, ErrMetadataConflict) {
+			return result, id, transactErr
+		}
+		if attempt == treeCASAttempts-1 {
+			break
+		}
+		delay := v4TransactionRetryDelay(normalized, retrySeed, attempt)
+		select {
+		case <-ctx.Done():
+			return nil, lastID, ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+	return nil, lastID, ErrMetadataConflict
+}
+
+func v4TransactionRetryDelay(resources []string, seed string, attempt int) time.Duration {
+	digest := sha256.Sum256([]byte(strings.Join(resources, "\x00") + "\x00" + seed + fmt.Sprintf("\x00%d", attempt)))
+	jitter := time.Duration(digest[0]%25) * time.Millisecond
+	return time.Duration(attempt+1)*25*time.Millisecond + jitter
+}
+
+func (n *treeV4Namespace) transactOnce(ctx context.Context, resources []string, derived *treeV4DerivedPayload, build func(context.Context, map[string]int64) ([]treeV4Mutation, any, error)) (any, string, error) {
 	id := uuid.NewString()
 	var err error
 	resources, err = n.normalizeLeaseResources(resources)

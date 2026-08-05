@@ -100,6 +100,54 @@ func TestTreeV4ConcurrentDisjointWrites(t *testing.T) {
 	}
 }
 
+func TestTreeV4ConcurrentWritesRetrySharedShardConflicts(t *testing.T) {
+	ctx := context.Background()
+	local, err := newLocalTreeBackend(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := &observeV4WritesBackend{treeBackend: local, delay: 100 * time.Millisecond}
+	store, err := newTreeStoreV4(backend, "shared-shard-retry-v4", TreeV4Options{ShardCount: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, 12)
+	for candidate := 0; len(names) < cap(names); candidate++ {
+		name := fmt.Sprintf("collision-%04d.bin", candidate)
+		if store.v4.shardFor(name) == 0 {
+			names = append(names, name)
+		}
+	}
+	start := make(chan struct{})
+	errs := make(chan error, len(names))
+	var wg sync.WaitGroup
+	for _, name := range names {
+		name := name
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, _, writeErr := store.ReplaceFileConditional(ctx, name, "object-"+name, 1, nil, true)
+			errs <- writeErr
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for writeErr := range errs {
+		if writeErr != nil {
+			t.Fatal(writeErr)
+		}
+	}
+	page, err := store.ListDirectChildren(ctx, "", DirectChildrenOptions{})
+	if err != nil || page.Total != len(names) {
+		t.Fatalf("total=%d want=%d err=%v", page.Total, len(names), err)
+	}
+}
+
 type failV4CommitBackend struct {
 	treeBackend
 	mu       sync.Mutex
