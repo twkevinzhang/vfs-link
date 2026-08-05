@@ -7,8 +7,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
+
+// A production migration is a bounded maintenance operation rather than an
+// interactive request. GCS can sustain substantially more independent reads
+// than the runtime's conservative background-worker pools, and every object is
+// immutable while the source tree lease is held. Keep this limit explicit so
+// exports do not regress to a sequential, maintenance-window-sized scan.
+const treeExportReadWorkers = 128
 
 // ExportTreeSnapshot creates a deterministic, importable snapshot of a tree
 // store. The caller must still place the service in maintenance mode so share
@@ -42,21 +50,11 @@ func ExportTreeSnapshot(ctx context.Context, store Store) (TreeImportSnapshot, e
 	}
 	snapshot.Records = append(snapshot.Records, active...)
 
-	manifests, err := tree.listTrashManifests(ctx)
+	trash, err := tree.exportTrashRecords(ctx)
 	if err != nil {
-		return snapshot, fmt.Errorf("list trash manifests: %w", err)
+		return snapshot, fmt.Errorf("list trash records: %w", err)
 	}
-	trashIDs := make([]string, 0, len(manifests))
-	for _, manifest := range manifests {
-		trashIDs = append(trashIDs, manifest.ID)
-	}
-	if len(trashIDs) != 0 {
-		trash, err := tree.ListTrashRecords(ctx, trashIDs)
-		if err != nil {
-			return snapshot, fmt.Errorf("list trash records: %w", err)
-		}
-		snapshot.Records = append(snapshot.Records, trash...)
-	}
+	snapshot.Records = append(snapshot.Records, trash...)
 
 	shares, err := tree.listEntities(ctx, "shares", func() any { return &ShareRecord{} })
 	if err != nil {
@@ -147,7 +145,44 @@ func (s *TreeStore) exportActiveRecords(ctx context.Context) ([]FileRecord, erro
 			return nil
 		})
 	}
-	if err := runTreeImportTasks(ctx, 32, tasks); err != nil {
+	if err := runTreeImportTasks(ctx, treeExportReadWorkers, tasks); err != nil {
+		return nil, err
+	}
+	return records, nil
+}
+
+func (s *TreeStore) exportTrashRecords(ctx context.Context) ([]FileRecord, error) {
+	keys, err := s.objects.List(ctx, s.prefix+"/trash/")
+	if err != nil {
+		return nil, err
+	}
+	recordKeys := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if !strings.HasSuffix(key, "/manifest.json") {
+			recordKeys = append(recordKeys, key)
+		}
+	}
+	records := make([]FileRecord, len(recordKeys))
+	tasks := make([]func(context.Context) error, 0, len(recordKeys))
+	for index, key := range recordKeys {
+		index, key := index, key
+		tasks = append(tasks, func(taskCtx context.Context) error {
+			object, found, getErr := s.objects.Get(taskCtx, key)
+			if getErr != nil {
+				return getErr
+			}
+			if !found {
+				return fmt.Errorf("trash metadata node disappeared during export: %s", key)
+			}
+			record, decodeErr := decodeTreeRecord(object)
+			if decodeErr != nil {
+				return decodeErr
+			}
+			records[index] = record
+			return nil
+		})
+	}
+	if err := runTreeImportTasks(ctx, treeExportReadWorkers, tasks); err != nil {
 		return nil, err
 	}
 	return records, nil
