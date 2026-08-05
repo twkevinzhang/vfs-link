@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -330,6 +331,44 @@ func TestTreeV4OperationLeaseRejectsLiveRunnerAndOldOwnerCannotOverwrite(t *test
 	current, _, _, err := store.loadOperation(ctx, operation.ID)
 	if err != nil || current.LeaseOwner != "takeover-owner" || current.Status != "running" {
 		t.Fatalf("current=%+v err=%v", current, err)
+	}
+}
+
+func TestTreeV4OperationMarksPermanentRaceLoserFailed(t *testing.T) {
+	ctx := context.Background()
+	local, err := newLocalTreeBackend(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := newTreeStoreV4(local, "operation-race-loser-v4", TreeV4Options{ShardCount: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = store.ReplaceFileConditional(ctx, "a.txt", "hash", 1, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	winner, err := store.CreateRenameOperation(ctx, "a.txt", "b.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	loser, err := store.CreateRenameOperation(ctx, "a.txt", "b.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if winner, err = store.RunOperation(ctx, winner.ID); err != nil || winner.Status != "completed" {
+		t.Fatalf("winner=%+v err=%v", winner, err)
+	}
+	if loser, err = store.RunOperation(ctx, loser.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("loser=%+v err=%v, want ErrNotFound", loser, err)
+	}
+	if loser.Status != "failed" || loser.LeaseOwner != "" || loser.LeaseUntil != nil {
+		t.Fatalf("loser did not reach a lease-free terminal state: %+v", loser)
+	}
+	if rerun, rerunErr := store.RunOperation(ctx, loser.ID); rerunErr != nil || rerun.Status != "failed" {
+		t.Fatalf("terminal loser rerun=%+v err=%v", rerun, rerunErr)
 	}
 }
 

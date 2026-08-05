@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	pathpkg "path"
 	"sort"
@@ -1378,7 +1379,7 @@ func (n *treeV4Namespace) runOperation(ctx context.Context, id string) (Operatio
 		}
 		return operation, err
 	}
-	if operation.Status == "completed" {
+	if operation.Status == "completed" || operation.Status == "failed" {
 		return operation, nil
 	}
 	if operation.Status == "running" && operation.LeaseUntil != nil && operation.LeaseUntil.After(n.now()) {
@@ -1428,6 +1429,9 @@ func (n *treeV4Namespace) runOperation(ctx context.Context, id string) (Operatio
 	current.LeaseUntil = nil
 	if err != nil {
 		current.Status = "pending"
+		if treeV4OperationErrorIsTerminal(err) {
+			current.Status = "failed"
+		}
 		current.Error = err.Error()
 	} else {
 		current.Status = "completed"
@@ -1441,4 +1445,10 @@ func (n *treeV4Namespace) runOperation(ctx context.Context, id string) (Operatio
 		return current, saveErr
 	}
 	return current, err
+}
+
+func treeV4OperationErrorIsTerminal(err error) bool {
+	return errors.Is(err, ErrNotFound) ||
+		errors.Is(err, ErrPathConflict) ||
+		errors.Is(err, ErrV4Unsupported)
 }
