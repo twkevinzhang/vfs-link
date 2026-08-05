@@ -291,6 +291,31 @@ func TestCanonicalizeImportSnapshotNormalizesNFCAndRejectsCollision(t *testing.T
 	}
 }
 
+func TestCanonicalizeImportSnapshotRepairsOnlyExistingDirectoryWhitespaceAlias(t *testing.T) {
+	snapshot := db.TreeImportSnapshot{
+		Records: []db.FileRecord{
+			{ID: 1, LogicPath: "archive", IsDirectory: true},
+			{ID: 2, LogicPath: "archive /report.txt", PhysicalHash: "report"},
+			{ID: 3, LogicPath: "literal /name.txt", PhysicalHash: "literal"},
+		},
+		Shares:  []db.ShareRecord{{ID: "share", LogicPath: "archive /report.txt"}},
+		Uploads: []db.UploadRecord{{ID: "upload", LogicPath: "archive /future.txt"}},
+	}
+	canonical, err := canonicalizeImportSnapshot(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := canonical.Records[1].LogicPath; got != "archive/report.txt" {
+		t.Fatalf("aliased record path = %q", got)
+	}
+	if got := canonical.Records[2].LogicPath; got != "literal /name.txt" {
+		t.Fatalf("non-directory whitespace changed = %q", got)
+	}
+	if canonical.Shares[0].LogicPath != "archive/report.txt" || canonical.Uploads[0].LogicPath != "archive/future.txt" {
+		t.Fatalf("entity aliases were not repaired: shares=%#v uploads=%#v", canonical.Shares, canonical.Uploads)
+	}
+}
+
 func TestMakeImportSnapshotSkipsExpiredEphemeralEntities(t *testing.T) {
 	now := time.Date(2026, 7, 17, 0, 0, 0, 0, time.UTC)
 	legacy := legacySnapshot{

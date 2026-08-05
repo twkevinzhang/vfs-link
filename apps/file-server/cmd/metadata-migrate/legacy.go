@@ -116,11 +116,50 @@ func validateLegacy(snapshot legacySnapshot) (snapshotSummary, error) {
 // metadata and relative NFC v3 metadata. Active-path collisions are reported
 // before any target objects are written.
 func canonicalizeImportSnapshot(snapshot db.TreeImportSnapshot) (db.TreeImportSnapshot, error) {
+	for index := range snapshot.Records {
+		snapshot.Records[index].LogicPath = logicpath.Clean(snapshot.Records[index].LogicPath)
+	}
+	activeDirectories := make(map[string]struct{})
+	for _, record := range snapshot.Records {
+		if record.TrashedAt == nil && record.IsDirectory {
+			activeDirectories[record.LogicPath] = struct{}{}
+		}
+	}
+	canonicalParent := func(value string) string {
+		parts := strings.Split(logicpath.Clean(value), "/")
+		if len(parts) < 2 {
+			return strings.Join(parts, "/")
+		}
+		resolved := ""
+		for index := 0; index < len(parts)-1; index++ {
+			segment := parts[index]
+			candidate := segment
+			if resolved != "" {
+				candidate = resolved + "/" + segment
+			}
+			if _, exists := activeDirectories[candidate]; !exists {
+				alias := strings.TrimSpace(segment)
+				aliasCandidate := alias
+				if resolved != "" {
+					aliasCandidate = resolved + "/" + alias
+				}
+				if _, aliasExists := activeDirectories[aliasCandidate]; aliasExists {
+					candidate = aliasCandidate
+				}
+			}
+			resolved = candidate
+		}
+		if resolved == "" {
+			return parts[len(parts)-1]
+		}
+		return resolved + "/" + parts[len(parts)-1]
+	}
+
 	active := make(map[string]string, len(snapshot.Records))
 	for index := range snapshot.Records {
 		record := &snapshot.Records[index]
 		legacy := record.LogicPath
-		record.LogicPath = logicpath.Clean(record.LogicPath)
+		record.LogicPath = canonicalParent(record.LogicPath)
 		if record.LogicPath == "" {
 			return db.TreeImportSnapshot{}, fmt.Errorf("record id %d resolves to the logical root", record.ID)
 		}
@@ -132,10 +171,10 @@ func canonicalizeImportSnapshot(snapshot db.TreeImportSnapshot) (db.TreeImportSn
 		}
 	}
 	for index := range snapshot.Shares {
-		snapshot.Shares[index].LogicPath = logicpath.Clean(snapshot.Shares[index].LogicPath)
+		snapshot.Shares[index].LogicPath = canonicalParent(snapshot.Shares[index].LogicPath)
 	}
 	for index := range snapshot.Uploads {
-		snapshot.Uploads[index].LogicPath = logicpath.Clean(snapshot.Uploads[index].LogicPath)
+		snapshot.Uploads[index].LogicPath = canonicalParent(snapshot.Uploads[index].LogicPath)
 	}
 	return snapshot, nil
 }
