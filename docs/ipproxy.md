@@ -73,6 +73,12 @@ THUMBNAIL_LOCAL_ROOT=/data/thumbnails
 PUB_SUB_DRIVER=goroutine
 ```
 
+When deploying the same release as a GCS metadata v4 cutover, follow the
+ipproxy maintenance, HTTP/WebDAV/FTP acceptance, and rollback sequence in
+[metadata-v4-cutover.md](metadata-v4-cutover.md). The ipproxy compose profile
+continues to use its existing PostgreSQL metadata backend; it validates the
+shared server/protocol implementation and does not read the GCP v4 prefix.
+
 `VFS_LINK_IMAGE` is deliberately required and must be a content-addressed
 registry digest or a verified local image ID. It is not safe to use a mutable
 tag such as `latest`. The direct ipproxy build uses

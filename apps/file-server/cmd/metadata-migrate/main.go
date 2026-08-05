@@ -17,21 +17,25 @@ import (
 )
 
 type options struct {
-	sourceFile       string
-	sourceBucket     string
-	sourceObject     string
-	sourceGeneration int64
-	sourceTreeDriver string
-	sourceTreeRoot   string
-	sourceTreeBucket string
-	sourceTreePrefix string
-	targetDriver     string
-	targetRoot       string
-	targetBucket     string
-	targetPrefix     string
-	dryRun           bool
-	assumeYes        bool
-	timeout          time.Duration
+	sourceFile            string
+	sourceBucket          string
+	sourceObject          string
+	sourceGeneration      int64
+	sourceTreeDriver      string
+	sourceTreeRoot        string
+	sourceTreeBucket      string
+	sourceTreePrefix      string
+	targetDriver          string
+	targetRoot            string
+	targetBucket          string
+	targetPrefix          string
+	targetShardCount      int
+	targetReducerInterval time.Duration
+	targetMutationMode    string
+	rollbackJournal       string
+	dryRun                bool
+	assumeYes             bool
+	timeout               time.Duration
 }
 
 func main() {
@@ -52,11 +56,15 @@ func run(args []string, output io.Writer) error {
 	flags.StringVar(&o.sourceTreeDriver, "source-tree-driver", "", "distributed tree source: local or gcs")
 	flags.StringVar(&o.sourceTreeRoot, "source-tree-local-root", "./data/metadata", "local distributed tree root")
 	flags.StringVar(&o.sourceTreeBucket, "source-tree-gcs-bucket", "", "distributed tree GCS bucket")
-	flags.StringVar(&o.sourceTreePrefix, "source-tree-prefix", "_vfs-link-v2", "existing distributed tree prefix: _vfs-link or _vfs-link-v2")
+	flags.StringVar(&o.sourceTreePrefix, "source-tree-prefix", "_vfs-link-v2", "existing distributed tree prefix: _vfs-link, _vfs-link-v2, or _vfs-link-v3")
 	flags.StringVar(&o.targetDriver, "target-driver", "local", "tree metadata target: local or gcs")
 	flags.StringVar(&o.targetRoot, "target-local-root", "./data/metadata", "local tree metadata root")
 	flags.StringVar(&o.targetBucket, "target-gcs-bucket", "", "GCS tree metadata bucket")
-	flags.StringVar(&o.targetPrefix, "target-prefix", "_vfs-link-v3", "relative-path tree metadata prefix; must be _vfs-link-v3")
+	flags.StringVar(&o.targetPrefix, "target-prefix", "_vfs-link-v3", "tree metadata prefix: _vfs-link-v3 or _vfs-link-v4")
+	flags.IntVar(&o.targetShardCount, "target-shard-count", 64, "v4 directory name-hash shard count; immutable after import")
+	flags.DurationVar(&o.targetReducerInterval, "target-reducer-interval", 2*time.Second, "v4 derived metadata reducer interval")
+	flags.StringVar(&o.targetMutationMode, "target-mutation-mode", "global", "v4 mutation mode used while importing: global or scoped")
+	flags.StringVar(&o.rollbackJournal, "rollback-journal", "", "local 0600 JSON cutover journal; required for a v4 write")
 	flags.BoolVar(&o.dryRun, "dry-run", false, "decode and validate without writing")
 	flags.BoolVar(&o.assumeYes, "yes", false, "confirm writing the tree target")
 	flags.DurationVar(&o.timeout, "timeout", 24*time.Hour, "migration timeout")
@@ -99,23 +107,37 @@ func run(args []string, output io.Writer) error {
 		fmt.Fprintln(output, "dry-run complete; target was not modified")
 		return nil
 	}
+	journal := newRollbackJournal(o, importSnapshot, preflight, time.Now())
+	if err := prepareRollbackJournal(o.rollbackJournal, journal); err != nil {
+		return err
+	}
+	if o.rollbackJournal != "" {
+		fmt.Fprintf(output, "rollback journal prepared: %s\n", o.rollbackJournal)
+	}
 
 	target, err := openTreeTarget(ctx, o)
 	if err != nil {
 		return err
 	}
 	defer target.Close()
-	if err := target.EnsureSchema(ctx); err != nil {
-		return fmt.Errorf("ensure target schema: %w", err)
+	if o.targetPrefix != "_vfs-link-v4" {
+		if err := target.EnsureSchema(ctx); err != nil {
+			return fmt.Errorf("ensure target schema: %w", err)
+		}
+		existing, err := target.ListAll(ctx)
+		if err != nil {
+			return fmt.Errorf("inspect target: %w", err)
+		}
+		if len(existing) != 0 {
+			return fmt.Errorf("target is not empty: found %d active records", len(existing))
+		}
 	}
-	existing, err := target.ListAll(ctx)
-	if err != nil {
-		return fmt.Errorf("inspect target: %w", err)
+	var validation db.TreeValidation
+	if o.targetPrefix == "_vfs-link-v4" {
+		validation, err = db.BulkImportTreeV4(ctx, target, importSnapshot)
+	} else {
+		validation, err = db.BulkImportTree(ctx, target, importSnapshot)
 	}
-	if len(existing) != 0 {
-		return fmt.Errorf("target is not empty: found %d active records", len(existing))
-	}
-	validation, err := db.BulkImportTree(ctx, target, importSnapshot)
 	if err != nil {
 		return fmt.Errorf("bulk import tree: %w", err)
 	}
@@ -124,8 +146,19 @@ func run(args []string, output io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("validate target aggregates: %w", err)
 	}
-	fmt.Fprintf(output, "target root aggregates: files=%d directories=%d bytes=%d (matches stats.json)\n",
-		aggregates.Files, aggregates.Directories, aggregates.Bytes)
+	wantAggregates := activeSnapshotSummary(importSnapshot)
+	if aggregates != wantAggregates {
+		return fmt.Errorf("validate target aggregates: got %+v want active import %+v", aggregates, wantAggregates)
+	}
+	aggregateSource := "stats.json"
+	if o.targetPrefix == "_vfs-link-v4" {
+		aggregateSource = "v4 derived snapshots"
+	}
+	fmt.Fprintf(output, "target root aggregates: files=%d directories=%d bytes=%d (matches %s)\n",
+		aggregates.Files, aggregates.Directories, aggregates.Bytes, aggregateSource)
+	if err := completeRollbackJournal(o.rollbackJournal, journal, time.Now()); err != nil {
+		return err
+	}
 	fmt.Fprintln(output, "migration complete; keep the source metadata prefix and legacy metadata.json only as offline rollback backups")
 	return nil
 }
@@ -168,8 +201,8 @@ func loadImportSnapshot(ctx context.Context, o options, output io.Writer) (db.Tr
 }
 
 func openTreeSource(ctx context.Context, o options) (db.Store, error) {
-	if o.sourceTreePrefix != "_vfs-link" && o.sourceTreePrefix != "_vfs-link-v2" {
-		return nil, errors.New("--source-tree-prefix must be _vfs-link or _vfs-link-v2")
+	if o.sourceTreePrefix != "_vfs-link" && o.sourceTreePrefix != "_vfs-link-v2" && o.sourceTreePrefix != "_vfs-link-v3" {
+		return nil, errors.New("--source-tree-prefix must be _vfs-link, _vfs-link-v2, or _vfs-link-v3")
 	}
 	switch strings.ToLower(strings.TrimSpace(o.sourceTreeDriver)) {
 	case "local":
@@ -229,6 +262,23 @@ func openLegacySource(ctx context.Context, o options) (io.Reader, int64, func(),
 }
 
 func openTreeTarget(ctx context.Context, o options) (db.Store, error) {
+	if o.targetPrefix == "_vfs-link-v4" {
+		options := db.TreeV4Options{
+			ShardCount: o.targetShardCount, ReducerInterval: o.targetReducerInterval,
+			MutationMode: strings.ToLower(strings.TrimSpace(o.targetMutationMode)),
+		}
+		switch strings.ToLower(strings.TrimSpace(o.targetDriver)) {
+		case "local":
+			return db.NewTreeLocalV4(o.targetRoot, o.targetPrefix, options)
+		case "gcs":
+			if strings.TrimSpace(o.targetBucket) == "" {
+				return nil, errors.New("--target-gcs-bucket is required when --target-driver=gcs")
+			}
+			return db.NewTreeGCSV4(ctx, o.targetBucket, o.targetPrefix, options)
+		default:
+			return nil, fmt.Errorf("unsupported target driver %q", o.targetDriver)
+		}
+	}
 	switch strings.ToLower(strings.TrimSpace(o.targetDriver)) {
 	case "local":
 		return db.NewTreeLocal(o.targetRoot, o.targetPrefix)
@@ -243,8 +293,26 @@ func openTreeTarget(ctx context.Context, o options) (db.Store, error) {
 }
 
 func validateTargetOptions(o options) error {
-	if o.targetPrefix != "_vfs-link-v3" {
-		return errors.New("--target-prefix must be the reserved _vfs-link-v3 prefix")
+	if o.targetPrefix != "_vfs-link-v3" && o.targetPrefix != "_vfs-link-v4" {
+		return errors.New("--target-prefix must be the reserved _vfs-link-v3 or _vfs-link-v4 prefix")
+	}
+	if o.targetShardCount < 1 || o.targetShardCount > 256 || o.targetShardCount&(o.targetShardCount-1) != 0 {
+		return errors.New("--target-shard-count must be a power of two between 1 and 256")
+	}
+	if o.targetReducerInterval < time.Second || o.targetReducerInterval > 5*time.Second {
+		return errors.New("--target-reducer-interval must be between 1s and 5s")
+	}
+	switch strings.ToLower(strings.TrimSpace(o.targetMutationMode)) {
+	case "global":
+	case "scoped":
+		if o.targetPrefix != "_vfs-link-v4" {
+			return errors.New("--target-mutation-mode=scoped requires --target-prefix=_vfs-link-v4")
+		}
+	default:
+		return fmt.Errorf("unsupported target mutation mode %q", o.targetMutationMode)
+	}
+	if o.targetPrefix == "_vfs-link-v4" && !o.dryRun && strings.TrimSpace(o.rollbackJournal) == "" {
+		return errors.New("--rollback-journal is required when writing a v4 target")
 	}
 	switch strings.ToLower(strings.TrimSpace(o.targetDriver)) {
 	case "local":
@@ -279,6 +347,22 @@ func validateRootAggregates(ctx context.Context, store db.Store) (db.FolderSumma
 		return page.FolderSummary, fmt.Errorf("root folder summary mismatch: got %+v want %+v", page.FolderSummary, want)
 	}
 	return page.FolderSummary, nil
+}
+
+func activeSnapshotSummary(snapshot db.TreeImportSnapshot) db.FolderSummary {
+	var summary db.FolderSummary
+	for _, record := range snapshot.Records {
+		if record.TrashedAt != nil {
+			continue
+		}
+		if record.IsDirectory {
+			summary.Directories++
+		} else {
+			summary.Files++
+			summary.Bytes += record.Size
+		}
+	}
+	return summary
 }
 
 func makeImportSnapshot(snapshot legacySnapshot, sha256 string, generation int64, now time.Time) (db.TreeImportSnapshot, int, int) {

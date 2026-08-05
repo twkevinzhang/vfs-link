@@ -25,7 +25,7 @@ matching object volume. Adjust the volume name if you use a custom Compose
 project name.
 
 For `DB_DRIVER=json`, the metadata tree lives under the versioned prefix named
-by `METADATA_PREFIX` (for example `_vfs-link-v2/` or `_vfs-link-v3/`). Back up the metadata bucket consistently
+by `METADATA_PREFIX` (for example `_vfs-link-v3/` or `_vfs-link-v4/`). Back up the metadata bucket consistently
 with file objects. On versioned GCS buckets, retain noncurrent metadata
 generations long enough to recover from an accidental logical mutation. The
 old monolithic `metadata.json` is only an offline backup and is not a runtime

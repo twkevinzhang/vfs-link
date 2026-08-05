@@ -34,6 +34,7 @@ type TreeStore struct {
 	mu      sync.Mutex
 	objects treeBackend
 	prefix  string
+	v4      *treeV4Namespace
 }
 
 var _ Store = (*TreeStore)(nil)
@@ -76,12 +77,71 @@ func NewTreeGCSWithClient(client *storage.Client, bucket, prefix string) (Store,
 	}
 	return newTreeStore(&gcsTreeBackend{client: client, bucket: bucket}, prefix), nil
 }
+
+// TreeV4Options configures the transaction-backed, sharded namespace. V4 is
+// deliberately opt-in while the v3 migration/export tooling remains available.
+type TreeV4Options struct {
+	ShardCount      int
+	ReducerInterval time.Duration
+	MutationMode    string
+}
+
+const (
+	TreeV4MutationScoped = "scoped"
+	TreeV4MutationGlobal = "global"
+)
+
+func NewTreeLocalV4(root, prefix string, options TreeV4Options) (Store, error) {
+	b, err := newLocalTreeBackend(root)
+	if err != nil {
+		return nil, err
+	}
+	return newTreeStoreV4(b, prefix, options)
+}
+
+func NewTreeGCSV4(ctx context.Context, bucket, prefix string, options TreeV4Options) (Store, error) {
+	c, err := storage.NewClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s, err := NewTreeGCSV4WithClient(c, bucket, prefix, options)
+	if err != nil {
+		_ = c.Close()
+		return nil, err
+	}
+	s.(*TreeStore).objects.(*gcsTreeBackend).owns = true
+	return s, nil
+}
+
+func NewTreeGCSV4WithClient(client *storage.Client, bucket, prefix string, options TreeV4Options) (Store, error) {
+	if client == nil {
+		return nil, fmt.Errorf("GCS client is required")
+	}
+	if strings.TrimSpace(bucket) == "" {
+		return nil, fmt.Errorf("GCS metadata bucket is required")
+	}
+	return newTreeStoreV4(&gcsTreeBackend{client: client, bucket: bucket}, prefix, options)
+}
+
+func newTreeStoreV4(backend treeBackend, prefix string, options TreeV4Options) (*TreeStore, error) {
+	store := newTreeStore(backend, prefix)
+	namespace, err := newTreeV4Namespace(store, options)
+	if err != nil {
+		_ = backend.Close()
+		return nil, err
+	}
+	store.v4 = namespace
+	return store, nil
+}
 func newTreeStore(b treeBackend, prefix string) *TreeStore {
 	prefix = cleanTreePrefix(prefix)
 	return &TreeStore{objects: b, prefix: prefix}
 }
 func (s *TreeStore) Close() { _ = s.objects.Close() }
 func (s *TreeStore) EnsureSchema(ctx context.Context) error {
+	if s.v4 != nil {
+		return s.v4.ensureSchema(ctx)
+	}
 	_, ok, err := s.objects.Get(ctx, s.statsKey())
 	if err != nil {
 		return err
@@ -505,6 +565,9 @@ func (s *TreeStore) writeIndex(ctx context.Context, idx directoryIndex, g int64,
 	return nil
 }
 func errorsIsConflict(err error) bool {
+	if err == nil {
+		return false
+	}
 	return err == ErrMetadataConflict || strings.Contains(err.Error(), ErrMetadataConflict.Error())
 }
 func upsertIndexRecord(records []FileRecord, r FileRecord) []FileRecord {
@@ -527,6 +590,9 @@ func removeIndexRecord(records []FileRecord, path string) []FileRecord {
 }
 
 func (s *TreeStore) Find(ctx context.Context, path string) (FileRecord, bool, error) {
+	if s.v4 != nil {
+		return s.v4.find(ctx, path)
+	}
 	var err error
 	path, err = parseLogicPath(path)
 	if err != nil {
@@ -550,6 +616,9 @@ func (s *TreeStore) Find(ctx context.Context, path string) (FileRecord, bool, er
 	return FileRecord{}, false, nil
 }
 func (s *TreeStore) ListDirectChildren(ctx context.Context, dir string, o DirectChildrenOptions) (DirectChildrenPage, error) {
+	if s.v4 != nil {
+		return s.v4.listDirectChildren(ctx, dir, o)
+	}
 	var err error
 	dir, err = parseLogicPath(dir)
 	if err != nil {
@@ -674,8 +743,16 @@ func (s *TreeStore) listActive(ctx context.Context, prefix string) ([]FileRecord
 	sort.Slice(out, func(i, j int) bool { return out[i].LogicPath < out[j].LogicPath })
 	return out, nil
 }
-func (s *TreeStore) ListAll(ctx context.Context) ([]FileRecord, error) { return s.listActive(ctx, "") }
+func (s *TreeStore) ListAll(ctx context.Context) ([]FileRecord, error) {
+	if s.v4 != nil {
+		return s.v4.listPrefix(ctx, "")
+	}
+	return s.listActive(ctx, "")
+}
 func (s *TreeStore) ListPrefix(ctx context.Context, prefix string) ([]FileRecord, error) {
+	if s.v4 != nil {
+		return s.v4.listPrefix(ctx, prefix)
+	}
 	var err error
 	prefix, err = parseLogicPrefix(prefix)
 	if err != nil {
@@ -717,6 +794,9 @@ func (s *TreeStore) ReplaceFile(ctx context.Context, path, hash string, size int
 	return old, e
 }
 func (s *TreeStore) ReplaceFileConditional(ctx context.Context, path, hash string, size int64, expected *string, absent bool) (string, bool, error) {
+	if s.v4 != nil {
+		return s.v4.replaceFileConditional(ctx, path, hash, size, expected, absent)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	release, _, e := s.acquireTreeMutationLease(ctx)
@@ -777,6 +857,9 @@ func (s *TreeStore) ReplaceFileConditional(ctx context.Context, path, hash strin
 	return oldHash, true, nil
 }
 func (s *TreeStore) UpsertDirectory(ctx context.Context, path string) error {
+	if s.v4 != nil {
+		return s.v4.upsertDirectory(ctx, path)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	release, _, e := s.acquireTreeMutationLease(ctx)
@@ -821,6 +904,9 @@ func (s *TreeStore) UpsertDirectory(ctx context.Context, path string) error {
 	return e
 }
 func (s *TreeStore) DeletePath(ctx context.Context, path string) error {
+	if s.v4 != nil {
+		return s.v4.deletePath(ctx, path)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	release, _, e := s.acquireTreeMutationLease(ctx)
@@ -853,6 +939,21 @@ func (s *TreeStore) DeletePath(ctx context.Context, path string) error {
 	return s.mutateStats(ctx, delta)
 }
 func (s *TreeStore) DeletePrefix(ctx context.Context, prefix string) error {
+	if s.v4 != nil {
+		records, err := s.v4.listPrefix(ctx, prefix)
+		if err != nil {
+			return err
+		}
+		sort.Slice(records, func(i, j int) bool {
+			return strings.Count(records[i].LogicPath, "/") > strings.Count(records[j].LogicPath, "/")
+		})
+		for _, record := range records {
+			if err = s.v4.deletePath(ctx, record.LogicPath); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	records, e := s.ListPrefix(ctx, prefix)
 	if e != nil {
 		return e
@@ -865,6 +966,13 @@ func (s *TreeStore) DeletePrefix(ctx context.Context, prefix string) error {
 	return nil
 }
 func (s *TreeStore) MetadataStats(ctx context.Context) (MetadataStats, error) {
+	if s.v4 != nil {
+		stats, found, err := s.DerivedMetadataStats(ctx)
+		if err != nil || found {
+			return stats, err
+		}
+		return MetadataStats{}, nil
+	}
 	o, ok, e := s.objects.Get(ctx, s.statsKey())
 	if e != nil {
 		return MetadataStats{}, e
@@ -979,6 +1087,7 @@ type TreeImportSnapshot struct {
 	Uploads          []UploadRecord
 	Thumbnails       []ThumbnailRecord
 	ThumbnailLinks   []FileThumbnailLink
+	Operations       []OperationRecord
 	NextFileID       int
 	SourceSHA256     string
 	SourceGeneration int64
@@ -1248,7 +1357,11 @@ func BulkImportTree(ctx context.Context, store Store, snapshot TreeImportSnapsho
 			return tree.putEntity(taskCtx, fileThumbnailEntityKind, fileThumbnailEntityID(linkCopy.FileID), linkCopy, true)
 		})
 	}
-	entityCount := len(snapshot.Shares) + len(snapshot.DAVLocks) + len(snapshot.Uploads) + len(snapshot.Thumbnails) + len(snapshot.ThumbnailLinks)
+	for _, operation := range snapshot.Operations {
+		operationCopy := operation
+		tasks = append(tasks, func(taskCtx context.Context) error { return tree.saveOperation(taskCtx, operationCopy) })
+	}
+	entityCount := len(snapshot.Shares) + len(snapshot.DAVLocks) + len(snapshot.Uploads) + len(snapshot.Thumbnails) + len(snapshot.ThumbnailLinks) + len(snapshot.Operations)
 	if entityCount > 0 {
 		entityTasks := tasks[len(tasks)-entityCount:]
 		if e := runTreeImportTasks(ctx, 32, entityTasks); e != nil {

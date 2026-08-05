@@ -12,106 +12,112 @@ import (
 )
 
 type Config struct {
-	FTPEnabled             bool
-	FTPPort                int
-	HTTPPort               int
-	FTPUser                string
-	FTPPass                string
-	FTPPasvURL             string
-	FTPPasvMin             int
-	FTPPasvMax             int
-	DatabaseURL            string
-	DatabaseDriver         string
-	MetadataStorageDriver  string
-	MetadataLocalRoot      string
-	MetadataGCSBucket      string
-	MetadataPrefix         string
-	StorageDriver          string
-	LocalStorageRoot       string
-	GCSBucket              string
-	ThumbnailStorageDriver string
-	ThumbnailLocalRoot     string
-	ThumbnailGCSBucket     string
-	ShareGCSBucket         string
-	ShareGCSPrefix         string
-	SharePublicURL         string
-	TelegramBotToken       string
-	TelegramChatID         string
-	WebStaticRoot          string
-	WebBasePath            string
-	WebDAVEnabled          bool
-	WebDAVPath             string
-	WebDAVUser             string
-	WebDAVPass             string
-	WebDAVLockTimeout      time.Duration
-	WebDAVTrustProxy       bool
-	HTTPBasicAuth          bool
-	HTTPBasicUser          string
-	HTTPBasicPass          string
-	HTTPCORSOrigins        string
-	UploadSessionTTL       time.Duration
-	UploadMaxBytes         int64
-	PubSubDriver           string
-	GCPProjectID           string
-	PubSubTopic            string
-	PubSubAudience         string
-	PubSubPushEmail        string
-	CommandArgs            []string
-	AssumeYes              bool
-	MaintenanceMode        bool
-	DriftEnabled           bool
+	FTPEnabled              bool
+	FTPPort                 int
+	HTTPPort                int
+	FTPUser                 string
+	FTPPass                 string
+	FTPPasvURL              string
+	FTPPasvMin              int
+	FTPPasvMax              int
+	DatabaseURL             string
+	DatabaseDriver          string
+	MetadataStorageDriver   string
+	MetadataLocalRoot       string
+	MetadataGCSBucket       string
+	MetadataPrefix          string
+	MetadataShardCount      int
+	MetadataReducerInterval time.Duration
+	MetadataMutationMode    string
+	StorageDriver           string
+	LocalStorageRoot        string
+	GCSBucket               string
+	ThumbnailStorageDriver  string
+	ThumbnailLocalRoot      string
+	ThumbnailGCSBucket      string
+	ShareGCSBucket          string
+	ShareGCSPrefix          string
+	SharePublicURL          string
+	TelegramBotToken        string
+	TelegramChatID          string
+	WebStaticRoot           string
+	WebBasePath             string
+	WebDAVEnabled           bool
+	WebDAVPath              string
+	WebDAVUser              string
+	WebDAVPass              string
+	WebDAVLockTimeout       time.Duration
+	WebDAVTrustProxy        bool
+	HTTPBasicAuth           bool
+	HTTPBasicUser           string
+	HTTPBasicPass           string
+	HTTPCORSOrigins         string
+	UploadSessionTTL        time.Duration
+	UploadMaxBytes          int64
+	PubSubDriver            string
+	GCPProjectID            string
+	PubSubTopic             string
+	PubSubAudience          string
+	PubSubPushEmail         string
+	CommandArgs             []string
+	AssumeYes               bool
+	MaintenanceMode         bool
+	DriftEnabled            bool
 }
 
 func Load(args []string) (Config, error) {
 	_ = godotenv.Load()
 
 	cfg := Config{
-		FTPEnabled:             envBool("FTP_ENABLED", true),
-		FTPPort:                envInt("FTP_PORT", 21),
-		HTTPPort:               envInt("HTTP_PORT", envInt("PORT", 8080)),
-		FTPUser:                envString("FTP_USER", "admin"),
-		FTPPass:                envString("FTP_PASS", "admin123"),
-		FTPPasvURL:             envString("FTP_PASV_URL", "127.0.0.1"),
-		FTPPasvMin:             envInt("FTP_PASV_MIN", 30000),
-		FTPPasvMax:             envInt("FTP_PASV_MAX", 30005),
-		DatabaseURL:            strings.TrimSpace(os.Getenv("DATABASE_URL")),
-		DatabaseDriver:         envString("DB_DRIVER", "postgres"),
-		MetadataStorageDriver:  envString("METADATA_STORAGE_DRIVER", "local"),
-		MetadataLocalRoot:      envString("METADATA_LOCAL_ROOT", "./data/metadata"),
-		MetadataGCSBucket:      envString("METADATA_GCS_BUCKET", ""),
-		MetadataPrefix:         envString("METADATA_PREFIX", "_vfs-link-v3"),
-		StorageDriver:          envString("STORAGE_DRIVER", "local"),
-		LocalStorageRoot:       envString("LOCAL_STORAGE_ROOT", "./data/objects"),
-		GCSBucket:              envString("GCS_BUCKET", ""),
-		ThumbnailStorageDriver: envString("THUMBNAIL_STORAGE_DRIVER", "local"),
-		ThumbnailLocalRoot:     envString("THUMBNAIL_LOCAL_ROOT", "./data/thumbnails"),
-		ThumbnailGCSBucket:     envString("THUMBNAIL_GCS_BUCKET", ""),
-		ShareGCSBucket:         envString("SHARE_GCS_BUCKET", ""),
-		ShareGCSPrefix:         envString("SHARE_GCS_PREFIX", "shares"),
-		SharePublicURL:         envString("SHARE_PUBLIC_BASE_URL", ""),
-		TelegramBotToken:       envString("TELEGRAM_BOT_TOKEN", ""),
-		TelegramChatID:         envString("TELEGRAM_CHAT_ID", ""),
-		WebStaticRoot:          envString("WEB_STATIC_ROOT", ""),
-		WebBasePath:            envString("WEB_BASE_PATH", "/"),
-		WebDAVEnabled:          envBool("WEBDAV_ENABLED", false),
-		WebDAVPath:             normalizeWebDAVPath(envString("WEBDAV_PATH", "/dav/")),
-		WebDAVUser:             envString("WEBDAV_USER", ""),
-		WebDAVPass:             envString("WEBDAV_PASS", ""),
-		WebDAVLockTimeout:      envDuration("WEBDAV_LOCK_TIMEOUT", 30*time.Minute),
-		WebDAVTrustProxy:       envBool("WEBDAV_TRUST_FORWARDED_HEADERS", false),
-		HTTPBasicAuth:          envBool("HTTP_BASIC_AUTH_ENABLED", false),
-		HTTPBasicUser:          envString("HTTP_BASIC_AUTH_USER", ""),
-		HTTPBasicPass:          envString("HTTP_BASIC_AUTH_PASS", ""),
-		HTTPCORSOrigins:        envString("HTTP_CORS_ORIGINS", ""),
-		UploadSessionTTL:       envDuration("UPLOAD_SESSION_TTL", 24*time.Hour),
-		UploadMaxBytes:         envInt64("UPLOAD_MAX_BYTES", 50*1024*1024*1024),
-		PubSubDriver:           envString("PUB_SUB_DRIVER", "goroutine"),
-		GCPProjectID:           envString("GCP_PROJECT_ID", ""),
-		PubSubTopic:            envString("PUB_SUB_TOPIC", ""),
-		PubSubAudience:         envString("PUB_SUB_PUSH_AUDIENCE", ""),
-		PubSubPushEmail:        envString("PUB_SUB_PUSH_SERVICE_ACCOUNT", ""),
-		MaintenanceMode:        envBool("MAINTENANCE_MODE", false),
-		DriftEnabled:           envBool("DRIFT_ENABLED", false),
+		FTPEnabled:              envBool("FTP_ENABLED", true),
+		FTPPort:                 envInt("FTP_PORT", 21),
+		HTTPPort:                envInt("HTTP_PORT", envInt("PORT", 8080)),
+		FTPUser:                 envString("FTP_USER", "admin"),
+		FTPPass:                 envString("FTP_PASS", "admin123"),
+		FTPPasvURL:              envString("FTP_PASV_URL", "127.0.0.1"),
+		FTPPasvMin:              envInt("FTP_PASV_MIN", 30000),
+		FTPPasvMax:              envInt("FTP_PASV_MAX", 30005),
+		DatabaseURL:             strings.TrimSpace(os.Getenv("DATABASE_URL")),
+		DatabaseDriver:          envString("DB_DRIVER", "postgres"),
+		MetadataStorageDriver:   envString("METADATA_STORAGE_DRIVER", "local"),
+		MetadataLocalRoot:       envString("METADATA_LOCAL_ROOT", "./data/metadata"),
+		MetadataGCSBucket:       envString("METADATA_GCS_BUCKET", ""),
+		MetadataPrefix:          envString("METADATA_PREFIX", "_vfs-link-v3"),
+		MetadataShardCount:      envInt("METADATA_SHARD_COUNT", 64),
+		MetadataReducerInterval: envDuration("METADATA_REDUCER_INTERVAL", 2*time.Second),
+		MetadataMutationMode:    strings.ToLower(envString("METADATA_MUTATION_MODE", "global")),
+		StorageDriver:           envString("STORAGE_DRIVER", "local"),
+		LocalStorageRoot:        envString("LOCAL_STORAGE_ROOT", "./data/objects"),
+		GCSBucket:               envString("GCS_BUCKET", ""),
+		ThumbnailStorageDriver:  envString("THUMBNAIL_STORAGE_DRIVER", "local"),
+		ThumbnailLocalRoot:      envString("THUMBNAIL_LOCAL_ROOT", "./data/thumbnails"),
+		ThumbnailGCSBucket:      envString("THUMBNAIL_GCS_BUCKET", ""),
+		ShareGCSBucket:          envString("SHARE_GCS_BUCKET", ""),
+		ShareGCSPrefix:          envString("SHARE_GCS_PREFIX", "shares"),
+		SharePublicURL:          envString("SHARE_PUBLIC_BASE_URL", ""),
+		TelegramBotToken:        envString("TELEGRAM_BOT_TOKEN", ""),
+		TelegramChatID:          envString("TELEGRAM_CHAT_ID", ""),
+		WebStaticRoot:           envString("WEB_STATIC_ROOT", ""),
+		WebBasePath:             envString("WEB_BASE_PATH", "/"),
+		WebDAVEnabled:           envBool("WEBDAV_ENABLED", false),
+		WebDAVPath:              normalizeWebDAVPath(envString("WEBDAV_PATH", "/dav/")),
+		WebDAVUser:              envString("WEBDAV_USER", ""),
+		WebDAVPass:              envString("WEBDAV_PASS", ""),
+		WebDAVLockTimeout:       envDuration("WEBDAV_LOCK_TIMEOUT", 30*time.Minute),
+		WebDAVTrustProxy:        envBool("WEBDAV_TRUST_FORWARDED_HEADERS", false),
+		HTTPBasicAuth:           envBool("HTTP_BASIC_AUTH_ENABLED", false),
+		HTTPBasicUser:           envString("HTTP_BASIC_AUTH_USER", ""),
+		HTTPBasicPass:           envString("HTTP_BASIC_AUTH_PASS", ""),
+		HTTPCORSOrigins:         envString("HTTP_CORS_ORIGINS", ""),
+		UploadSessionTTL:        envDuration("UPLOAD_SESSION_TTL", 24*time.Hour),
+		UploadMaxBytes:          envInt64("UPLOAD_MAX_BYTES", 50*1024*1024*1024),
+		PubSubDriver:            envString("PUB_SUB_DRIVER", "goroutine"),
+		GCPProjectID:            envString("GCP_PROJECT_ID", ""),
+		PubSubTopic:             envString("PUB_SUB_TOPIC", ""),
+		PubSubAudience:          envString("PUB_SUB_PUSH_AUDIENCE", ""),
+		PubSubPushEmail:         envString("PUB_SUB_PUSH_SERVICE_ACCOUNT", ""),
+		MaintenanceMode:         envBool("MAINTENANCE_MODE", false),
+		DriftEnabled:            envBool("DRIFT_ENABLED", false),
 	}
 
 	for _, arg := range args {
@@ -125,6 +131,11 @@ func Load(args []string) (Config, error) {
 			cfg.CommandArgs = append(cfg.CommandArgs, arg)
 		}
 	}
+	if cfg.DatabaseDriver == "json" {
+		if err := validateMetadataTuningInputs(args); err != nil {
+			return Config{}, err
+		}
+	}
 
 	switch cfg.DatabaseDriver {
 	case "postgres":
@@ -133,8 +144,23 @@ func Load(args []string) (Config, error) {
 		}
 	case "json":
 		cfg.MetadataPrefix = path.Clean(strings.TrimLeft(cfg.MetadataPrefix, "/"))
-		if cfg.MetadataPrefix != "_vfs-link" && cfg.MetadataPrefix != "_vfs-link-v2" && cfg.MetadataPrefix != "_vfs-link-v3" {
-			return Config{}, fmt.Errorf("METADATA_PREFIX must be one of the reserved prefixes _vfs-link, _vfs-link-v2, or _vfs-link-v3")
+		if cfg.MetadataPrefix != "_vfs-link" && cfg.MetadataPrefix != "_vfs-link-v2" && cfg.MetadataPrefix != "_vfs-link-v3" && cfg.MetadataPrefix != "_vfs-link-v4" {
+			return Config{}, fmt.Errorf("METADATA_PREFIX must be one of the reserved prefixes _vfs-link, _vfs-link-v2, _vfs-link-v3, or _vfs-link-v4")
+		}
+		if cfg.MetadataShardCount < 1 || cfg.MetadataShardCount > 256 || cfg.MetadataShardCount&(cfg.MetadataShardCount-1) != 0 {
+			return Config{}, fmt.Errorf("METADATA_SHARD_COUNT must be a power of two between 1 and 256")
+		}
+		if cfg.MetadataReducerInterval < time.Second || cfg.MetadataReducerInterval > 5*time.Second {
+			return Config{}, fmt.Errorf("METADATA_REDUCER_INTERVAL must be between 1s and 5s")
+		}
+		switch cfg.MetadataMutationMode {
+		case "global":
+		case "scoped":
+			if cfg.MetadataPrefix != "_vfs-link-v4" {
+				return Config{}, fmt.Errorf("METADATA_MUTATION_MODE=scoped requires METADATA_PREFIX=_vfs-link-v4")
+			}
+		default:
+			return Config{}, fmt.Errorf("unsupported METADATA_MUTATION_MODE %q", cfg.MetadataMutationMode)
 		}
 		switch cfg.MetadataStorageDriver {
 		case "local":
@@ -231,6 +257,39 @@ func Load(args []string) (Config, error) {
 	return cfg, nil
 }
 
+func validateMetadataTuningInputs(args []string) error {
+	values := map[string][]string{
+		"METADATA_SHARD_COUNT":      {os.Getenv("METADATA_SHARD_COUNT")},
+		"METADATA_REDUCER_INTERVAL": {os.Getenv("METADATA_REDUCER_INTERVAL")},
+	}
+	for _, arg := range args {
+		if !strings.Contains(arg, "=") {
+			continue
+		}
+		parts := strings.SplitN(arg, "=", 2)
+		if _, tracked := values[parts[0]]; tracked {
+			values[parts[0]] = append(values[parts[0]], parts[1])
+		}
+	}
+	for _, value := range values["METADATA_SHARD_COUNT"] {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		if _, err := strconv.Atoi(strings.TrimSpace(value)); err != nil {
+			return fmt.Errorf("METADATA_SHARD_COUNT must be an integer: %w", err)
+		}
+	}
+	for _, value := range values["METADATA_REDUCER_INTERVAL"] {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		if _, err := time.ParseDuration(strings.TrimSpace(value)); err != nil {
+			return fmt.Errorf("METADATA_REDUCER_INTERVAL must be a duration: %w", err)
+		}
+	}
+	return nil
+}
+
 func (c Config) ListenAddr() string {
 	return fmt.Sprintf("0.0.0.0:%d", c.FTPPort)
 }
@@ -301,6 +360,12 @@ func applyOverride(cfg *Config, key, value string) {
 		cfg.MetadataGCSBucket = strings.TrimSpace(value)
 	case "METADATA_PREFIX":
 		cfg.MetadataPrefix = strings.TrimSpace(value)
+	case "METADATA_SHARD_COUNT":
+		cfg.MetadataShardCount = parseInt(value, cfg.MetadataShardCount)
+	case "METADATA_REDUCER_INTERVAL":
+		cfg.MetadataReducerInterval = parseDuration(value, cfg.MetadataReducerInterval)
+	case "METADATA_MUTATION_MODE":
+		cfg.MetadataMutationMode = strings.ToLower(strings.TrimSpace(value))
 	case "STORAGE_DRIVER":
 		cfg.StorageDriver = strings.TrimSpace(value)
 	case "LOCAL_STORAGE_ROOT":

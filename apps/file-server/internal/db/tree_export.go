@@ -33,6 +33,9 @@ func ExportTreeSnapshot(ctx context.Context, store Store) (TreeImportSnapshot, e
 	}
 
 	var snapshot TreeImportSnapshot
+	if snapshot.Operations, err = tree.listOperations(ctx); err != nil {
+		return snapshot, fmt.Errorf("list operations: %w", err)
+	}
 	active, err := tree.exportActiveRecords(ctx)
 	if err != nil {
 		return snapshot, fmt.Errorf("list active records: %w", err)

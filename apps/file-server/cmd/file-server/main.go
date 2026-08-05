@@ -50,6 +50,39 @@ func run(logger *slog.Logger) error {
 	if err := store.EnsureSchema(ctx); err != nil {
 		return fmt.Errorf("ensure schema: %w", err)
 	}
+	if cfg.DatabaseDriver == "json" && cfg.MetadataPrefix == "_vfs-link-v4" {
+		reducerCtx, cancelReducer := context.WithCancel(ctx)
+		reducerDone := make(chan struct{})
+		go func() {
+			defer close(reducerDone)
+			err := db.RunTreeDerivedReducerLoop(reducerCtx, store, db.TreeDerivedReducerLoopOptions{
+				Interval: cfg.MetadataReducerInterval,
+				OnPass: func(result db.TreeDerivedReduceResult) {
+					if result.Discovered > 0 || result.Applied > 0 || result.Replayed > 0 || result.Pending > 0 {
+						logger.Info("reduced derived metadata", "discovered", result.Discovered, "applied", result.Applied, "replayed", result.Replayed, "pending", result.Pending)
+					}
+				},
+				OnError: func(err error) {
+					if errors.Is(err, db.ErrDerivedReducerBusy) {
+						logger.Debug("derived metadata reducer lease is held by another instance")
+						return
+					}
+					logger.Error("derived metadata reducer pass failed", "error", err)
+				},
+			})
+			if err != nil && !errors.Is(err, context.Canceled) {
+				logger.Error("derived metadata reducer loop stopped", "error", err)
+			}
+		}()
+		defer func() {
+			cancelReducer()
+			select {
+			case <-reducerDone:
+			case <-time.After(10 * time.Second):
+				logger.Warn("derived metadata reducer did not stop within 10 seconds")
+			}
+		}()
+	}
 
 	objects, err := blob.NewStore(ctx, blob.StoreConfig{
 		Driver:    cfg.StorageDriver,
@@ -207,6 +240,21 @@ func newMetadataStore(ctx context.Context, cfg config.Config) (db.Store, error) 
 	case "postgres":
 		return db.NewPostgres(ctx, cfg.DatabaseURL)
 	case "json":
+		if cfg.MetadataPrefix == "_vfs-link-v4" {
+			options := db.TreeV4Options{
+				ShardCount:      cfg.MetadataShardCount,
+				ReducerInterval: cfg.MetadataReducerInterval,
+				MutationMode:    cfg.MetadataMutationMode,
+			}
+			switch cfg.MetadataStorageDriver {
+			case "local":
+				return db.NewTreeLocalV4(cfg.MetadataLocalRoot, cfg.MetadataPrefix, options)
+			case "gcs":
+				return db.NewTreeGCSV4(ctx, cfg.MetadataGCSBucket, cfg.MetadataPrefix, options)
+			default:
+				return nil, fmt.Errorf("unsupported METADATA_STORAGE_DRIVER %q", cfg.MetadataStorageDriver)
+			}
+		}
 		switch cfg.MetadataStorageDriver {
 		case "local":
 			return db.NewTreeLocal(cfg.MetadataLocalRoot, cfg.MetadataPrefix)

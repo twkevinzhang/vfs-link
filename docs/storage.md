@@ -39,7 +39,10 @@ With `DB_DRIVER=json`, configure `METADATA_STORAGE_DRIVER=gcs` and a dedicated
 directory indexes, entity records, operation manifests, and aggregate stats
 beneath a versioned reserved prefix. Tree v2 under `_vfs-link-v2/` adds
 persisted subtree folder summaries. Tree v3 under `_vfs-link-v3/` uses relative
-NFC logical paths; v2 remains a rollback source during migration. Writes use
+NFC logical paths. Tree v4 under `_vfs-link-v4/` uses 64 name-hash shards per
+directory by default, scoped leases, transaction manifests, and immutable
+derived-metadata deltas. File paths remain strongly consistent; folder
+summaries and global statistics converge asynchronously. Writes use
 generation-match preconditions. The metadata bucket should use Standard storage
 in the same region as Cloud Run; an Archive-class primary bucket should hold
 file bytes, not frequently read or rewritten metadata.
@@ -48,8 +51,10 @@ The legacy single `_vfs-link/metadata.json` snapshot is not read by the runtime.
 It can be kept as an offline migration/rollback backup only.
 
 During a prefix migration, keep the source prefix immutable and intact. Switch
-`METADATA_PREFIX` only after validating the new prefix, and roll back by
-restoring the previous image/configuration and source prefix.
+`METADATA_PREFIX` only after validating the new prefix. After v4 has accepted
+writes, first fall back to v4 `global` mutation mode; do not switch directly to
+the stale v3 snapshot without a validated reverse journal. See
+[metadata-v4-cutover.md](metadata-v4-cutover.md).
 
 ## Thumbnail storage
 

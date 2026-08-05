@@ -12,7 +12,10 @@ Copy `.env.example` to `.env`. The `.env` file is deliberately ignored by Git.
 | `METADATA_STORAGE_DRIVER` | JSON backend | Metadata backend: `local` (default) or `gcs`; independent from file-byte storage. |
 | `METADATA_LOCAL_ROOT` | Local JSON metadata | Persistent metadata root; default `./data/metadata`. |
 | `METADATA_GCS_BUCKET` | GCS JSON metadata | Dedicated Standard-class metadata bucket. |
-| `METADATA_PREFIX` | JSON backend | Reserved metadata prefix. Current relative-path schema: `_vfs-link-v3`; `_vfs-link` and `_vfs-link-v2` remain readable migration sources. |
+| `METADATA_PREFIX` | JSON backend | Reserved metadata prefix. The sharded schema is `_vfs-link-v4`; `_vfs-link`, `_vfs-link-v2`, and `_vfs-link-v3` remain readable migration/rollback sources. |
+| `METADATA_SHARD_COUNT` | JSON backend | v4 directory name-hash shard count. Must be a power of two from 1 through 256; default `64`. This value is immutable after a v4 prefix is initialized. |
+| `METADATA_REDUCER_INTERVAL` | JSON backend | v4 derived-statistics reducer interval from `1s` through `5s`, default `2s`. |
+| `METADATA_MUTATION_MODE` | JSON backend | `global` (safe serialized fallback and the only mode for v1-v3) or `scoped` (v4 sharded concurrency). Defaults to `global`; enable `scoped` explicitly after v4 validation. |
 | `FTP_ENABLED` | No | Enables transitional FTP service; default `true`. Set `false` for HTTP-only/serverless operation. |
 | `FTP_USER`, `FTP_PASS` | FTP enabled | FTP login credentials. Use a unique, strong password. |
 | `FTP_PORT` | No | FTP control port; default `21`. |

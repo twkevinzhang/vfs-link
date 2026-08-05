@@ -20,6 +20,7 @@ var (
 	ErrIsDirectory     = errors.New("file mapping is a directory")
 	ErrPathConflict    = errors.New("destination path already exists")
 	ErrTrashBusy       = errors.New("trash is being permanently deleted")
+	ErrV4Unsupported   = errors.New("operation is not yet supported by the v4 metadata namespace")
 )
 
 const davLockAdvisoryKey int64 = 0x564653444156

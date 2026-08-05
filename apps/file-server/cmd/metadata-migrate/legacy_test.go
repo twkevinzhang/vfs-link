@@ -43,8 +43,142 @@ func TestRunDryRunRejectsNonReservedTargetPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 	err := run([]string{"--source-file=" + filename, "--target-prefix=metadata", "--dry-run"}, &bytes.Buffer{})
-	if err == nil || !strings.Contains(err.Error(), "reserved _vfs-link-v3 prefix") {
+	if err == nil || !strings.Contains(err.Error(), "reserved _vfs-link-v3 or _vfs-link-v4 prefix") {
 		t.Fatalf("run() error = %v", err)
+	}
+}
+
+func TestRunV4DryRunAndWriteSafety(t *testing.T) {
+	filename := filepath.Join(t.TempDir(), "metadata.json")
+	if err := os.WriteFile(filename, []byte(`{"version":1,"nextFileId":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if err := run([]string{
+		"--source-file=" + filename,
+		"--target-prefix=_vfs-link-v4",
+		"--target-shard-count=64",
+		"--target-mutation-mode=scoped",
+		"--dry-run",
+	}, &output); err != nil {
+		t.Fatalf("v4 dry-run error = %v", err)
+	}
+	if !strings.Contains(output.String(), "dry-run complete; target was not modified") {
+		t.Fatalf("v4 dry-run output:\n%s", output.String())
+	}
+
+	err := run([]string{"--source-file=" + filename, "--target-prefix=_vfs-link-v4", "--yes"}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "--rollback-journal is required") {
+		t.Fatalf("v4 write without rollback journal error = %v", err)
+	}
+
+	for _, shardCount := range []string{"0", "3", "512"} {
+		err = run([]string{"--source-file=" + filename, "--target-prefix=_vfs-link-v4", "--target-shard-count=" + shardCount, "--dry-run"}, &bytes.Buffer{})
+		if err == nil || !strings.Contains(err.Error(), "power of two") {
+			t.Fatalf("v4 shard count %s error = %v", shardCount, err)
+		}
+	}
+}
+
+func TestRunDryRunsDistributedV3SourceForV4(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	source, err := db.NewTreeLocal(root, "_vfs-link-v3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := source.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.UpsertFile(ctx, "report.txt", "objects/report", 12); err != nil {
+		t.Fatal(err)
+	}
+	source.Close()
+
+	var output bytes.Buffer
+	if err := run([]string{
+		"--source-tree-driver=local",
+		"--source-tree-local-root=" + root,
+		"--source-tree-prefix=_vfs-link-v3",
+		"--target-driver=local",
+		"--target-local-root=" + root,
+		"--target-prefix=_vfs-link-v4",
+		"--dry-run",
+	}, &output); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "source distributed-tree") || !strings.Contains(output.String(), "files=1") {
+		t.Fatalf("v3 to v4 dry-run output:\n%s", output.String())
+	}
+}
+
+func TestRunMigratesDistributedV3SourceIntoV4WithJournal(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	source, err := db.NewTreeLocal(root, "_vfs-link-v3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := source.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.UpsertDirectory(ctx, "docs"); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.UpsertFile(ctx, "docs/report.txt", "objects/report", 12); err != nil {
+		t.Fatal(err)
+	}
+	source.Close()
+
+	journal := filepath.Join(root, "rollback.json")
+	var output bytes.Buffer
+	if err := run([]string{
+		"--source-tree-driver=local",
+		"--source-tree-local-root=" + root,
+		"--source-tree-prefix=_vfs-link-v3",
+		"--target-driver=local",
+		"--target-local-root=" + root,
+		"--target-prefix=_vfs-link-v4",
+		"--target-shard-count=64",
+		"--target-reducer-interval=2s",
+		"--target-mutation-mode=global",
+		"--rollback-journal=" + journal,
+		"--yes",
+	}, &output); err != nil {
+		t.Fatalf("v3 to v4 migration error = %v\n%s", err, output.String())
+	}
+	target, err := db.NewTreeLocalV4(root, "_vfs-link-v4", db.TreeV4Options{ShardCount: 64, MutationMode: db.TreeV4MutationGlobal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close()
+	record, found, err := target.Find(ctx, "docs/report.txt")
+	if err != nil || !found || record.Size != 12 {
+		t.Fatalf("v4 Find() = %#v, %t, %v", record, found, err)
+	}
+	payload, err := os.ReadFile(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(payload), `"status": "completed"`) {
+		t.Fatalf("rollback journal was not completed:\n%s", payload)
+	}
+
+	retryJournal := filepath.Join(root, "retry-rollback.json")
+	err = run([]string{
+		"--source-tree-driver=local", "--source-tree-local-root=" + root, "--source-tree-prefix=_vfs-link-v3",
+		"--target-driver=local", "--target-local-root=" + root, "--target-prefix=_vfs-link-v4",
+		"--rollback-journal=" + retryJournal, "--yes",
+	}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "v4 import prefix is not empty") {
+		t.Fatalf("v4 target reuse error = %v", err)
+	}
+	retryPayload, readErr := os.ReadFile(retryJournal)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !strings.Contains(string(retryPayload), `"status": "prepared"`) {
+		t.Fatalf("failed retry journal must remain prepared:\n%s", retryPayload)
 	}
 }
 

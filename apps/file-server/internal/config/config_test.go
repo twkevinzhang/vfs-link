@@ -155,6 +155,21 @@ func TestLoadDatabaseDriverRequirements(t *testing.T) {
 	if err != nil || cfg.MetadataPrefix != "_vfs-link-v2" {
 		t.Fatalf("v2 metadata prefix config = %#v, error = %v", cfg, err)
 	}
+	cfg, err = Load([]string{
+		"DB_DRIVER=json",
+		"METADATA_STORAGE_DRIVER=local",
+		"METADATA_LOCAL_ROOT=" + t.TempDir(),
+		"METADATA_PREFIX=_vfs-link-v4",
+		"METADATA_MUTATION_MODE=scoped",
+		"METADATA_SHARD_COUNT=128",
+		"METADATA_REDUCER_INTERVAL=3s",
+	})
+	if err != nil {
+		t.Fatalf("v4 metadata config error = %v", err)
+	}
+	if cfg.MetadataPrefix != "_vfs-link-v4" || cfg.MetadataMutationMode != "scoped" || cfg.MetadataShardCount != 128 || cfg.MetadataReducerInterval != 3*time.Second {
+		t.Fatalf("v4 metadata config = %#v", cfg)
+	}
 
 	_, err = Load([]string{"DB_DRIVER=postgres", "DATABASE_URL="})
 	if err == nil || !strings.Contains(err.Error(), "DATABASE_URL is required when DB_DRIVER=postgres") {
@@ -188,6 +203,40 @@ func TestLoadDatabaseDriverRequirements(t *testing.T) {
 	_, err = Load([]string{"DB_DRIVER=json", "METADATA_PREFIX=metadata"})
 	if err == nil || !strings.Contains(err.Error(), "reserved prefixes") {
 		t.Fatalf("metadata prefix validation error = %v", err)
+	}
+
+	_, err = Load([]string{"DB_DRIVER=json", "METADATA_PREFIX=_vfs-link-v3", "METADATA_MUTATION_MODE=scoped"})
+	if err == nil || !strings.Contains(err.Error(), "requires METADATA_PREFIX=_vfs-link-v4") {
+		t.Fatalf("legacy sharded mode validation error = %v", err)
+	}
+
+	for _, shardCount := range []string{"0", "3", "512"} {
+		_, err = Load([]string{"DB_DRIVER=json", "METADATA_PREFIX=_vfs-link-v4", "METADATA_SHARD_COUNT=" + shardCount})
+		if err == nil || !strings.Contains(err.Error(), "power of two") {
+			t.Fatalf("shard count %s validation error = %v", shardCount, err)
+		}
+	}
+
+	for _, interval := range []string{"500ms", "6s"} {
+		_, err = Load([]string{"DB_DRIVER=json", "METADATA_PREFIX=_vfs-link-v4", "METADATA_REDUCER_INTERVAL=" + interval})
+		if err == nil || !strings.Contains(err.Error(), "between 1s and 5s") {
+			t.Fatalf("reducer interval %s validation error = %v", interval, err)
+		}
+	}
+
+	_, err = Load([]string{"DB_DRIVER=json", "METADATA_PREFIX=_vfs-link-v4", "METADATA_SHARD_COUNT=not-a-number"})
+	if err == nil || !strings.Contains(err.Error(), "must be an integer") {
+		t.Fatalf("invalid shard count syntax error = %v", err)
+	}
+
+	_, err = Load([]string{"DB_DRIVER=json", "METADATA_PREFIX=_vfs-link-v4", "METADATA_REDUCER_INTERVAL=soon"})
+	if err == nil || !strings.Contains(err.Error(), "must be a duration") {
+		t.Fatalf("invalid reducer interval syntax error = %v", err)
+	}
+
+	_, err = Load([]string{"DB_DRIVER=json", "METADATA_PREFIX=_vfs-link-v4", "METADATA_MUTATION_MODE=unsafe"})
+	if err == nil || !strings.Contains(err.Error(), `unsupported METADATA_MUTATION_MODE "unsafe"`) {
+		t.Fatalf("mutation mode validation error = %v", err)
 	}
 
 	_, err = Load([]string{"DB_DRIVER=json", "METADATA_STORAGE_DRIVER=s3"})

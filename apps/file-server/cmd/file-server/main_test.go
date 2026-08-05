@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/config"
 )
@@ -34,6 +35,39 @@ func TestNewMetadataStoreJSONLocal(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "_vfs-link", "stats.json")); err != nil {
 		t.Fatalf("tree metadata stats: %v", err)
+	}
+}
+
+func TestNewMetadataStoreV4JSONLocal(t *testing.T) {
+	root := t.TempDir()
+	store, err := newMetadataStore(context.Background(), config.Config{
+		DatabaseDriver:          "json",
+		MetadataStorageDriver:   "local",
+		MetadataLocalRoot:       root,
+		MetadataPrefix:          "_vfs-link-v4",
+		MetadataShardCount:      64,
+		MetadataReducerInterval: 2 * time.Second,
+		MetadataMutationMode:    "scoped",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if err := store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertDirectory(ctx, "docs"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertFile(ctx, "docs/report.txt", "object.txt", 4); err != nil {
+		t.Fatal(err)
+	}
+	if record, found, err := store.Find(ctx, "docs/report.txt"); err != nil || !found || record.Size != 4 {
+		t.Fatalf("Find() = %#v, %t, %v", record, found, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "_vfs-link-v4", "v4", "root.json")); err != nil {
+		t.Fatalf("v4 metadata root: %v", err)
 	}
 }
 

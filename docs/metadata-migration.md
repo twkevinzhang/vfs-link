@@ -1,5 +1,9 @@
 # Relative logical-path metadata v2 to v3 migration
 
+This document covers the historical v2-to-v3 path migration. For the sharded
+GCS v3-to-v4 production cutover, use
+[metadata-v4-cutover.md](metadata-v4-cutover.md).
+
 Tree v3 changes the canonical logical-path contract from `/AHR/file` to
 `AHR/file`, uses the empty string for root, and NFC-normalizes every persisted
 logical path. Migrate the production `_vfs-link-v2` tree into `_vfs-link-v3`

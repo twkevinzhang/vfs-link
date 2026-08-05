@@ -15,6 +15,9 @@ DB_DRIVER=json
 METADATA_STORAGE_DRIVER=gcs
 METADATA_GCS_BUCKET=your-vfs-link-metadata-bucket
 METADATA_PREFIX=_vfs-link-v3
+METADATA_SHARD_COUNT=64
+METADATA_REDUCER_INTERVAL=2s
+METADATA_MUTATION_MODE=global
 HTTP_BASIC_AUTH_ENABLED=true
 PUB_SUB_DRIVER=pubsub
 GCP_PROJECT_ID=your-project-id
@@ -53,6 +56,11 @@ Configure the primary bucket CORS policy to allow `PUT` from the exact Cloud Run
 origin. Do not use `*` in production. GCS-to-GCS shares use Cloud Storage's
 server-side copy operation. If Telegram credentials are absent, the copy can
 complete but notification status becomes `notification_failed`.
+
+For a v4 cutover, migrate and validate `_vfs-link-v4` first, then deploy with
+`METADATA_PREFIX=_vfs-link-v4` and `METADATA_MUTATION_MODE=scoped`. Do not
+change only the prefix on an active revision; an empty or partially imported
+prefix is not a valid production metadata source.
 
 The Cloud Run filesystem is not persistent. Never select local file or metadata
 storage for the production service; local remains supported for development
