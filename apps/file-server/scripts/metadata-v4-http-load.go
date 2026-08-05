@@ -182,6 +182,14 @@ type aggregateGate struct {
 	Passed          bool    `json:"passed"`
 }
 
+type contentionGate struct {
+	Contenders      int  `json:"contenders"`
+	Successes       int  `json:"successes"`
+	ExpectedRejects int  `json:"expectedRejects"`
+	FinalPathUnique bool `json:"finalPathUnique"`
+	Passed          bool `json:"passed"`
+}
+
 type gateSummary struct {
 	Steady    phaseGate     `json:"steady"`
 	Burst     phaseGate     `json:"burst"`
@@ -310,6 +318,12 @@ func run(ctx context.Context, cfg config) error {
 		return fmt.Errorf("fixture setup: %w", err)
 	}
 	cleanupNeeded = true
+	contention, err := runSamePathContention(ctx, client, fixtures[0], cfg.clients)
+	if err != nil {
+		return fmt.Errorf("same-path contention: %w", err)
+	}
+	contentionPayload, _ := json.Marshal(contention)
+	fmt.Println(string(contentionPayload))
 	expectedBytes := int64(0)
 	for _, fixture := range fixtures {
 		expectedBytes += int64(len(fixture.payload))
@@ -356,6 +370,50 @@ func run(ctx context.Context, cfg config) error {
 	}
 	fmt.Println("cleanup=completed acceptance=passed")
 	return nil
+}
+
+func runSamePathContention(ctx context.Context, client *apiClient, f *fixture, contenders int) (contentionGate, error) {
+	oldPath, oldName := f.currentPath, f.currentName
+	newName := f.alternate
+	newPath := path.Join(f.parent, newName)
+	start := make(chan struct{})
+	results := make(chan error, contenders)
+	var wg sync.WaitGroup
+	for index := 0; index < contenders; index++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			var operation operationResponse
+			err := client.json(ctx, http.MethodPost, "/api/files/rename", map[string]any{"path": oldPath, "name": newName}, &operation, http.StatusOK, http.StatusAccepted)
+			if err == nil && operation.OperationID != "" {
+				err = client.awaitOperation(ctx, operation.OperationID)
+			}
+			results <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	successes := 0
+	for result := range results {
+		if result == nil {
+			successes++
+		}
+	}
+	unique, verifyErr := client.verifyRename(ctx, f.parent, oldPath, newPath, int64(len(f.payload)), f.physicalHash)
+	gate := contentionGate{
+		Contenders:      contenders,
+		Successes:       successes,
+		ExpectedRejects: contenders - successes,
+		FinalPathUnique: unique,
+	}
+	gate.Passed = successes == 1 && unique
+	if !gate.Passed {
+		return gate, fmt.Errorf("successes=%d, want 1; unique final path=%t; verify error=%v", successes, unique, verifyErr)
+	}
+	f.currentPath, f.currentName, f.alternate = newPath, newName, oldName
+	return gate, nil
 }
 
 func createFixtures(ctx context.Context, client *apiClient, fixtures []*fixture) error {
