@@ -825,6 +825,11 @@ func (c *apiClient) verifyRename(ctx context.Context, directory, oldPath, newPat
 }
 
 func (c *apiClient) awaitOperation(ctx context.Context, id string) error {
+	_, err := c.awaitOperationResult(ctx, id)
+	return err
+}
+
+func (c *apiClient) awaitOperationResult(ctx context.Context, id string) (operationResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.operationTimeout)
 	defer cancel()
 	consecutiveErrors := 0
@@ -833,11 +838,11 @@ func (c *apiClient) awaitOperation(ctx context.Context, id string) error {
 		if err := c.json(ctx, http.MethodGet, "/api/operations/"+url.PathEscape(id), nil, &operation, http.StatusOK); err != nil {
 			consecutiveErrors++
 			if !retryable(err) || consecutiveErrors > 3 {
-				return fmt.Errorf("poll operation after %d consecutive errors: %w", consecutiveErrors, err)
+				return operationResponse{}, fmt.Errorf("poll operation after %d consecutive errors: %w", consecutiveErrors, err)
 			}
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
+				return operationResponse{}, ctx.Err()
 			case <-time.After(250 * time.Millisecond):
 			}
 			continue
@@ -845,13 +850,13 @@ func (c *apiClient) awaitOperation(ctx context.Context, id string) error {
 		consecutiveErrors = 0
 		switch operation.Status {
 		case "completed":
-			return nil
+			return operation, nil
 		case "failed", "aborted":
-			return errors.New("operation reached unsuccessful terminal status")
+			return operation, errors.New("operation reached unsuccessful terminal status")
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return operationResponse{}, ctx.Err()
 		case <-time.After(time.Second):
 		}
 	}
@@ -973,9 +978,11 @@ func trashAndDelete(ctx context.Context, client *apiClient, target string) error
 		return fmt.Errorf("trash target: %w", err)
 	}
 	if trashed.OperationID != "" {
-		if err := client.awaitOperation(ctx, trashed.OperationID); err != nil {
+		completed, err := client.awaitOperationResult(ctx, trashed.OperationID)
+		if err != nil {
 			return fmt.Errorf("await trash operation: %w", err)
 		}
+		trashed = completed
 	}
 	trashID := ""
 	for _, item := range trashed.Entries {
