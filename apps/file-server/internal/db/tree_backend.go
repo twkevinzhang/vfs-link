@@ -13,7 +13,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	"cloud.google.com/go/storage"
 	"google.golang.org/api/googleapi"
@@ -21,7 +20,6 @@ import (
 )
 
 const treeCASAttempts = 8
-const treeGCSWriteAttempts = 5
 
 var ErrMetadataConflict = errors.New("metadata changed concurrently")
 
@@ -243,30 +241,6 @@ func (b *gcsTreeBackend) Get(ctx context.Context, key string) (treeObject, bool,
 	return treeObject{Data: data, Generation: r.Attrs.Generation}, true, nil
 }
 func (b *gcsTreeBackend) Put(ctx context.Context, key string, data []byte, expected *int64) (int64, error) {
-	var lastErr error
-	for attempt := 0; attempt < treeGCSWriteAttempts; attempt++ {
-		generation, writeErr := b.putOnce(ctx, key, data, expected)
-		if writeErr == nil {
-			return generation, nil
-		}
-		lastErr = writeErr
-		if resolvedGeneration, resolved := b.resolveConditionalWrite(ctx, key, data, expected, writeErr); resolved {
-			return resolvedGeneration, nil
-		}
-		if !storage.ShouldRetry(writeErr) || attempt == treeGCSWriteAttempts-1 {
-			break
-		}
-		delay := time.Duration(100*(1<<attempt)) * time.Millisecond
-		select {
-		case <-ctx.Done():
-			return 0, ctx.Err()
-		case <-time.After(delay):
-		}
-	}
-	return 0, classifyGCSSaveError(lastErr)
-}
-
-func (b *gcsTreeBackend) putOnce(ctx context.Context, key string, data []byte, expected *int64) (int64, error) {
 	o := b.client.Bucket(b.bucket).Object(key)
 	if expected != nil {
 		if *expected == 0 {
@@ -279,10 +253,10 @@ func (b *gcsTreeBackend) putOnce(ctx context.Context, key string, data []byte, e
 	configureTreeMetadataWriter(w)
 	if _, err := w.Write(data); err != nil {
 		_ = w.Close()
-		return 0, err
+		return b.resolveConditionalCreate(ctx, key, data, expected, err)
 	}
 	if err := w.Close(); err != nil {
-		return 0, err
+		return b.resolveConditionalCreate(ctx, key, data, expected, err)
 	}
 	return w.Attrs().Generation, nil
 }
@@ -290,26 +264,26 @@ func (b *gcsTreeBackend) putOnce(ctx context.Context, key string, data []byte, e
 func configureTreeMetadataWriter(w *storage.Writer) {
 	w.ContentType = "application/json"
 	w.CacheControl = "no-store"
-	// Tree objects are small JSON envelopes. A zero chunk size uses one request
-	// instead of creating a resumable-upload session; gcsTreeBackend.Put retains
-	// the whole payload and supplies bounded whole-request retries.
-	w.ChunkSize = 0
+	// Tree objects are small JSON envelopes. Keep resumable-upload retries for
+	// transient GCS 429/5xx responses, but cap each concurrent writer at the
+	// minimum chunk size instead of the 16 MiB default buffer.
+	w.ChunkSize = 256 << 10
 }
 
-func (b *gcsTreeBackend) resolveConditionalWrite(ctx context.Context, key string, data []byte, expected *int64, writeErr error) (int64, bool) {
+func (b *gcsTreeBackend) resolveConditionalCreate(ctx context.Context, key string, data []byte, expected *int64, writeErr error) (int64, error) {
 	classified := classifyGCSSaveError(writeErr)
-	// A conditional write can reach GCS successfully while its response is
-	// lost. A retry then receives 412 because the committed object has a new
-	// generation. Accept an ambiguous result only when the live payload is
-	// byte-for-byte identical; transaction IDs make unrelated equal writes
-	// impossible on mutation envelopes.
-	if expected != nil && (classified == ErrMetadataConflict || storage.ShouldRetry(writeErr)) {
+	// A conditional create can reach GCS successfully while its response is
+	// lost. A transport retry then receives 412 during Write or Close because
+	// the first attempt already created the object. Accept that ambiguous result
+	// only when the live object is byte-for-byte identical; a different value
+	// remains a real concurrent mutation conflict.
+	if classified == ErrMetadataConflict && expected != nil && *expected == 0 {
 		existing, found, getErr := b.Get(ctx, key)
 		if getErr == nil && found && bytes.Equal(existing.Data, data) {
-			return existing.Generation, true
+			return existing.Generation, nil
 		}
 	}
-	return 0, false
+	return 0, classified
 }
 func (b *gcsTreeBackend) Delete(ctx context.Context, key string, expected *int64) error {
 	o := b.client.Bucket(b.bucket).Object(key)
