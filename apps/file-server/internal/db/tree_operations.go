@@ -750,6 +750,24 @@ func (s *TreeStore) RenamePath(ctx context.Context, from, to string) error {
 	return nil
 }
 
+// RenameSameParentV4 returns the committed record already observed by the v4
+// transaction. The boolean is false for v3 stores and cross-directory moves so
+// callers can preserve the legacy validation and operation behavior.
+func (s *TreeStore) RenameSameParentV4(ctx context.Context, from, to string) (FileRecord, bool, error) {
+	if s.v4 == nil {
+		return FileRecord{}, false, nil
+	}
+	from, to = cleanLogicPath(from), cleanLogicPath(to)
+	if from == "" || to == "" || from == to || parentLogicPath(from) != parentLogicPath(to) {
+		return FileRecord{}, false, nil
+	}
+	node, err := s.v4.renameSameParentOptimistic(ctx, parentLogicPath(from), pathpkg.Base(from), pathpkg.Base(to))
+	if err != nil {
+		return FileRecord{}, true, err
+	}
+	return v4FileRecord(to, node), true, nil
+}
+
 type trashManifest struct {
 	Version   int        `json:"version"`
 	ID        string     `json:"id"`

@@ -1448,23 +1448,23 @@ func (n *treeV4Namespace) prepareShardSnapshot(ctx context.Context, transactionI
 	return err
 }
 
-func (n *treeV4Namespace) renameSameParentOptimistic(ctx context.Context, parentPath, fromName, toName string) error {
+func (n *treeV4Namespace) renameSameParentOptimistic(ctx context.Context, parentPath, fromName, toName string) (treeV4Node, error) {
 	fromShardID, toShardID := n.shardFor(fromName), n.shardFor(toName)
 	retrySeed := uuid.NewString()
 	for attempt := 0; attempt < treeCASAttempts; attempt++ {
 		parent, _, found, err := n.resolveDirectoryChain(ctx, parentPath)
 		if err != nil {
-			return err
+			return treeV4Node{}, err
 		}
 		if !found || !parent.IsDirectory {
-			return ErrNotFound
+			return treeV4Node{}, ErrNotFound
 		}
 		resources, err := n.normalizeLeaseResources([]string{
 			fmt.Sprintf("directory:%s:shard:%03d", parent.NodeID, fromShardID),
 			fmt.Sprintf("directory:%s:shard:%03d", parent.NodeID, toShardID),
 		})
 		if err != nil {
-			return err
+			return treeV4Node{}, err
 		}
 		id := uuid.NewString()
 		now := n.now()
@@ -1510,7 +1510,7 @@ func (n *treeV4Namespace) renameSameParentOptimistic(ctx context.Context, parent
 		}
 		created := <-manifestCreated
 		if created.err != nil {
-			return created.err
+			return treeV4Node{}, created.err
 		}
 		generation := created.generation
 		abort := func() {
@@ -1522,17 +1522,17 @@ func (n *treeV4Namespace) renameSameParentOptimistic(ctx context.Context, parent
 			err = errors.Join(readErrors...)
 			abort()
 			if !errors.Is(err, ErrMetadataConflict) {
-				return err
+				return treeV4Node{}, err
 			}
 		} else {
 			entry, exists := snapshots[0].shard.Entries[fromName]
 			if !exists {
 				abort()
-				return ErrNotFound
+				return treeV4Node{}, ErrNotFound
 			}
 			if _, collision := snapshots[1].shard.Entries[toName]; collision {
 				abort()
-				return ErrPathConflict
+				return treeV4Node{}, ErrPathConflict
 			}
 			values := []treeV4DirectoryShard{snapshots[0].shard, snapshots[1].shard}
 			if fromShardID == toShardID {
@@ -1573,7 +1573,7 @@ func (n *treeV4Namespace) renameSameParentOptimistic(ctx context.Context, parent
 			if err != nil {
 				abort()
 				if !errorsIsConflict(err) {
-					return err
+					return treeV4Node{}, err
 				}
 			} else {
 				transaction.Status = "committed"
@@ -1582,12 +1582,12 @@ func (n *treeV4Namespace) renameSameParentOptimistic(ctx context.Context, parent
 				if err != nil {
 					observed, observedGeneration, observedFound, readErr := n.readActiveTransaction(ctx, id)
 					if readErr != nil || !observedFound || observed.Status != "committed" {
-						return err
+						return treeV4Node{}, err
 					}
 					transaction, generation, err = observed, observedGeneration, nil
 				}
 				n.finishCommittedAsync(transaction, generation, nil)
-				return nil
+				return entry.Node, nil
 			}
 		}
 		if attempt == treeCASAttempts-1 {
@@ -1596,11 +1596,11 @@ func (n *treeV4Namespace) renameSameParentOptimistic(ctx context.Context, parent
 		delay := v4TransactionRetryDelay(resources, retrySeed, attempt)
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return treeV4Node{}, ctx.Err()
 		case <-time.After(delay):
 		}
 	}
-	return ErrMetadataConflict
+	return treeV4Node{}, ErrMetadataConflict
 }
 
 func (n *treeV4Namespace) renamePath(ctx context.Context, from, to string) error {
@@ -1610,7 +1610,8 @@ func (n *treeV4Namespace) renamePath(ctx context.Context, from, to string) error
 	}
 	fromParentPath, toParentPath := parentLogicPath(from), parentLogicPath(to)
 	if fromParentPath == toParentPath {
-		return n.renameSameParentOptimistic(ctx, fromParentPath, pathpkg.Base(from), pathpkg.Base(to))
+		_, err := n.renameSameParentOptimistic(ctx, fromParentPath, pathpkg.Base(from), pathpkg.Base(to))
+		return err
 	}
 	fromParent, fromAncestors, found, err := n.resolveDirectoryChain(ctx, fromParentPath)
 	if err != nil || !found {

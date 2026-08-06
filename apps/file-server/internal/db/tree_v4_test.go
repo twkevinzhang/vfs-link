@@ -899,6 +899,27 @@ func TestTreeV4SameParentRenameUsesParticipantCASWithoutLeaseRoundTrips(t *testi
 	}
 }
 
+func TestTreeV4SameParentRenameReturnsCommittedRecord(t *testing.T) {
+	ctx := context.Background()
+	store := newTestTreeV4(t, TreeV4Options{ShardCount: 64})
+	if _, _, err := store.ReplaceFileConditional(ctx, "before.txt", "object-before", 7, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	record, handled, err := store.RenameSameParentV4(ctx, "before.txt", "after.txt")
+	if err != nil || !handled {
+		t.Fatalf("handled=%t err=%v", handled, err)
+	}
+	if record.LogicPath != "after.txt" || record.PhysicalHash != "object-before" || record.Size != 7 {
+		t.Fatalf("record=%+v", record)
+	}
+	if _, found, findErr := store.Find(ctx, "before.txt"); findErr != nil || found {
+		t.Fatalf("old path found=%t err=%v", found, findErr)
+	}
+	if _, handled, err = store.RenameSameParentV4(ctx, "after.txt", "folder/after.txt"); err != nil || handled {
+		t.Fatalf("cross-parent handled=%t err=%v", handled, err)
+	}
+}
+
 func TestTreeV4CachedParentChainInvalidatesAfterAncestorRename(t *testing.T) {
 	ctx := context.Background()
 	store := newTestTreeV4(t, TreeV4Options{ShardCount: 64})

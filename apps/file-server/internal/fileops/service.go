@@ -76,6 +76,10 @@ type deleteTrashOperationRunner interface {
 	) (db.OperationRecord, error)
 }
 
+type sameParentV4RenameStore interface {
+	RenameSameParentV4(context.Context, string, string) (db.FileRecord, bool, error)
+}
+
 func (s *Service) Move(ctx context.Context, paths []string, destination string) (MoveResult, error) {
 	if err := s.waitForResume(ctx); err != nil {
 		return MoveResult{}, err
@@ -124,11 +128,6 @@ func (s *Service) Rename(ctx context.Context, logicPath, name string) (RenameRes
 	if !found {
 		return RenameResult{}, fmt.Errorf("%w: %s", db.ErrNotFound, from)
 	}
-	if _, exists, err := s.store.Find(ctx, to); err != nil {
-		return RenameResult{}, err
-	} else if exists {
-		return RenameResult{}, fmt.Errorf("%w: %s", db.ErrPathConflict, to)
-	}
 	if operations, ok := s.store.(db.TreeOperationStore); ok && record.IsDirectory {
 		operation, err := operations.CreateRenameOperation(ctx, from, name)
 		if err != nil {
@@ -136,6 +135,20 @@ func (s *Service) Rename(ctx context.Context, logicPath, name string) (RenameRes
 		}
 		s.kickOperation(operation.ID)
 		return RenameResult{Operation: &operation}, nil
+	}
+	if fast, ok := s.store.(sameParentV4RenameStore); ok {
+		renamed, handled, renameErr := fast.RenameSameParentV4(ctx, from, to)
+		if handled {
+			if renameErr != nil {
+				return RenameResult{}, renameErr
+			}
+			return RenameResult{Records: []db.FileRecord{renamed}}, nil
+		}
+	}
+	if _, exists, err := s.store.Find(ctx, to); err != nil {
+		return RenameResult{}, err
+	} else if exists {
+		return RenameResult{}, fmt.Errorf("%w: %s", db.ErrPathConflict, to)
 	}
 	if err := s.store.RenamePath(ctx, from, to); err != nil {
 		return RenameResult{}, err

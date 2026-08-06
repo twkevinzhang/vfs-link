@@ -20,6 +20,59 @@ type blockingResumeStore struct {
 	allowList   chan struct{}
 }
 
+type sameParentRenameStoreSpy struct {
+	db.Store
+	findCalls int
+	fastCalls int
+}
+
+func (s *sameParentRenameStoreSpy) Find(ctx context.Context, path string) (db.FileRecord, bool, error) {
+	s.findCalls++
+	return s.Store.Find(ctx, path)
+}
+
+func (s *sameParentRenameStoreSpy) RenameSameParentV4(ctx context.Context, from, to string) (db.FileRecord, bool, error) {
+	s.fastCalls++
+	if err := s.Store.RenamePath(ctx, from, to); err != nil {
+		return db.FileRecord{}, true, err
+	}
+	record, found, err := s.Store.Find(ctx, to)
+	if err != nil || !found {
+		return db.FileRecord{}, true, err
+	}
+	return record, true, nil
+}
+
+func TestRenameUsesV4CommittedRecordWithoutTargetOrResultFind(t *testing.T) {
+	ctx := context.Background()
+	metadata, err := db.NewTreeLocal(filepath.Join(t.TempDir(), "metadata"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(metadata.Close)
+	if err = metadata.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err = metadata.UpsertFile(ctx, "before.txt", "object-before", 7); err != nil {
+		t.Fatal(err)
+	}
+	objects, err := blob.NewLocal(filepath.Join(t.TempDir(), "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	spy := &sameParentRenameStoreSpy{Store: metadata}
+	result, err := New(spy, objects, objects).Rename(ctx, "before.txt", "after.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spy.findCalls != 1 || spy.fastCalls != 1 {
+		t.Fatalf("find calls=%d fast calls=%d, want 1 and 1", spy.findCalls, spy.fastCalls)
+	}
+	if len(result.Records) != 1 || result.Records[0].LogicPath != "after.txt" || result.Records[0].PhysicalHash != "object-before" {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
 func (s *blockingResumeStore) CreateMoveOperation(ctx context.Context, paths []string, destination string) (db.OperationRecord, error) {
 	return s.operations.CreateMoveOperation(ctx, paths, destination)
 }
