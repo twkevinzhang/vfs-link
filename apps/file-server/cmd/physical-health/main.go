@@ -238,17 +238,23 @@ func openMetadataStore(ctx context.Context, driver string, databaseURL string, m
 	case "json":
 		metadataDriver = strings.ToLower(firstNonEmpty(metadataDriver, os.Getenv("METADATA_STORAGE_DRIVER"), storageDriverLocal))
 		metadataPrefix = firstNonEmpty(metadataPrefix, os.Getenv("METADATA_PREFIX"), "_vfs-link-v3")
-		if metadataPrefix != "_vfs-link" && metadataPrefix != "_vfs-link-v2" && metadataPrefix != "_vfs-link-v3" {
-			return nil, errors.New("METADATA_PREFIX must be _vfs-link, _vfs-link-v2, or _vfs-link-v3")
+		if metadataPrefix != "_vfs-link" && metadataPrefix != "_vfs-link-v2" && metadataPrefix != "_vfs-link-v3" && metadataPrefix != "_vfs-link-v4" {
+			return nil, errors.New("METADATA_PREFIX must be _vfs-link, _vfs-link-v2, _vfs-link-v3, or _vfs-link-v4")
 		}
 		switch metadataDriver {
 		case storageDriverLocal:
 			metadataRoot = firstNonEmpty(metadataRoot, os.Getenv("METADATA_LOCAL_ROOT"), "./data/metadata")
+			if metadataPrefix == "_vfs-link-v4" {
+				return db.NewTreeLocalV4(metadataRoot, metadataPrefix, db.TreeV4Options{ShardCount: 64, ReducerInterval: 2 * time.Second, MutationMode: "scoped"})
+			}
 			return db.NewTreeLocal(metadataRoot, metadataPrefix)
 		case storageDriverGCS:
 			metadataBucket = firstNonEmpty(metadataBucket, os.Getenv("METADATA_GCS_BUCKET"))
 			if metadataBucket == "" {
 				return nil, errors.New("METADATA_GCS_BUCKET is required when METADATA_STORAGE_DRIVER=gcs")
+			}
+			if metadataPrefix == "_vfs-link-v4" {
+				return db.NewTreeGCSV4(ctx, metadataBucket, metadataPrefix, db.TreeV4Options{ShardCount: 64, ReducerInterval: 2 * time.Second, MutationMode: "scoped"})
 			}
 			return db.NewTreeGCS(ctx, metadataBucket, metadataPrefix)
 		default:

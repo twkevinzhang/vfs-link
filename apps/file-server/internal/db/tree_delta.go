@@ -37,10 +37,11 @@ type TreeDerivedDelta struct {
 }
 
 type treeDerivedReducerState struct {
-	Version         int           `json:"version"`
-	Stats           MetadataStats `json:"stats"`
-	AppliedDeltaIDs []string      `json:"appliedDeltaIds,omitempty"`
-	UpdatedAt       time.Time     `json:"updatedAt"`
+	Version           int                  `json:"version"`
+	Stats             MetadataStats        `json:"stats"`
+	AppliedDeltaIDs   []string             `json:"appliedDeltaIds,omitempty"`
+	AppliedDeltaTimes map[string]time.Time `json:"appliedDeltaTimes,omitempty"`
+	UpdatedAt         time.Time            `json:"updatedAt"`
 }
 
 type treeDerivedStatsSnapshot struct {
@@ -304,6 +305,10 @@ func (s *TreeStore) applyDerivedDeltaBatch(ctx context.Context, deltas []TreeDer
 		for _, delta := range pending {
 			addMetadataStats(&state.Stats, delta.StatsDelta)
 			state.AppliedDeltaIDs = append(state.AppliedDeltaIDs, delta.TransactionToken)
+			if state.AppliedDeltaTimes == nil {
+				state.AppliedDeltaTimes = make(map[string]time.Time)
+			}
+			state.AppliedDeltaTimes[delta.TransactionToken] = time.Now().UTC()
 		}
 		state.Version = treeDerivedSchemaVersion
 		state.Stats.AppliedOperationIDs = nil

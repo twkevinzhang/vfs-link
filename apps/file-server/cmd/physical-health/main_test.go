@@ -85,6 +85,29 @@ func TestOpenMetadataStoreTreeV2AndValidateAggregates(t *testing.T) {
 	}
 }
 
+func TestOpenMetadataStoreTreeV4(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store, err := openMetadataStore(ctx, "json", "", "local", root, "", "_vfs-link-v4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err = store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.UpsertDirectory(ctx, "docs"); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.UpsertFile(ctx, "docs/a.txt", "object-a", 4); err != nil {
+		t.Fatal(err)
+	}
+	records, err := store.ListAll(ctx)
+	if err != nil || len(records) != 2 {
+		t.Fatalf("records=%d err=%v", len(records), err)
+	}
+}
+
 func TestOpenMetadataStoreValidation(t *testing.T) {
 	if _, err := openMetadataStore(context.Background(), "postgres", "", "", "", "", ""); err == nil {
 		t.Fatal("expected missing DATABASE_URL error")

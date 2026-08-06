@@ -13,6 +13,8 @@ import (
 	"github.com/google/uuid"
 )
 
+const derivedTokenRetention = 5 * time.Minute
+
 type treeDerivedLeaseHandle struct {
 	store      *TreeStore
 	owner      string
@@ -104,17 +106,40 @@ func (s *TreeStore) compactDerivedTokens(ctx context.Context, existingDeltaKeys 
 		if err != nil || !exists || len(state.AppliedDeltaIDs) == 0 {
 			return 0, err
 		}
+		now := time.Now().UTC()
+		if state.AppliedDeltaTimes == nil {
+			state.AppliedDeltaTimes = make(map[string]time.Time)
+		}
 		kept := make([]string, 0, len(state.AppliedDeltaIDs))
+		keptTimes := make(map[string]time.Time, len(state.AppliedDeltaIDs))
 		for _, token := range state.AppliedDeltaIDs {
-			if _, found := existing[s.treeDerivedDeltaKey(token)]; found {
+			appliedAt, timestamped := state.AppliedDeltaTimes[token]
+			if !timestamped {
+				// States written before token retention was introduced need one full
+				// grace window before they can be compacted safely.
+				appliedAt = now
+			}
+			_, deltaStillExists := existing[s.treeDerivedDeltaKey(token)]
+			if deltaStillExists || now.Sub(appliedAt) < derivedTokenRetention {
 				kept = append(kept, token)
+				keptTimes[token] = appliedAt
 			}
 		}
 		removed := len(state.AppliedDeltaIDs) - len(kept)
-		if removed == 0 {
+		metadataChanged := len(state.AppliedDeltaTimes) != len(keptTimes)
+		if !metadataChanged {
+			for token, appliedAt := range keptTimes {
+				if current, found := state.AppliedDeltaTimes[token]; !found || !current.Equal(appliedAt) {
+					metadataChanged = true
+					break
+				}
+			}
+		}
+		if removed == 0 && !metadataChanged {
 			return 0, nil
 		}
 		state.AppliedDeltaIDs = kept
+		state.AppliedDeltaTimes = keptTimes
 		state.UpdatedAt = time.Now().UTC()
 		payload, marshalErr := marshalTree(state)
 		if marshalErr != nil {

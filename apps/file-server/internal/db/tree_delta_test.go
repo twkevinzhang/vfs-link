@@ -74,6 +74,16 @@ func TestReduceDerivedDeltasReplaysWithoutDoubleApply(t *testing.T) {
 	if err != nil || result.Applied != 0 {
 		t.Fatalf("replay result=%+v err=%v", result, err)
 	}
+	// A finalizer that started before the first reduction may re-emit the
+	// immutable delta after its object was deleted. The retained token must
+	// classify it as a replay instead of applying it twice.
+	if err = store.emitDerivedDelta(ctx, "tx-replay", delta, []string{"parent", "root"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err = store.ReduceDerivedDeltas(ctx, options)
+	if err != nil || result.Applied != 0 || result.Replayed != 1 {
+		t.Fatalf("late replay result=%+v err=%v", result, err)
+	}
 	stats, _, _ = store.DerivedMetadataStats(ctx)
 	if !sameMetadataStats(stats, delta) {
 		t.Fatalf("replay doubled stats: %+v", stats)
@@ -189,7 +199,7 @@ func TestDerivedReducerBatchesHotStateAndDirectoryRebuilds(t *testing.T) {
 	backend.mu.Lock()
 	statePuts := backend.statePuts
 	backend.mu.Unlock()
-	if result.Applied != 24 || statePuts != 2 { // one batch checkpoint plus one token compaction
+	if result.Applied != 24 || statePuts != 1 { // one batch checkpoint; recent tokens remain as replay guards
 		t.Fatalf("result=%+v state puts=%d", result, statePuts)
 	}
 	if rebuilds["parent"] != 1 || rebuilds["root"] != 1 {
@@ -238,7 +248,34 @@ func TestDerivedReducerRecoversCrashAfterCheckpoint(t *testing.T) {
 		t.Fatalf("stats=%+v found=%v err=%v", stats, found, err)
 	}
 	state, _, _, err := store.loadDerivedReducerState(ctx)
-	if err != nil || len(state.AppliedDeltaIDs) != 0 {
+	if err != nil || len(state.AppliedDeltaIDs) != 1 {
+		t.Fatalf("state=%+v err=%v", state, err)
+	}
+}
+
+func TestDerivedReducerCompactsExpiredReplayGuards(t *testing.T) {
+	ctx := context.Background()
+	store := newDerivedTestTree(t)
+	if err := store.emitDerivedDelta(ctx, "expired-token", MetadataStats{LogicalDirs: 1}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReduceDerivedDeltas(ctx, TreeDerivedReduceOptions{Owner: "apply"}); err != nil {
+		t.Fatal(err)
+	}
+	state, generation, found, err := store.loadDerivedReducerState(ctx)
+	if err != nil || !found {
+		t.Fatalf("state found=%t err=%v", found, err)
+	}
+	state.AppliedDeltaTimes["expired-token"] = time.Now().UTC().Add(-derivedTokenRetention - time.Second)
+	payload, _ := marshalTree(state)
+	if _, err = store.objects.Put(ctx, store.treeDerivedStateKey(), payload, &generation); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.ReduceDerivedDeltas(ctx, TreeDerivedReduceOptions{Owner: "compact"}); err != nil {
+		t.Fatal(err)
+	}
+	state, _, _, err = store.loadDerivedReducerState(ctx)
+	if err != nil || len(state.AppliedDeltaIDs) != 0 || len(state.AppliedDeltaTimes) != 0 {
 		t.Fatalf("state=%+v err=%v", state, err)
 	}
 }
