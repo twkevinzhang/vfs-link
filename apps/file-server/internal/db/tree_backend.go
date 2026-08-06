@@ -17,6 +17,8 @@ import (
 	"cloud.google.com/go/storage"
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/iterator"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 const treeCASAttempts = 8
@@ -36,6 +38,14 @@ func classifyGCSSaveError(err error) error {
 	}
 	var e *googleapi.Error
 	if errors.As(err, &e) && (e.Code == 409 || e.Code == 412) {
+		return ErrMetadataConflict
+	}
+	// The JSON and gRPC transports expose the same generation/does-not-exist
+	// precondition with different error types. Keep CAS handling independent of
+	// the selected transport so an expected collision is retried by the tree
+	// store instead of aborting service startup or a mutation.
+	switch status.Code(err) {
+	case codes.AlreadyExists, codes.FailedPrecondition:
 		return ErrMetadataConflict
 	}
 	return fmt.Errorf("write GCS metadata: %w", err)
