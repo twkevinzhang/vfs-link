@@ -100,7 +100,10 @@ func NewTreeLocalV4(root, prefix string, options TreeV4Options) (Store, error) {
 }
 
 func NewTreeGCSV4(ctx context.Context, bucket, prefix string, options TreeV4Options) (Store, error) {
-	c, err := storage.NewClient(ctx)
+	// V4 performs several small conditional object operations per transaction.
+	// Reuse the Cloud Storage gRPC channel so those operations do not each pay
+	// the JSON/HTTP resumable-session setup cost.
+	c, err := storage.NewGRPCClient(ctx)
 	if err != nil {
 		return nil, err
 	}
