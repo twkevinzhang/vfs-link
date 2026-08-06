@@ -133,6 +133,22 @@ func TestFailedScanIsRetainedAndRetryCreatesNewJob(t *testing.T) {
 	if err != nil || !created || retry.ID == first.ID {
 		t.Fatalf("retry StartScan() = %+v, created %t, error %v", retry, created, err)
 	}
+	for {
+		retry, _, err = service.GetScan(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if retry.ID == first.ID {
+			t.Fatalf("retry scan reverted to first job: %+v", retry)
+		}
+		if retry.Status == "failed" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("retry scan did not fail: %+v", retry)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func TestExpiredRunningScanResumesWithSameID(t *testing.T) {
