@@ -40,6 +40,13 @@ type TreeStore struct {
 var _ Store = (*TreeStore)(nil)
 var _ MetadataStatsProvider = (*TreeStore)(nil)
 
+// RequiresDurableTrashDelete reports whether permanent deletion must be
+// detached from the request lifetime. V4 metadata is stored in GCS and a
+// physical object deletion can legitimately outlive an HTTP client timeout.
+func (s *TreeStore) RequiresDurableTrashDelete() bool {
+	return s.v4 != nil
+}
+
 func cleanTreePrefix(prefix string) string {
 	prefix = strings.Trim(strings.TrimSpace(prefix), "/")
 	if prefix == "" {

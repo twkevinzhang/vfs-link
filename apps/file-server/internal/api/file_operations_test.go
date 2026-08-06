@@ -477,6 +477,60 @@ func TestTreeDirectoryPermanentDeleteRunsDurableOperation(t *testing.T) {
 	}
 }
 
+func TestTreeV4SingleFilePermanentDeleteRunsDurableOperation(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store, err := db.NewTreeLocalV4(filepath.Join(root, "tree"), "v4-single-file-delete", db.TreeV4Options{ShardCount: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	if err := store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertFile(ctx, "a.txt", "object-a", 1); err != nil {
+		t.Fatal(err)
+	}
+	objects, err := blob.NewLocal(filepath.Join(root, "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, err := objects.NewWriter(ctx, "object-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write([]byte("a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	handler := New(store, objects, objects, nil, "", "").Handler()
+
+	var trashed entriesResponse
+	requestJSON(t, handler, http.MethodPost, "/api/files/trash", map[string]any{
+		"paths": []string{"a.txt"},
+	}, http.StatusOK, &trashed)
+	if len(trashed.Entries) != 1 || trashed.Entries[0].TrashID == "" {
+		t.Fatalf("trashed records = %#v", trashed)
+	}
+
+	var accepted operationResponse
+	requestJSON(t, handler, http.MethodPost, "/api/trash/delete", map[string]any{
+		"trashIds": []string{trashed.Entries[0].TrashID},
+	}, http.StatusAccepted, &accepted)
+	deleted := pollOperation(t, handler, accepted.OperationID)
+	if deleted.Deleted != 1 || deleted.Progress != 1 || deleted.Total != 1 {
+		t.Fatalf("delete operation = %#v", deleted)
+	}
+	if _, err := os.Stat(filepath.Join(objects.Root(), "object-a")); !os.IsNotExist(err) {
+		t.Fatalf("permanently deleted object stat error = %v", err)
+	}
+	if trash, err := store.ListTrash(ctx); err != nil || len(trash) != 0 {
+		t.Fatalf("remaining trash=%d err=%v", len(trash), err)
+	}
+}
+
 func pollOperation(t *testing.T, handler http.Handler, id string) operationResponse {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)

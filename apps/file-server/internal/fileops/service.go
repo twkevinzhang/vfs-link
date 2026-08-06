@@ -71,6 +71,10 @@ type deleteTrashOperationStore interface {
 	CreateDeleteTrashOperation(context.Context, []string) (db.OperationRecord, error)
 }
 
+type durableTrashDeletePolicy interface {
+	RequiresDurableTrashDelete() bool
+}
+
 type deleteTrashOperationRunner interface {
 	RunDeleteTrashOperation(
 		context.Context,
@@ -342,8 +346,13 @@ func (s *Service) DeletePermanently(ctx context.Context, ids []string) (DeleteRe
 			return DeleteResult{}, err
 		}
 		wanted := stringSet(ids)
+		requiresDurableDelete := false
+		if policy, ok := s.store.(durableTrashDeletePolicy); ok {
+			requiresDurableDelete = policy.RequiresDurableTrashDelete()
+		}
 		for _, root := range roots {
-			if len(ids) == 0 || len(ids) > 100 || (root.IsDirectory && wanted[root.TrashID]) {
+			selected := len(ids) == 0 || wanted[root.TrashID]
+			if selected && (requiresDurableDelete || len(ids) > 100 || root.IsDirectory) {
 				operation, err := operations.CreateDeleteTrashOperation(ctx, ids)
 				if err != nil {
 					return DeleteResult{}, err
