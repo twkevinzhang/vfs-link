@@ -794,11 +794,22 @@ func (c *apiClient) verifyRename(ctx context.Context, directory, oldPath, newPat
 func (c *apiClient) awaitOperation(ctx context.Context, id string) error {
 	ctx, cancel := context.WithTimeout(ctx, c.operationTimeout)
 	defer cancel()
+	consecutiveErrors := 0
 	for {
 		var operation operationResponse
 		if err := c.json(ctx, http.MethodGet, "/api/operations/"+url.PathEscape(id), nil, &operation, http.StatusOK); err != nil {
-			return err
+			consecutiveErrors++
+			if !retryable(err) || consecutiveErrors > 3 {
+				return fmt.Errorf("poll operation after %d consecutive errors: %w", consecutiveErrors, err)
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(250 * time.Millisecond):
+			}
+			continue
 		}
+		consecutiveErrors = 0
 		switch operation.Status {
 		case "completed":
 			return nil
@@ -926,22 +937,30 @@ func trashAndDelete(ctx context.Context, client *apiClient, target string) error
 		if errors.As(err, &status) && status.status == http.StatusNotFound {
 			return nil
 		}
-		return err
+		return fmt.Errorf("trash target: %w", err)
 	}
 	if trashed.OperationID != "" {
 		if err := client.awaitOperation(ctx, trashed.OperationID); err != nil {
-			return err
+			return fmt.Errorf("await trash operation: %w", err)
 		}
 	}
-	var trash entriesResponse
-	if err := client.json(ctx, http.MethodGet, "/api/trash", nil, &trash, http.StatusOK); err != nil {
-		return err
-	}
 	trashID := ""
-	for _, item := range trash.Entries {
+	for _, item := range trashed.Entries {
 		if item.Path == target && item.TrashID != "" {
 			trashID = item.TrashID
 			break
+		}
+	}
+	if trashID == "" {
+		var trash entriesResponse
+		if err := client.json(ctx, http.MethodGet, "/api/trash", nil, &trash, http.StatusOK); err != nil {
+			return fmt.Errorf("list trash for target id: %w", err)
+		}
+		for _, item := range trash.Entries {
+			if item.Path == target && item.TrashID != "" {
+				trashID = item.TrashID
+				break
+			}
 		}
 	}
 	if trashID == "" {
@@ -949,10 +968,12 @@ func trashAndDelete(ctx context.Context, client *apiClient, target string) error
 	}
 	var deleted operationResponse
 	if err := client.json(ctx, http.MethodPost, "/api/trash/delete", map[string]any{"trashIds": []string{trashID}}, &deleted, http.StatusOK, http.StatusAccepted); err != nil {
-		return err
+		return fmt.Errorf("delete trash target: %w", err)
 	}
 	if deleted.OperationID != "" {
-		return client.awaitOperation(ctx, deleted.OperationID)
+		if err := client.awaitOperation(ctx, deleted.OperationID); err != nil {
+			return fmt.Errorf("await delete-trash operation: %w", err)
+		}
 	}
 	return nil
 }
