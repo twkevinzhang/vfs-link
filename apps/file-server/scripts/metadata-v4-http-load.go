@@ -819,7 +819,7 @@ func (c *apiClient) awaitOperation(ctx context.Context, id string) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(100 * time.Millisecond):
+		case <-time.After(time.Second):
 		}
 	}
 }
