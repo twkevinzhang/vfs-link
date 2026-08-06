@@ -115,6 +115,11 @@ type treeV4DerivedPayload struct {
 	AncestorDirectoryIDs []string
 }
 
+func treeV4HasDerivedWork(stats MetadataStats, directoryIDs []string) bool {
+	return stats.LogicalFiles != 0 || stats.LogicalDirs != 0 || stats.LogicalBytes != 0 ||
+		stats.PhysicalObjects != 0 || stats.PhysicalBytes != 0 || len(directoryIDs) != 0
+}
+
 func newTreeV4Namespace(store *TreeStore, options TreeV4Options) (*treeV4Namespace, error) {
 	shards := options.ShardCount
 	if shards == 0 {
@@ -810,6 +815,9 @@ func (n *treeV4Namespace) transactOnce(ctx context.Context, resources []string, 
 			transaction.StatsDelta = derived.StatsDelta
 			transaction.AncestorDirectoryIDs = normalizeDerivedDirectoryIDs(derived.AncestorDirectoryIDs)
 		}
+		// A transaction with no aggregate effect does not need to enter the
+		// reducer queue. Marking it here lets finalization archive it directly.
+		transaction.DerivedApplied = !treeV4HasDerivedWork(transaction.StatsDelta, transaction.AncestorDirectoryIDs)
 		generation, err = n.writeTransaction(ctx, transaction, generation)
 	}
 	if err == nil {
@@ -850,8 +858,10 @@ func (n *treeV4Namespace) transactOnce(ctx context.Context, resources []string, 
 }
 
 func (n *treeV4Namespace) finalizeCommittedTransaction(ctx context.Context, transaction treeV4Transaction, generation int64) error {
-	if err := n.store.emitDerivedDelta(ctx, transaction.ID, transaction.StatsDelta, transaction.AncestorDirectoryIDs); err != nil {
-		return err
+	if !transaction.DerivedApplied {
+		if err := n.store.emitDerivedDelta(ctx, transaction.ID, transaction.StatsDelta, transaction.AncestorDirectoryIDs); err != nil {
+			return err
+		}
 	}
 	for _, participant := range transaction.Participants {
 		object, found, err := n.store.objects.Get(ctx, participant)
@@ -873,6 +883,9 @@ func (n *treeV4Namespace) finalizeCommittedTransaction(ctx context.Context, tran
 	}
 	// The reducer marks DerivedApplied and archives the active manifest only
 	// after its idempotent delta has changed the published aggregate state.
+	if transaction.DerivedApplied {
+		return n.archiveTransaction(ctx, transaction, generation)
+	}
 	return nil
 }
 
@@ -1268,7 +1281,10 @@ func (n *treeV4Namespace) renamePath(ctx context.Context, from, to string) error
 	fromName, toName := pathpkg.Base(from), pathpkg.Base(to)
 	fromShardID, toShardID := n.shardFor(fromName), n.shardFor(toName)
 	resources := append(v4PathResources(from, fromParent, fromShardID), v4PathResources(to, toParent, toShardID)...)
-	derived := &treeV4DerivedPayload{AncestorDirectoryIDs: append(fromAncestors, toAncestors...)}
+	derived := &treeV4DerivedPayload{}
+	if fromParent.NodeID != toParent.NodeID {
+		derived.AncestorDirectoryIDs = append(fromAncestors, toAncestors...)
+	}
 	_, _, err = n.transact(ctx, resources, derived, func(buildCtx context.Context, fences map[string]int64) ([]treeV4Mutation, any, error) {
 		liveFromParent, fromExists, buildErr := n.resolve(buildCtx, fromParentPath)
 		if buildErr != nil || !fromExists || liveFromParent.NodeID != fromParent.NodeID {

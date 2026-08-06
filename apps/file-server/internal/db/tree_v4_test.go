@@ -69,6 +69,31 @@ func TestTreeV4StrongPathCreateReplaceRenameAndMove(t *testing.T) {
 	}
 }
 
+func TestTreeV4SameParentRenameSkipsDerivedQueueAndArchives(t *testing.T) {
+	ctx := context.Background()
+	store := newTestTreeV4(t, TreeV4Options{ShardCount: 8})
+	if _, _, err := store.ReplaceFileConditional(ctx, "a.txt", "object-a", 7, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	store.v4.waitFinalizers()
+	if _, err := store.ReduceDerivedDeltas(ctx, TreeDerivedReduceOptions{RebuildDirectories: store.rebuildV4DirectorySummaries}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RenamePath(ctx, "a.txt", "b.txt"); err != nil {
+		t.Fatal(err)
+	}
+	store.v4.waitFinalizers()
+	if deltas, err := store.objects.List(ctx, store.treeDerivedDeltaPrefix()); err != nil || len(deltas) != 0 {
+		t.Fatalf("derived deltas=%v err=%v", deltas, err)
+	}
+	if active, err := store.objects.List(ctx, store.prefix+"/v4/transactions/active/"); err != nil || len(active) != 0 {
+		t.Fatalf("active transactions=%v err=%v", active, err)
+	}
+	if record, found, err := store.Find(ctx, "b.txt"); err != nil || !found || record.PhysicalHash != "object-a" {
+		t.Fatalf("renamed record=%+v found=%t err=%v", record, found, err)
+	}
+}
+
 func TestTreeV4ConcurrentDisjointWrites(t *testing.T) {
 	ctx := context.Background()
 	store := newTestTreeV4(t, TreeV4Options{ShardCount: 64})

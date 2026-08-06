@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -94,6 +95,64 @@ type countDerivedStateBackend struct {
 	treeBackend
 	mu        sync.Mutex
 	statePuts int
+}
+
+type observeDerivedReadsBackend struct {
+	treeBackend
+	mu        sync.Mutex
+	active    int
+	maxActive int
+	delay     time.Duration
+}
+
+func (b *observeDerivedReadsBackend) Get(ctx context.Context, key string) (treeObject, bool, error) {
+	if !strings.Contains(key, "/v4/derived/v1/deltas/") {
+		return b.treeBackend.Get(ctx, key)
+	}
+	b.mu.Lock()
+	b.active++
+	if b.active > b.maxActive {
+		b.maxActive = b.active
+	}
+	b.mu.Unlock()
+	select {
+	case <-ctx.Done():
+		b.mu.Lock()
+		b.active--
+		b.mu.Unlock()
+		return treeObject{}, false, ctx.Err()
+	case <-time.After(b.delay):
+	}
+	b.mu.Lock()
+	b.active--
+	b.mu.Unlock()
+	return b.treeBackend.Get(ctx, key)
+}
+
+func TestDerivedReducerReadsBacklogConcurrentlyAndRenewsLease(t *testing.T) {
+	ctx := context.Background()
+	local, err := newLocalTreeBackend(filepath.Join(t.TempDir(), "metadata"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := &observeDerivedReadsBackend{treeBackend: local, delay: 20 * time.Millisecond}
+	store := newTreeStore(backend, "_vfs-link-v4")
+	t.Cleanup(store.Close)
+	for index := 0; index < 96; index++ {
+		if err = store.emitDerivedDelta(ctx, fmt.Sprintf("parallel-%03d", index), MetadataStats{LogicalFiles: 1}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := store.ReduceDerivedDeltas(ctx, TreeDerivedReduceOptions{Owner: "parallel", LeaseTTL: 30 * time.Millisecond})
+	if err != nil || result.Applied != 96 || result.Pending != 0 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	backend.mu.Lock()
+	maximum := backend.maxActive
+	backend.mu.Unlock()
+	if maximum <= 1 {
+		t.Fatalf("delta read max concurrency=%d, want >1", maximum)
+	}
 }
 
 func (b *countDerivedStateBackend) Put(ctx context.Context, key string, data []byte, expected *int64) (int64, error) {

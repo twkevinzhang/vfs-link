@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,6 +16,7 @@ import (
 type treeDerivedLeaseHandle struct {
 	store      *TreeStore
 	owner      string
+	mu         sync.Mutex
 	generation int64
 	ttl        time.Duration
 }
@@ -60,6 +62,8 @@ func (s *TreeStore) acquireDerivedReducerLease(ctx context.Context, owner string
 }
 
 func (h *treeDerivedLeaseHandle) renew(ctx context.Context) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	key := h.store.treeDerivedLeaseKey()
 	o, ok, err := h.store.objects.Get(ctx, key)
 	if err != nil {
@@ -85,10 +89,16 @@ func (h *treeDerivedLeaseHandle) renew(ctx context.Context) error {
 }
 
 func (h *treeDerivedLeaseHandle) release() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	_ = h.store.objects.Delete(context.Background(), h.store.treeDerivedLeaseKey(), &h.generation)
 }
 
-func (s *TreeStore) compactDerivedTokens(ctx context.Context) (int, error) {
+func (s *TreeStore) compactDerivedTokens(ctx context.Context, existingDeltaKeys []string) (int, error) {
+	existing := make(map[string]struct{}, len(existingDeltaKeys))
+	for _, key := range existingDeltaKeys {
+		existing[key] = struct{}{}
+	}
 	for attempt := 0; attempt < treeCASAttempts; attempt++ {
 		state, generation, exists, err := s.loadDerivedReducerState(ctx)
 		if err != nil || !exists || len(state.AppliedDeltaIDs) == 0 {
@@ -96,11 +106,7 @@ func (s *TreeStore) compactDerivedTokens(ctx context.Context) (int, error) {
 		}
 		kept := make([]string, 0, len(state.AppliedDeltaIDs))
 		for _, token := range state.AppliedDeltaIDs {
-			_, exists, getErr := s.objects.Get(ctx, s.treeDerivedDeltaKey(token))
-			if getErr != nil {
-				return 0, getErr
-			}
-			if exists {
+			if _, found := existing[s.treeDerivedDeltaKey(token)]; found {
 				kept = append(kept, token)
 			}
 		}
@@ -133,8 +139,35 @@ func (s *TreeStore) ReduceDerivedDeltas(ctx context.Context, options TreeDerived
 	if err != nil {
 		return result, err
 	}
-	defer lease.release()
-	keys, err := s.objects.List(ctx, s.treeDerivedDeltaPrefix())
+	workCtx, cancelWork := context.WithCancel(ctx)
+	keepAliveDone := make(chan error, 1)
+	go func() {
+		period := lease.ttl / 3
+		if period < 10*time.Millisecond {
+			period = 10 * time.Millisecond
+		}
+		ticker := time.NewTicker(period)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-workCtx.Done():
+				keepAliveDone <- nil
+				return
+			case <-ticker.C:
+				if renewErr := lease.renew(workCtx); renewErr != nil {
+					cancelWork()
+					keepAliveDone <- renewErr
+					return
+				}
+			}
+		}
+	}()
+	defer func() {
+		cancelWork()
+		<-keepAliveDone
+		lease.release()
+	}()
+	keys, err := s.objects.List(workCtx, s.treeDerivedDeltaPrefix())
 	if err != nil {
 		return result, err
 	}
@@ -146,70 +179,95 @@ func (s *TreeStore) ReduceDerivedDeltas(ctx context.Context, options TreeDerived
 		generation int64
 		delta      TreeDerivedDelta
 	}
+	objectsByKey := make([]pendingDerivedObject, len(keys))
+	readErrors := make([]error, len(keys))
+	tasks := make([]func(context.Context) error, 0, len(keys))
+	for index, key := range keys {
+		index, key := index, key
+		tasks = append(tasks, func(taskCtx context.Context) error {
+			o, ok, getErr := s.objects.Get(taskCtx, key)
+			if getErr != nil {
+				readErrors[index] = getErr
+				return nil
+			}
+			if !ok {
+				return nil
+			}
+			var delta TreeDerivedDelta
+			if getErr = json.Unmarshal(o.Data, &delta); getErr != nil {
+				readErrors[index] = fmt.Errorf("decode derived metadata delta %q: %w", key, getErr)
+				return nil
+			}
+			if delta.Version != treeDerivedSchemaVersion || strings.TrimSpace(delta.TransactionToken) == "" {
+				readErrors[index] = fmt.Errorf("invalid derived metadata delta %q", key)
+				return nil
+			}
+			objectsByKey[index] = pendingDerivedObject{key: key, generation: o.Generation, delta: delta}
+			return nil
+		})
+	}
+	if err = runTreeImportTasks(workCtx, 32, tasks); err != nil {
+		return result, err
+	}
 	objects := make([]pendingDerivedObject, 0, len(keys))
-	for _, key := range keys {
-		if err = lease.renew(ctx); err != nil {
-			return result, err
+	for index, object := range objectsByKey {
+		if readErrors[index] != nil {
+			passErrors = append(passErrors, readErrors[index])
+		} else if object.key != "" {
+			objects = append(objects, object)
 		}
-		o, ok, getErr := s.objects.Get(ctx, key)
-		if getErr != nil {
-			passErrors = append(passErrors, getErr)
-			continue
-		}
-		if !ok {
-			continue
-		}
-		var delta TreeDerivedDelta
-		if getErr = json.Unmarshal(o.Data, &delta); getErr != nil {
-			passErrors = append(passErrors, fmt.Errorf("decode derived metadata delta %q: %w", key, getErr))
-			continue
-		}
-		if delta.Version != treeDerivedSchemaVersion || strings.TrimSpace(delta.TransactionToken) == "" {
-			passErrors = append(passErrors, fmt.Errorf("invalid derived metadata delta %q", key))
-			continue
-		}
-		objects = append(objects, pendingDerivedObject{key: key, generation: o.Generation, delta: delta})
 	}
 	deltas := make([]TreeDerivedDelta, 0, len(objects))
 	for _, object := range objects {
 		deltas = append(deltas, object.delta)
 	}
-	applied, rebuilt, applyErr := s.applyDerivedDeltaBatch(ctx, deltas, options.RebuildDirectory, options.RebuildDirectories)
+	applied, rebuilt, applyErr := s.applyDerivedDeltaBatch(workCtx, deltas, options.RebuildDirectory, options.RebuildDirectories)
 	result.DirectoriesRebuilt += rebuilt
 	if applyErr != nil {
 		passErrors = append(passErrors, applyErr)
 	} else {
+		var finalizeMu sync.Mutex
+		finalizeTasks := make([]func(context.Context) error, 0, len(objects))
 		for _, object := range objects {
-			if applied[object.delta.TransactionToken] {
-				result.Applied++
-			} else {
-				result.Replayed++
-			}
-			if markErr := MarkTreeV4DerivedApplied(ctx, s, object.delta.TransactionToken); markErr != nil {
-				passErrors = append(passErrors, markErr)
-				continue
-			}
-			if deleteErr := s.objects.Delete(ctx, object.key, &object.generation); deleteErr != nil {
-				passErrors = append(passErrors, deleteErr)
-			}
+			object := object
+			finalizeTasks = append(finalizeTasks, func(taskCtx context.Context) error {
+				markErr := MarkTreeV4DerivedApplied(taskCtx, s, object.delta.TransactionToken)
+				if markErr == nil {
+					markErr = s.objects.Delete(taskCtx, object.key, &object.generation)
+				}
+				finalizeMu.Lock()
+				defer finalizeMu.Unlock()
+				if applied[object.delta.TransactionToken] {
+					result.Applied++
+				} else {
+					result.Replayed++
+				}
+				if markErr != nil {
+					passErrors = append(passErrors, markErr)
+				}
+				return nil
+			})
+		}
+		if finalizeErr := runTreeImportTasks(workCtx, 32, finalizeTasks); finalizeErr != nil {
+			passErrors = append(passErrors, finalizeErr)
 		}
 	}
-	if compacted, compactErr := s.compactDerivedTokens(ctx); compactErr != nil {
-		passErrors = append(passErrors, compactErr)
-	} else {
-		result.CompactedTokens = compacted
-	}
-	state, _, _, stateErr := s.loadDerivedReducerState(ctx)
-	if stateErr != nil {
-		passErrors = append(passErrors, stateErr)
-	} else if publishErr := s.publishDerivedStats(ctx, state); publishErr != nil {
-		passErrors = append(passErrors, publishErr)
-	}
-	pending, listErr := s.objects.List(ctx, s.treeDerivedDeltaPrefix())
+	pending, listErr := s.objects.List(workCtx, s.treeDerivedDeltaPrefix())
 	if listErr != nil {
 		passErrors = append(passErrors, listErr)
 	} else {
 		result.Pending = len(pending)
+	}
+	if compacted, compactErr := s.compactDerivedTokens(workCtx, pending); compactErr != nil {
+		passErrors = append(passErrors, compactErr)
+	} else {
+		result.CompactedTokens = compacted
+	}
+	state, _, _, stateErr := s.loadDerivedReducerState(workCtx)
+	if stateErr != nil {
+		passErrors = append(passErrors, stateErr)
+	} else if publishErr := s.publishDerivedStats(workCtx, state); publishErr != nil {
+		passErrors = append(passErrors, publishErr)
 	}
 	return result, errors.Join(passErrors...)
 }
