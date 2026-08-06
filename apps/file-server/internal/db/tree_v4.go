@@ -103,11 +103,13 @@ type treeV4HeldLease struct {
 }
 
 type treeV4Mutation struct {
-	key           string
-	value         any
-	delete        bool
-	requireAbsent bool
-	fence         int64
+	key                string
+	value              any
+	delete             bool
+	requireAbsent      bool
+	fence              int64
+	expectedGeneration int64
+	enforceGeneration  bool
 }
 
 type treeV4DerivedPayload struct {
@@ -257,11 +259,15 @@ func (n *treeV4Namespace) visibleEnvelope(ctx context.Context, key string) (json
 		}
 		if exists && transaction.Status == "committed" {
 			if envelope.Pending.Delete {
-				n.promoteEnvelope(ctx, key, object.Generation, envelope)
+				if promotedGeneration, promoteErr := n.promoteEnvelopeStrict(ctx, key, object.Generation, envelope); promoteErr == nil {
+					object.Generation = promotedGeneration
+				}
 				return nil, object.Generation, false, nil
 			}
 			value = envelope.Pending.Value
-			n.promoteEnvelope(ctx, key, object.Generation, envelope)
+			if promotedGeneration, promoteErr := n.promoteEnvelopeStrict(ctx, key, object.Generation, envelope); promoteErr == nil {
+				object.Generation = promotedGeneration
+			}
 		}
 	}
 	if len(value) == 0 {
@@ -271,12 +277,12 @@ func (n *treeV4Namespace) visibleEnvelope(ctx context.Context, key string) (json
 }
 
 func (n *treeV4Namespace) promoteEnvelope(ctx context.Context, key string, generation int64, envelope treeV4Envelope) {
-	_ = n.promoteEnvelopeStrict(ctx, key, generation, envelope)
+	_, _ = n.promoteEnvelopeStrict(ctx, key, generation, envelope)
 }
 
-func (n *treeV4Namespace) promoteEnvelopeStrict(ctx context.Context, key string, generation int64, envelope treeV4Envelope) error {
+func (n *treeV4Namespace) promoteEnvelopeStrict(ctx context.Context, key string, generation int64, envelope treeV4Envelope) (int64, error) {
 	if envelope.Pending == nil {
-		return nil
+		return generation, nil
 	}
 	if envelope.Pending.Delete {
 		envelope.Current = nil
@@ -285,8 +291,7 @@ func (n *treeV4Namespace) promoteEnvelopeStrict(ctx context.Context, key string,
 	}
 	envelope.Pending = nil
 	data, _ := marshalTree(envelope)
-	_, err := n.store.objects.Put(ctx, key, data, &generation)
-	return err
+	return n.store.objects.Put(ctx, key, data, &generation)
 }
 
 func (n *treeV4Namespace) readNode(ctx context.Context, id string) (treeV4Node, bool, error) {
@@ -300,18 +305,23 @@ func (n *treeV4Namespace) readNode(ctx context.Context, id string) (treeV4Node, 
 }
 
 func (n *treeV4Namespace) readShard(ctx context.Context, directoryID string, shard int) (treeV4DirectoryShard, bool, error) {
-	raw, _, found, err := n.visibleEnvelope(ctx, n.shardKey(directoryID, shard))
+	value, _, found, err := n.readShardSnapshot(ctx, directoryID, shard)
+	return value, found, err
+}
+
+func (n *treeV4Namespace) readShardSnapshot(ctx context.Context, directoryID string, shard int) (treeV4DirectoryShard, int64, bool, error) {
+	raw, generation, found, err := n.visibleEnvelope(ctx, n.shardKey(directoryID, shard))
 	if err != nil || !found {
-		return treeV4DirectoryShard{DirectoryID: directoryID, Shard: shard, Entries: map[string]treeV4DirectoryEntry{}}, found, err
+		return treeV4DirectoryShard{DirectoryID: directoryID, Shard: shard, Entries: map[string]treeV4DirectoryEntry{}}, generation, found, err
 	}
 	var value treeV4DirectoryShard
 	if err = json.Unmarshal(raw, &value); err != nil {
-		return value, true, err
+		return value, generation, true, err
 	}
 	if value.Entries == nil {
 		value.Entries = map[string]treeV4DirectoryEntry{}
 	}
-	return value, true, nil
+	return value, generation, true, nil
 }
 
 func (n *treeV4Namespace) resolve(ctx context.Context, path string) (treeV4Node, bool, error) {
@@ -658,6 +668,9 @@ func (n *treeV4Namespace) prepareMutation(ctx context.Context, transactionID str
 				continue
 			}
 		}
+		if mutation.enforceGeneration && generation != mutation.expectedGeneration {
+			return ErrMetadataConflict
+		}
 		if mutation.requireAbsent && len(envelope.Current) != 0 {
 			return ErrMetadataConflict
 		}
@@ -733,6 +746,14 @@ func (n *treeV4Namespace) normalizeEnvelope(ctx context.Context, key string, gen
 }
 
 func (n *treeV4Namespace) transact(ctx context.Context, resources []string, derived *treeV4DerivedPayload, build func(context.Context, map[string]int64) ([]treeV4Mutation, any, error)) (any, string, error) {
+	return n.transactWithLeases(ctx, resources, derived, true, build)
+}
+
+func (n *treeV4Namespace) transactOptimistic(ctx context.Context, resources []string, derived *treeV4DerivedPayload, build func(context.Context, map[string]int64) ([]treeV4Mutation, any, error)) (any, string, error) {
+	return n.transactWithLeases(ctx, resources, derived, false, build)
+}
+
+func (n *treeV4Namespace) transactWithLeases(ctx context.Context, resources []string, derived *treeV4DerivedPayload, useLeases bool, build func(context.Context, map[string]int64) ([]treeV4Mutation, any, error)) (any, string, error) {
 	normalized, err := n.normalizeLeaseResources(resources)
 	if err != nil {
 		return nil, "", err
@@ -750,7 +771,7 @@ func (n *treeV4Namespace) transact(ctx context.Context, resources []string, deri
 			*derived = *baseline
 			derived.AncestorDirectoryIDs = append([]string(nil), baseline.AncestorDirectoryIDs...)
 		}
-		result, id, transactErr := n.transactOnce(ctx, normalized, derived, build)
+		result, id, transactErr := n.transactOnce(ctx, normalized, derived, useLeases, build)
 		lastID = id
 		if !errors.Is(transactErr, ErrMetadataConflict) {
 			return result, id, transactErr
@@ -774,7 +795,7 @@ func v4TransactionRetryDelay(resources []string, seed string, attempt int) time.
 	return time.Duration(attempt+1)*25*time.Millisecond + jitter
 }
 
-func (n *treeV4Namespace) transactOnce(ctx context.Context, resources []string, derived *treeV4DerivedPayload, build func(context.Context, map[string]int64) ([]treeV4Mutation, any, error)) (any, string, error) {
+func (n *treeV4Namespace) transactOnce(ctx context.Context, resources []string, derived *treeV4DerivedPayload, useLeases bool, build func(context.Context, map[string]int64) ([]treeV4Mutation, any, error)) (any, string, error) {
 	id := uuid.NewString()
 	var err error
 	resources, err = n.normalizeLeaseResources(resources)
@@ -789,11 +810,14 @@ func (n *treeV4Namespace) transactOnce(ctx context.Context, resources []string, 
 	if err != nil {
 		return nil, "", err
 	}
-	leases, err := n.acquireLeases(ctx, id, resources, leaseTTL)
-	if err != nil {
-		transaction.Status = "aborted"
-		_, _ = n.writeTransaction(context.Background(), transaction, generation)
-		return nil, "", err
+	var leases []treeV4HeldLease
+	if useLeases {
+		leases, err = n.acquireLeases(ctx, id, resources, leaseTTL)
+		if err != nil {
+			transaction.Status = "aborted"
+			_, _ = n.writeTransaction(context.Background(), transaction, generation)
+			return nil, "", err
+		}
 	}
 	defer func() { n.releaseLeases(leases) }()
 	fences := make(map[string]int64, len(leases))
@@ -802,6 +826,7 @@ func (n *treeV4Namespace) transactOnce(ctx context.Context, resources []string, 
 	}
 	mutations, result, err := build(ctx, fences)
 	if err == nil {
+		sort.SliceStable(mutations, func(i, j int) bool { return mutations[i].key < mutations[j].key })
 		transaction.Participants = make([]string, 0, len(mutations))
 		seen := map[string]bool{}
 		for _, mutation := range mutations {
@@ -830,7 +855,7 @@ func (n *treeV4Namespace) transactOnce(ctx context.Context, resources []string, 
 			}
 		}
 	}
-	if err == nil {
+	if err == nil && useLeases {
 		err = n.verifyLeases(ctx, id, leases)
 	}
 	if err != nil {
@@ -876,7 +901,7 @@ func (n *treeV4Namespace) finalizeCommittedTransaction(ctx context.Context, tran
 			return err
 		}
 		if envelope.Pending != nil && envelope.Pending.TransactionID == transaction.ID {
-			if err = n.promoteEnvelopeStrict(ctx, participant, object.Generation, envelope); err != nil {
+			if _, err = n.promoteEnvelopeStrict(ctx, participant, object.Generation, envelope); err != nil {
 				return err
 			}
 		}
@@ -1274,9 +1299,12 @@ func (n *treeV4Namespace) renamePath(ctx context.Context, from, to string) error
 	if err != nil || !found {
 		return ErrNotFound
 	}
-	toParent, toAncestors, found, err := n.resolveDirectoryChain(ctx, toParentPath)
-	if err != nil || !found || !toParent.IsDirectory {
-		return ErrNotFound
+	toParent, toAncestors := fromParent, append([]string(nil), fromAncestors...)
+	if fromParentPath != toParentPath {
+		toParent, toAncestors, found, err = n.resolveDirectoryChain(ctx, toParentPath)
+		if err != nil || !found || !toParent.IsDirectory {
+			return ErrNotFound
+		}
 	}
 	fromName, toName := pathpkg.Base(from), pathpkg.Base(to)
 	fromShardID, toShardID := n.shardFor(fromName), n.shardFor(toName)
@@ -1285,16 +1313,18 @@ func (n *treeV4Namespace) renamePath(ctx context.Context, from, to string) error
 	if fromParent.NodeID != toParent.NodeID {
 		derived.AncestorDirectoryIDs = append(fromAncestors, toAncestors...)
 	}
-	_, _, err = n.transact(ctx, resources, derived, func(buildCtx context.Context, fences map[string]int64) ([]treeV4Mutation, any, error) {
+	_, _, err = n.transactOptimistic(ctx, resources, derived, func(buildCtx context.Context, fences map[string]int64) ([]treeV4Mutation, any, error) {
 		liveFromParent, fromExists, buildErr := n.resolve(buildCtx, fromParentPath)
 		if buildErr != nil || !fromExists || liveFromParent.NodeID != fromParent.NodeID {
 			return nil, nil, ErrMetadataConflict
 		}
-		liveToParent, toExists, buildErr := n.resolve(buildCtx, toParentPath)
-		if buildErr != nil || !toExists || liveToParent.NodeID != toParent.NodeID {
-			return nil, nil, ErrMetadataConflict
+		if fromParentPath != toParentPath {
+			liveToParent, toExists, resolveErr := n.resolve(buildCtx, toParentPath)
+			if resolveErr != nil || !toExists || liveToParent.NodeID != toParent.NodeID {
+				return nil, nil, ErrMetadataConflict
+			}
 		}
-		fromShard, _, buildErr := n.readShard(buildCtx, fromParent.NodeID, fromShardID)
+		fromShard, fromGeneration, _, buildErr := n.readShardSnapshot(buildCtx, fromParent.NodeID, fromShardID)
 		if buildErr != nil {
 			return nil, nil, buildErr
 		}
@@ -1303,9 +1333,10 @@ func (n *treeV4Namespace) renamePath(ctx context.Context, from, to string) error
 			return nil, nil, ErrNotFound
 		}
 		toShard := fromShard
+		toGeneration := fromGeneration
 		sameShard := fromParent.NodeID == toParent.NodeID && fromShardID == toShardID
 		if !sameShard {
-			toShard, _, buildErr = n.readShard(buildCtx, toParent.NodeID, toShardID)
+			toShard, toGeneration, _, buildErr = n.readShardSnapshot(buildCtx, toParent.NodeID, toShardID)
 			if buildErr != nil {
 				return nil, nil, buildErr
 			}
@@ -1321,11 +1352,14 @@ func (n *treeV4Namespace) renamePath(ctx context.Context, from, to string) error
 			delete(fromShard.Entries, fromName)
 			fromShard.Entries[toName] = entry
 			resource := fmt.Sprintf("directory:%s:shard:%03d", fromParent.NodeID, fromShardID)
-			return []treeV4Mutation{{key: n.shardKey(fromParent.NodeID, fromShardID), value: fromShard, fence: fences[resource]}}, nil, nil
+			return []treeV4Mutation{{key: n.shardKey(fromParent.NodeID, fromShardID), value: fromShard, fence: fences[resource], expectedGeneration: fromGeneration, enforceGeneration: true}}, nil, nil
 		}
 		fromResource := fmt.Sprintf("directory:%s:shard:%03d", fromParent.NodeID, fromShardID)
 		toResource := fmt.Sprintf("directory:%s:shard:%03d", toParent.NodeID, toShardID)
-		return []treeV4Mutation{{key: n.shardKey(fromParent.NodeID, fromShardID), value: fromShard, fence: fences[fromResource]}, {key: n.shardKey(toParent.NodeID, toShardID), value: toShard, fence: fences[toResource]}}, nil, nil
+		return []treeV4Mutation{
+			{key: n.shardKey(fromParent.NodeID, fromShardID), value: fromShard, fence: fences[fromResource], expectedGeneration: fromGeneration, enforceGeneration: true},
+			{key: n.shardKey(toParent.NodeID, toShardID), value: toShard, fence: fences[toResource], expectedGeneration: toGeneration, enforceGeneration: true},
+		}, nil, nil
 	})
 	return err
 }

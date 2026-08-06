@@ -833,6 +833,109 @@ type observeV4WritesBackend struct {
 	delay     time.Duration
 }
 
+type countV4LeaseAccessBackend struct {
+	treeBackend
+	mu       sync.Mutex
+	accesses int
+}
+
+func (backend *countV4LeaseAccessBackend) observe(key string) {
+	if strings.Contains(key, "/v4/leases/mutations/") {
+		backend.mu.Lock()
+		backend.accesses++
+		backend.mu.Unlock()
+	}
+}
+
+func (backend *countV4LeaseAccessBackend) Get(ctx context.Context, key string) (treeObject, bool, error) {
+	backend.observe(key)
+	return backend.treeBackend.Get(ctx, key)
+}
+
+func (backend *countV4LeaseAccessBackend) Put(ctx context.Context, key string, data []byte, expected *int64) (int64, error) {
+	backend.observe(key)
+	return backend.treeBackend.Put(ctx, key, data, expected)
+}
+
+func (backend *countV4LeaseAccessBackend) Delete(ctx context.Context, key string, expected *int64) error {
+	backend.observe(key)
+	return backend.treeBackend.Delete(ctx, key, expected)
+}
+
+func TestTreeV4SameParentRenameUsesParticipantCASWithoutLeaseRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	local, err := newLocalTreeBackend(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := &countV4LeaseAccessBackend{treeBackend: local}
+	store, err := newTreeStoreV4(backend, "rename-cas-v4", TreeV4Options{ShardCount: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	if err = store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if store.v4.shardFor("fixture-a.txt") == store.v4.shardFor("fixture-b.txt") {
+		t.Fatal("fixture names must exercise two participant shards")
+	}
+	if _, _, err = store.ReplaceFileConditional(ctx, "fixture-a.txt", "object-a", 1, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	store.v4.waitFinalizers()
+	backend.mu.Lock()
+	backend.accesses = 0
+	backend.mu.Unlock()
+	if err = store.RenamePath(ctx, "fixture-a.txt", "fixture-b.txt"); err != nil {
+		t.Fatal(err)
+	}
+	store.v4.waitFinalizers()
+	backend.mu.Lock()
+	accesses := backend.accesses
+	backend.mu.Unlock()
+	if accesses != 0 {
+		t.Fatalf("rename mutation lease accesses=%d, want 0", accesses)
+	}
+}
+
+func TestTreeV4OptimisticSamePathRenameHasSingleWinner(t *testing.T) {
+	ctx := context.Background()
+	store := newTestTreeV4(t, TreeV4Options{ShardCount: 64})
+	if _, _, err := store.ReplaceFileConditional(ctx, "fixture-a.txt", "object-a", 1, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	store.v4.waitFinalizers()
+	const contenders = 12
+	start := make(chan struct{})
+	results := make(chan error, contenders)
+	var wg sync.WaitGroup
+	for index := 0; index < contenders; index++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			results <- store.RenamePath(ctx, "fixture-a.txt", "fixture-b.txt")
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	successes := 0
+	for renameErr := range results {
+		if renameErr == nil {
+			successes++
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("rename successes=%d, want 1", successes)
+	}
+	page, err := store.ListDirectChildren(ctx, "", DirectChildrenOptions{})
+	if err != nil || page.Total != 1 || page.Records[0].LogicPath != "fixture-b.txt" {
+		t.Fatalf("page=%+v err=%v", page, err)
+	}
+}
+
 func (backend *observeV4WritesBackend) Put(ctx context.Context, key string, data []byte, expected *int64) (int64, error) {
 	observed := strings.Contains(key, "/v4/directories/")
 	if observed {
