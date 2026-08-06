@@ -439,32 +439,9 @@ FOR UPDATE
 	if err != nil {
 		return false, err
 	}
-	matched := make(map[string]struct{})
-	matchedPaths := make([]bool, len(cleanPaths))
-	for _, record := range active {
-		coversRequestedPath := false
-		for index, lockPath := range cleanPaths {
-			if davLockCoversPath(record, lockPath) {
-				coversRequestedPath = true
-				matchedPaths[index] = true
-				break
-			}
-		}
-		if !coversRequestedPath {
-			continue
-		}
-		if _, ok := providedTokens[record.Token]; !ok {
-			return false, nil
-		}
-		if record.HeldBy != nil && *record.HeldBy != claimID {
-			return false, nil
-		}
-		matched[record.Token] = struct{}{}
-	}
-	for _, pathMatched := range matchedPaths {
-		if !pathMatched {
-			return false, nil
-		}
+	matched, claimable := claimableDAVLocks(active, cleanPaths, providedTokens, claimID)
+	if !claimable {
+		return false, nil
 	}
 
 	matchedTokens := make([]string, 0, len(matched))
@@ -484,6 +461,30 @@ WHERE token = ANY($3)
 		return false, err
 	}
 	return true, nil
+}
+
+func claimableDAVLocks(active []DAVLockRecord, paths []string, providedTokens map[string]struct{}, claimID string) (map[string]struct{}, bool) {
+	matched := make(map[string]struct{})
+	for _, record := range active {
+		coversRequestedPath := false
+		for _, lockPath := range paths {
+			if davLockCoversPath(record, lockPath) {
+				coversRequestedPath = true
+				break
+			}
+		}
+		if !coversRequestedPath {
+			continue
+		}
+		if _, ok := providedTokens[record.Token]; !ok {
+			return nil, false
+		}
+		if record.HeldBy != nil && *record.HeldBy != claimID {
+			return nil, false
+		}
+		matched[record.Token] = struct{}{}
+	}
+	return matched, true
 }
 
 func (s *PostgresStore) ReleaseDAVLockClaim(ctx context.Context, claimID string) error {

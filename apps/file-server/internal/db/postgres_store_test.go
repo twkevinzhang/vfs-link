@@ -35,3 +35,30 @@ func TestPostgresRenameErrorMapsUniqueConstraintToPathConflict(t *testing.T) {
 		t.Fatalf("postgresRenameError() = %v, want ErrPathConflict", err)
 	}
 }
+
+func TestClaimableDAVLocksAllowsUnlockedMoveDestination(t *testing.T) {
+	active := []DAVLockRecord{{Token: "source-token", Path: "/docs/source.txt", Depth: 0}}
+	provided := map[string]struct{}{"source-token": {}}
+
+	matched, ok := claimableDAVLocks(active, []string{"/docs/source.txt", "/docs/renamed.txt"}, provided, "claim")
+	if !ok {
+		t.Fatal("claimableDAVLocks() rejected an unlocked MOVE destination")
+	}
+	if _, found := matched["source-token"]; !found || len(matched) != 1 {
+		t.Fatalf("claimableDAVLocks() matched = %#v, want only source-token", matched)
+	}
+}
+
+func TestClaimableDAVLocksRejectsMissingOrHeldToken(t *testing.T) {
+	active := []DAVLockRecord{{Token: "source-token", Path: "/docs/source.txt", Depth: 0}}
+	if _, ok := claimableDAVLocks(active, []string{"/docs/source.txt"}, nil, "claim"); ok {
+		t.Fatal("claimableDAVLocks() accepted a missing token")
+	}
+
+	otherClaim := "other-claim"
+	active[0].HeldBy = &otherClaim
+	provided := map[string]struct{}{"source-token": {}}
+	if _, ok := claimableDAVLocks(active, []string{"/docs/source.txt"}, provided, "claim"); ok {
+		t.Fatal("claimableDAVLocks() accepted a lock held by another claim")
+	}
+}
