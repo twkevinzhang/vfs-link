@@ -332,7 +332,7 @@ func run(ctx context.Context, cfg config) error {
 			_ = cleanup(cleanupCtx, client, root)
 		}
 	}()
-	if err = createFixtures(ctx, client, clientFixtures); err != nil {
+	if err = createFixtures(ctx, client, clientFixtures, cfg.retries); err != nil {
 		cleanupNeeded = true
 		return fmt.Errorf("fixture setup: %w", err)
 	}
@@ -435,7 +435,7 @@ func runSamePathContention(ctx context.Context, client *apiClient, f *fixture, c
 	return gate, nil
 }
 
-func createFixtures(ctx context.Context, client *apiClient, clients [][]*fixture) error {
+func createFixtures(ctx context.Context, client *apiClient, clients [][]*fixture, maxRetries int) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	errs := make(chan error, len(clients))
@@ -446,7 +446,7 @@ func createFixtures(ctx context.Context, client *apiClient, clients [][]*fixture
 		go func() {
 			defer wg.Done()
 			for _, item := range fixtures {
-				if err := client.upload(ctx, item, false); err != nil {
+				if err := createFixture(ctx, client, item, maxRetries); err != nil {
 					errs <- err
 					cancel()
 					return
@@ -457,6 +457,34 @@ func createFixtures(ctx context.Context, client *apiClient, clients [][]*fixture
 	wg.Wait()
 	close(errs)
 	return errors.Join(channelErrors(errs)...)
+}
+
+func createFixture(ctx context.Context, client *apiClient, item *fixture, maxRetries int) error {
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		err := client.upload(ctx, item, false)
+		if err == nil {
+			return nil
+		}
+		// The response can be lost after upload completion. Reconcile the unique
+		// fixture path before retrying creation with overwrite disabled.
+		if listed, listErr := client.list(ctx, item.parent); listErr == nil {
+			for _, candidate := range listed.Entries {
+				if candidate.Path == item.currentPath && candidate.Size == int64(len(item.payload)) {
+					item.physicalHash = candidate.PhysicalHash
+					return nil
+				}
+			}
+		}
+		if attempt == maxRetries || !retryable(err) {
+			return fmt.Errorf("create fixture after %d retries: %w", attempt, err)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(1<<attempt) * 500 * time.Millisecond):
+		}
+	}
+	return errors.New("fixture retry loop exhausted")
 }
 
 func fixtureShard(name string, shards int) int {
