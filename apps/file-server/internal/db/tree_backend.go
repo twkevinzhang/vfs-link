@@ -24,7 +24,6 @@ import (
 
 const treeCASAttempts = 8
 const treeGCSWriteHedgeDelay = 500 * time.Millisecond
-const treeGCSWriteAttempts = 5
 
 var ErrMetadataConflict = errors.New("metadata changed concurrently")
 
@@ -255,54 +254,19 @@ func (b *gcsTreeBackend) Get(ctx context.Context, key string) (treeObject, bool,
 }
 func (b *gcsTreeBackend) Put(ctx context.Context, key string, data []byte, expected *int64) (int64, error) {
 	if expected != nil {
-		return runRetriedConditionalTreeWrite(
-			ctx, treeGCSWriteAttempts, treeGCSWriteHedgeDelay, 100*time.Millisecond,
-			func(writeCtx context.Context) (int64, error) { return b.putOnce(writeCtx, key, data, expected) },
-			func(writeErr error) (int64, error) {
-				return b.resolveConditionalWrite(ctx, key, data, expected, writeErr)
-			},
-			storage.ShouldRetry,
-		)
+		generation, err := runHedgedTreeWrite(ctx, treeGCSWriteHedgeDelay, func(writeCtx context.Context) (int64, error) {
+			return b.putOnce(writeCtx, key, data, expected)
+		})
+		if err != nil {
+			return b.resolveConditionalWrite(ctx, key, data, expected, err)
+		}
+		return generation, nil
 	}
 	generation, err := b.putOnce(ctx, key, data, expected)
 	if err != nil {
 		return b.resolveConditionalWrite(ctx, key, data, expected, err)
 	}
 	return generation, nil
-}
-
-func runRetriedConditionalTreeWrite(
-	ctx context.Context,
-	attempts int,
-	hedgeDelay time.Duration,
-	retryBase time.Duration,
-	write func(context.Context) (int64, error),
-	reconcile func(error) (int64, error),
-	retryable func(error) bool,
-) (int64, error) {
-	var lastErr error
-	for attempt := 0; attempt < attempts; attempt++ {
-		generation, err := runHedgedTreeWrite(ctx, hedgeDelay, write)
-		if err == nil {
-			return generation, nil
-		}
-		lastErr = err
-		if resolvedGeneration, resolveErr := reconcile(err); resolveErr == nil {
-			return resolvedGeneration, nil
-		} else {
-			lastErr = resolveErr
-		}
-		if !retryable(err) || attempt == attempts-1 {
-			break
-		}
-		delay := retryBase * time.Duration(1<<attempt)
-		select {
-		case <-ctx.Done():
-			return 0, ctx.Err()
-		case <-time.After(delay):
-		}
-	}
-	return 0, lastErr
 }
 
 type treeWriteResult struct {
@@ -359,7 +323,7 @@ func (b *gcsTreeBackend) putOnce(ctx context.Context, key string, data []byte, e
 		}
 	}
 	w := o.NewWriter(ctx)
-	configureTreeMetadataWriter(w, expected != nil)
+	configureTreeMetadataWriter(w)
 	if _, err := w.Write(data); err != nil {
 		_ = w.Close()
 		return 0, err
@@ -370,20 +334,12 @@ func (b *gcsTreeBackend) putOnce(ctx context.Context, key string, data []byte, e
 	return w.Attrs().Generation, nil
 }
 
-func configureTreeMetadataWriter(w *storage.Writer, conditional bool) {
+func configureTreeMetadataWriter(w *storage.Writer) {
 	w.ContentType = "application/json"
 	w.CacheControl = "no-store"
-	if conditional {
-		// Tree objects are small JSON envelopes. A zero chunk size writes each
-		// CAS in one request instead of opening a resumable-upload session. Put
-		// retains the full payload and retries the whole conditional request on
-		// transient failures, preserving generation preconditions.
-		w.ChunkSize = 0
-		return
-	}
-	// Legacy unconditional writes cannot safely replay after an ambiguous
-	// response if another writer has since changed the object. Keep the SDK's
-	// resumable retry semantics for that compatibility path.
+	// Tree objects are small JSON envelopes. Keep resumable-upload retries for
+	// transient GCS 429/5xx responses, but cap each concurrent writer at the
+	// minimum chunk size instead of the 16 MiB default buffer.
 	w.ChunkSize = 256 << 10
 }
 

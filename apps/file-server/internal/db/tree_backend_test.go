@@ -51,59 +51,6 @@ func TestRunHedgedTreeWriteReturnsErrorWhenBothAttemptsFail(t *testing.T) {
 	}
 }
 
-func TestRunRetriedConditionalTreeWriteRetriesTransientFailure(t *testing.T) {
-	transient := errors.New("transient")
-	var calls atomic.Int32
-	generation, err := runRetriedConditionalTreeWrite(
-		context.Background(), 3, time.Second, 0,
-		func(context.Context) (int64, error) {
-			if calls.Add(1) == 1 {
-				return 0, transient
-			}
-			return 42, nil
-		},
-		func(err error) (int64, error) { return 0, err },
-		func(err error) bool { return errors.Is(err, transient) },
-	)
-	if err != nil || generation != 42 || calls.Load() != 2 {
-		t.Fatalf("generation=%d calls=%d err=%v", generation, calls.Load(), err)
-	}
-}
-
-func TestRunRetriedConditionalTreeWriteUsesReconciledGeneration(t *testing.T) {
-	ambiguous := errors.New("ambiguous response")
-	var calls atomic.Int32
-	generation, err := runRetriedConditionalTreeWrite(
-		context.Background(), 3, time.Second, 0,
-		func(context.Context) (int64, error) {
-			calls.Add(1)
-			return 0, ambiguous
-		},
-		func(error) (int64, error) { return 84, nil },
-		func(error) bool { return true },
-	)
-	if err != nil || generation != 84 || calls.Load() != 1 {
-		t.Fatalf("generation=%d calls=%d err=%v", generation, calls.Load(), err)
-	}
-}
-
-func TestRunRetriedConditionalTreeWriteStopsOnPermanentFailure(t *testing.T) {
-	permanent := errors.New("permanent")
-	var calls atomic.Int32
-	_, err := runRetriedConditionalTreeWrite(
-		context.Background(), 3, time.Second, 0,
-		func(context.Context) (int64, error) {
-			calls.Add(1)
-			return 0, permanent
-		},
-		func(err error) (int64, error) { return 0, err },
-		func(error) bool { return false },
-	)
-	if !errors.Is(err, permanent) || calls.Load() != 1 {
-		t.Fatalf("calls=%d err=%v", calls.Load(), err)
-	}
-}
-
 func TestClassifyGCSSaveErrorRecognizesTransportPreconditions(t *testing.T) {
 	tests := []struct {
 		name string

@@ -14,22 +14,14 @@ import (
 	"cloud.google.com/go/storage"
 )
 
-func TestConfigureTreeMetadataWriterUsesSingleRequestForConditionalWrite(t *testing.T) {
+func TestConfigureTreeMetadataWriterUsesBoundedRetryBuffer(t *testing.T) {
 	w := &storage.Writer{ChunkSize: 16 << 20}
-	configureTreeMetadataWriter(w, true)
-	if w.ChunkSize != 0 {
-		t.Fatalf("chunk size=%d, want 0", w.ChunkSize)
+	configureTreeMetadataWriter(w)
+	if w.ChunkSize != 256<<10 {
+		t.Fatalf("chunk size=%d, want %d", w.ChunkSize, 256<<10)
 	}
 	if w.ContentType != "application/json" || w.CacheControl != "no-store" {
 		t.Fatalf("content type=%q cache control=%q", w.ContentType, w.CacheControl)
-	}
-}
-
-func TestConfigureTreeMetadataWriterKeepsRetryBufferForUnconditionalWrite(t *testing.T) {
-	w := &storage.Writer{ChunkSize: 16 << 20}
-	configureTreeMetadataWriter(w, false)
-	if w.ChunkSize != 256<<10 {
-		t.Fatalf("chunk size=%d, want %d", w.ChunkSize, 256<<10)
 	}
 }
 
