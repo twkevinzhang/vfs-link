@@ -13,6 +13,46 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+func TestRunHedgedTreeReadKeepsFastPathSingleRequest(t *testing.T) {
+	var calls atomic.Int32
+	want := treeObject{Data: []byte("fast"), Generation: 42}
+	object, found, err := runHedgedTreeRead(context.Background(), time.Second, func(context.Context) (treeObject, bool, error) {
+		calls.Add(1)
+		return want, true, nil
+	})
+	if err != nil || !found || object.Generation != want.Generation || calls.Load() != 1 {
+		t.Fatalf("object=%+v found=%t calls=%d err=%v", object, found, calls.Load(), err)
+	}
+}
+
+func TestRunHedgedTreeReadUsesFirstSuccessfulResult(t *testing.T) {
+	var calls atomic.Int32
+	primaryRelease := make(chan struct{})
+	want := treeObject{Data: []byte("hedge"), Generation: 84}
+	object, found, err := runHedgedTreeRead(context.Background(), time.Millisecond, func(context.Context) (treeObject, bool, error) {
+		if calls.Add(1) == 1 {
+			<-primaryRelease
+			return treeObject{}, false, errors.New("slow primary failed")
+		}
+		return want, true, nil
+	})
+	close(primaryRelease)
+	if err != nil || !found || object.Generation != want.Generation || calls.Load() != 2 {
+		t.Fatalf("object=%+v found=%t calls=%d err=%v", object, found, calls.Load(), err)
+	}
+}
+
+func TestRunHedgedTreeReadReturnsErrorWhenBothAttemptsFail(t *testing.T) {
+	want := errors.New("read failed")
+	_, _, err := runHedgedTreeRead(context.Background(), time.Millisecond, func(context.Context) (treeObject, bool, error) {
+		time.Sleep(2 * time.Millisecond)
+		return treeObject{}, false, want
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("error=%v, want %v", err, want)
+	}
+}
+
 func TestRunHedgedTreeWriteKeepsFastPathSingleRequest(t *testing.T) {
 	var calls atomic.Int32
 	generation, err := runHedgedTreeWrite(context.Background(), time.Second, func(context.Context) (int64, error) {

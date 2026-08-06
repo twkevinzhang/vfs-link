@@ -23,6 +23,7 @@ import (
 )
 
 const treeCASAttempts = 8
+const treeGCSReadHedgeDelay = 250 * time.Millisecond
 const treeGCSWriteHedgeDelay = 500 * time.Millisecond
 
 var ErrMetadataConflict = errors.New("metadata changed concurrently")
@@ -238,6 +239,12 @@ type gcsTreeBackend struct {
 }
 
 func (b *gcsTreeBackend) Get(ctx context.Context, key string) (treeObject, bool, error) {
+	return runHedgedTreeRead(ctx, treeGCSReadHedgeDelay, func(readCtx context.Context) (treeObject, bool, error) {
+		return b.getOnce(readCtx, key)
+	})
+}
+
+func (b *gcsTreeBackend) getOnce(ctx context.Context, key string) (treeObject, bool, error) {
 	r, err := b.client.Bucket(b.bucket).Object(key).NewReader(ctx)
 	if isGCSNotFound(err) {
 		return treeObject{}, false, nil
@@ -252,6 +259,52 @@ func (b *gcsTreeBackend) Get(ctx context.Context, key string) (treeObject, bool,
 	}
 	return treeObject{Data: data, Generation: r.Attrs.Generation}, true, nil
 }
+
+type treeReadResult struct {
+	object treeObject
+	found  bool
+	err    error
+}
+
+func runHedgedTreeRead(ctx context.Context, delay time.Duration, read func(context.Context) (treeObject, bool, error)) (treeObject, bool, error) {
+	readCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make(chan treeReadResult, 2)
+	start := func() {
+		go func() {
+			object, found, err := read(readCtx)
+			results <- treeReadResult{object: object, found: found, err: err}
+		}()
+	}
+	start()
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case result := <-results:
+		return result.object, result.found, result.err
+	case <-timer.C:
+		start()
+	case <-ctx.Done():
+		return treeObject{}, false, ctx.Err()
+	}
+	var firstErr error
+	for range 2 {
+		select {
+		case result := <-results:
+			if result.err == nil {
+				cancel()
+				return result.object, result.found, nil
+			}
+			if firstErr == nil {
+				firstErr = result.err
+			}
+		case <-ctx.Done():
+			return treeObject{}, false, ctx.Err()
+		}
+	}
+	return treeObject{}, false, firstErr
+}
+
 func (b *gcsTreeBackend) Put(ctx context.Context, key string, data []byte, expected *int64) (int64, error) {
 	if expected != nil {
 		generation, err := runHedgedTreeWrite(ctx, treeGCSWriteHedgeDelay, func(writeCtx context.Context) (int64, error) {
