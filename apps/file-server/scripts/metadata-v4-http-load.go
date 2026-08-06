@@ -693,13 +693,18 @@ func (c *apiClient) upload(ctx context.Context, f *fixture, overwrite bool) erro
 	if created.ID == "" || created.UploadURL == "" || created.CompleteURL == "" {
 		return errors.New("upload session response is incomplete")
 	}
-	if err = c.putUpload(ctx, created.UploadURL, created.Headers, f.payload); err != nil {
-		return err
-	}
+	putErr := c.putUpload(ctx, created.UploadURL, created.Headers, f.payload)
 	var completed uploadResponse
 	if err = c.json(ctx, http.MethodPost, created.CompleteURL, nil, &completed, http.StatusOK); err != nil {
+		if putErr != nil {
+			return errors.Join(putErr, fmt.Errorf("reconcile upload completion: %w", err))
+		}
 		return err
 	}
+	// A resumable PUT response can be lost after GCS committed the object. The
+	// completion endpoint verifies the declared size and conditionally commits
+	// the unique acceptance path, so a successful completion reconciles that
+	// ambiguous transport result without opening a second upload session.
 	if completed.Status != "complete" {
 		return errors.New("upload did not reach complete business status")
 	}
