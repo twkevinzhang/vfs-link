@@ -1396,42 +1396,49 @@ type treeV4ShardMutationSnapshot struct {
 
 func (n *treeV4Namespace) readShardMutationSnapshot(ctx context.Context, directoryID string, shardID int) (treeV4ShardMutationSnapshot, error) {
 	key := n.shardKey(directoryID, shardID)
-	object, found, err := n.store.objects.Get(ctx, key)
-	if err != nil {
-		return treeV4ShardMutationSnapshot{}, err
-	}
-	snapshot := treeV4ShardMutationSnapshot{
-		key: key,
-		shard: treeV4DirectoryShard{
-			DirectoryID: directoryID,
-			Shard:       shardID,
-			Entries:     map[string]treeV4DirectoryEntry{},
-		},
-	}
-	if !found {
+	for attempt := 0; attempt < treeCASAttempts; attempt++ {
+		object, found, err := n.store.objects.Get(ctx, key)
+		if err != nil {
+			return treeV4ShardMutationSnapshot{}, err
+		}
+		snapshot := treeV4ShardMutationSnapshot{
+			key: key,
+			shard: treeV4DirectoryShard{
+				DirectoryID: directoryID,
+				Shard:       shardID,
+				Entries:     map[string]treeV4DirectoryEntry{},
+			},
+		}
+		if !found {
+			return snapshot, nil
+		}
+		snapshot.generation = object.Generation
+		var envelope treeV4Envelope
+		if err = json.Unmarshal(object.Data, &envelope); err != nil {
+			return treeV4ShardMutationSnapshot{}, err
+		}
+		if envelope.Pending != nil {
+			if err = n.normalizeEnvelope(ctx, key, object.Generation, envelope); err != nil {
+				return treeV4ShardMutationSnapshot{}, err
+			}
+			// A prior committed transaction can leave its representation pending
+			// until the asynchronous finalizer runs. Once normalization succeeds,
+			// re-read the new generation in this attempt instead of aborting a new
+			// transaction and adding a synthetic conflict/backoff cycle.
+			continue
+		}
+		snapshot.current = append(json.RawMessage(nil), envelope.Current...)
+		if len(snapshot.current) != 0 {
+			if err = json.Unmarshal(snapshot.current, &snapshot.shard); err != nil {
+				return treeV4ShardMutationSnapshot{}, err
+			}
+			if snapshot.shard.Entries == nil {
+				snapshot.shard.Entries = map[string]treeV4DirectoryEntry{}
+			}
+		}
 		return snapshot, nil
 	}
-	snapshot.generation = object.Generation
-	var envelope treeV4Envelope
-	if err = json.Unmarshal(object.Data, &envelope); err != nil {
-		return treeV4ShardMutationSnapshot{}, err
-	}
-	if envelope.Pending != nil {
-		if err = n.normalizeEnvelope(ctx, key, object.Generation, envelope); err != nil {
-			return treeV4ShardMutationSnapshot{}, err
-		}
-		return treeV4ShardMutationSnapshot{}, ErrMetadataConflict
-	}
-	snapshot.current = append(json.RawMessage(nil), envelope.Current...)
-	if len(snapshot.current) != 0 {
-		if err = json.Unmarshal(snapshot.current, &snapshot.shard); err != nil {
-			return treeV4ShardMutationSnapshot{}, err
-		}
-		if snapshot.shard.Entries == nil {
-			snapshot.shard.Entries = map[string]treeV4DirectoryEntry{}
-		}
-	}
-	return snapshot, nil
+	return treeV4ShardMutationSnapshot{}, ErrMetadataConflict
 }
 
 func (n *treeV4Namespace) prepareShardSnapshot(ctx context.Context, transactionID string, snapshot treeV4ShardMutationSnapshot, value treeV4DirectoryShard) error {

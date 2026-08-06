@@ -920,6 +920,46 @@ func TestTreeV4SameParentRenameReturnsCommittedRecord(t *testing.T) {
 	}
 }
 
+func TestTreeV4MutationSnapshotContinuesAfterCommittedEnvelopeNormalization(t *testing.T) {
+	ctx := context.Background()
+	store := newTestTreeV4(t, TreeV4Options{ShardCount: 8})
+	if _, _, err := store.ReplaceFileConditional(ctx, "fixture.txt", "object-fixture", 7, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	store.v4.waitFinalizers()
+	shardID := store.v4.shardFor("fixture.txt")
+	key := store.v4.shardKey("root", shardID)
+	object, found, err := store.objects.Get(ctx, key)
+	if err != nil || !found {
+		t.Fatalf("shard found=%t err=%v", found, err)
+	}
+	var envelope treeV4Envelope
+	if err = json.Unmarshal(object.Data, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	transaction := treeV4Transaction{
+		ID: "committed-pending", Status: "committed", DerivedApplied: true,
+		Participants: []string{key}, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	transactionData, _ := marshalTree(transaction)
+	zero := int64(0)
+	if _, err = store.objects.Put(ctx, store.v4.transactionKey(transaction.ID), transactionData, &zero); err != nil {
+		t.Fatal(err)
+	}
+	envelope.Pending = &treeV4Pending{TransactionID: transaction.ID, Value: envelope.Current}
+	pendingData, _ := marshalTree(envelope)
+	if _, err = store.objects.Put(ctx, key, pendingData, &object.Generation); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := store.v4.readShardMutationSnapshot(ctx, "root", shardID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry, exists := snapshot.shard.Entries["fixture.txt"]; !exists || entry.Node.PhysicalHash != "object-fixture" {
+		t.Fatalf("snapshot entry=%+v exists=%t", entry, exists)
+	}
+}
+
 func TestTreeV4CachedParentChainInvalidatesAfterAncestorRename(t *testing.T) {
 	ctx := context.Background()
 	store := newTestTreeV4(t, TreeV4Options{ShardCount: 64})
