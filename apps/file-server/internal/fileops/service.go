@@ -341,18 +341,22 @@ func (s *Service) DeletePermanently(ctx context.Context, ids []string) (DeleteRe
 		return DeleteResult{}, err
 	}
 	if operations, ok := s.store.(deleteTrashOperationStore); ok {
+		if policy, ok := s.store.(durableTrashDeletePolicy); ok && policy.RequiresDurableTrashDelete() {
+			operation, err := operations.CreateDeleteTrashOperation(ctx, ids)
+			if err != nil {
+				return DeleteResult{}, err
+			}
+			s.kickOperation(operation.ID)
+			return DeleteResult{Operation: &operation}, nil
+		}
 		roots, err := s.store.ListTrash(ctx)
 		if err != nil {
 			return DeleteResult{}, err
 		}
 		wanted := stringSet(ids)
-		requiresDurableDelete := false
-		if policy, ok := s.store.(durableTrashDeletePolicy); ok {
-			requiresDurableDelete = policy.RequiresDurableTrashDelete()
-		}
 		for _, root := range roots {
 			selected := len(ids) == 0 || wanted[root.TrashID]
-			if selected && (requiresDurableDelete || len(ids) > 100 || root.IsDirectory) {
+			if selected && (len(ids) > 100 || root.IsDirectory) {
 				operation, err := operations.CreateDeleteTrashOperation(ctx, ids)
 				if err != nil {
 					return DeleteResult{}, err

@@ -52,6 +52,19 @@ type blockingOperationStore struct {
 	once    sync.Once
 }
 
+type noListTrashDurableStore struct {
+	db.Store
+	db.TreeOperationStore
+	listTrashCalls atomic.Int32
+}
+
+func (s *noListTrashDurableStore) RequiresDurableTrashDelete() bool { return true }
+
+func (s *noListTrashDurableStore) ListTrash(context.Context) ([]db.FileRecord, error) {
+	s.listTrashCalls.Add(1)
+	return nil, errors.New("durable delete must not scan trash before creating an operation")
+}
+
 func (s *blockingOperationStore) RunOperation(ctx context.Context, id string) (db.OperationRecord, error) {
 	s.runs.Add(1)
 	s.once.Do(func() { close(s.started) })
@@ -505,7 +518,8 @@ func TestTreeV4SingleFilePermanentDeleteRunsDurableOperation(t *testing.T) {
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	handler := New(store, objects, objects, nil, "", "").Handler()
+	durableStore := &noListTrashDurableStore{Store: store, TreeOperationStore: store.(db.TreeOperationStore)}
+	handler := New(durableStore, objects, objects, nil, "", "").Handler()
 
 	var trashed entriesResponse
 	requestJSON(t, handler, http.MethodPost, "/api/files/trash", map[string]any{
@@ -528,6 +542,9 @@ func TestTreeV4SingleFilePermanentDeleteRunsDurableOperation(t *testing.T) {
 	}
 	if trash, err := store.ListTrash(ctx); err != nil || len(trash) != 0 {
 		t.Fatalf("remaining trash=%d err=%v", len(trash), err)
+	}
+	if calls := durableStore.listTrashCalls.Load(); calls != 0 {
+		t.Fatalf("ListTrash calls before durable deletion = %d, want 0", calls)
 	}
 }
 
