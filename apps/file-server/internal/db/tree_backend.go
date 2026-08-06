@@ -25,7 +25,10 @@ import (
 const treeCASAttempts = 8
 const treeGCSWriteHedgeDelay = 500 * time.Millisecond
 
-var ErrMetadataConflict = errors.New("metadata changed concurrently")
+var (
+	ErrMetadataConflict  = errors.New("metadata changed concurrently")
+	ErrMetadataRateLimit = errors.New("metadata write rate limited")
+)
 
 func isGCSNotFound(err error) bool {
 	if errors.Is(err, storage.ErrObjectNotExist) {
@@ -39,8 +42,13 @@ func classifyGCSSaveError(err error) error {
 		return nil
 	}
 	var e *googleapi.Error
-	if errors.As(err, &e) && (e.Code == 409 || e.Code == 412) {
-		return ErrMetadataConflict
+	if errors.As(err, &e) {
+		switch e.Code {
+		case 409, 412:
+			return ErrMetadataConflict
+		case 429:
+			return fmt.Errorf("%w: %w", ErrMetadataRateLimit, err)
+		}
 	}
 	// The JSON and gRPC transports expose the same generation/does-not-exist
 	// precondition with different error types. Keep CAS handling independent of
@@ -49,8 +57,14 @@ func classifyGCSSaveError(err error) error {
 	switch status.Code(err) {
 	case codes.AlreadyExists, codes.FailedPrecondition:
 		return ErrMetadataConflict
+	case codes.ResourceExhausted:
+		return fmt.Errorf("%w: %w", ErrMetadataRateLimit, err)
 	}
 	return fmt.Errorf("write GCS metadata: %w", err)
+}
+
+func isGCSTransientMutationError(err error) bool {
+	return err != nil && storage.ShouldRetry(err)
 }
 
 type treeObject struct {
@@ -287,18 +301,32 @@ func runHedgedTreeWrite(ctx context.Context, delay time.Duration, write func(con
 	start()
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
+	started, received := 1, 0
+	var firstErr error
 	select {
 	case result := <-results:
-		return result.generation, result.err
+		received++
+		if result.err == nil || !isGCSTransientMutationError(result.err) {
+			return result.generation, result.err
+		}
+		firstErr = result.err
+		select {
+		case <-timer.C:
+			start()
+			started++
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		}
 	case <-timer.C:
 		start()
+		started++
 	case <-ctx.Done():
 		return 0, ctx.Err()
 	}
-	var firstErr error
-	for range 2 {
+	for received < started {
 		select {
 		case result := <-results:
+			received++
 			if result.err == nil {
 				cancel()
 				return result.generation, nil

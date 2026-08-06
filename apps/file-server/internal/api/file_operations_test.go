@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +17,14 @@ import (
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/blob"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/db"
 )
+
+func TestWriteFileOperationErrorMapsMetadataRateLimitTo429(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	writeFileOperationError(recorder, errors.Join(db.ErrMetadataRateLimit, errors.New("GCS quota")))
+	if recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("status=%d body=%s, want 429", recorder.Code, recorder.Body.String())
+	}
+}
 
 type blockingOperationStore struct {
 	db.Store

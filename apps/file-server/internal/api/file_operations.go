@@ -58,6 +58,8 @@ func writeFileOperationError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, db.ErrNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, db.ErrMetadataRateLimit):
+		writeError(w, http.StatusTooManyRequests, err.Error())
 	case errors.Is(err, db.ErrPathConflict), errors.Is(err, db.ErrInvalidMove), errors.Is(err, db.ErrTrashBusy):
 		writeError(w, http.StatusConflict, err.Error())
 	default:

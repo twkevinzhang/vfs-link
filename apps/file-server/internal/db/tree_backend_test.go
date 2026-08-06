@@ -24,6 +24,31 @@ func TestRunHedgedTreeWriteKeepsFastPathSingleRequest(t *testing.T) {
 	}
 }
 
+func TestRunHedgedTreeWriteKeepsFastNonTransientErrorSingleRequest(t *testing.T) {
+	var calls atomic.Int32
+	want := errors.New("invalid write")
+	_, err := runHedgedTreeWrite(context.Background(), time.Second, func(context.Context) (int64, error) {
+		calls.Add(1)
+		return 0, want
+	})
+	if !errors.Is(err, want) || calls.Load() != 1 {
+		t.Fatalf("calls=%d err=%v, want one call returning %v", calls.Load(), err, want)
+	}
+}
+
+func TestRunHedgedTreeWriteRetriesFastTransientErrorAfterDelay(t *testing.T) {
+	var calls atomic.Int32
+	generation, err := runHedgedTreeWrite(context.Background(), time.Millisecond, func(context.Context) (int64, error) {
+		if calls.Add(1) == 1 {
+			return 0, status.Error(codes.ResourceExhausted, "rate limited")
+		}
+		return 91, nil
+	})
+	if err != nil || generation != 91 || calls.Load() != 2 {
+		t.Fatalf("generation=%d calls=%d err=%v", generation, calls.Load(), err)
+	}
+}
+
 func TestRunHedgedTreeWriteUsesFirstSuccessfulGeneration(t *testing.T) {
 	var calls atomic.Int32
 	primaryRelease := make(chan struct{})
@@ -71,13 +96,16 @@ func TestClassifyGCSSaveErrorRecognizesTransportPreconditions(t *testing.T) {
 	}
 }
 
-func TestClassifyGCSSaveErrorPreservesNonConflict(t *testing.T) {
-	err := status.Error(codes.ResourceExhausted, "quota")
-	got := classifyGCSSaveError(err)
-	if errors.Is(got, ErrMetadataConflict) {
-		t.Fatalf("classifyGCSSaveError() = %v, unexpectedly classified as conflict", got)
+func TestClassifyGCSSaveErrorRecognizesRateLimits(t *testing.T) {
+	tests := []error{
+		&googleapi.Error{Code: 429},
+		status.Error(codes.ResourceExhausted, "quota"),
+		fmt.Errorf("close writer: %w", status.Error(codes.ResourceExhausted, "quota")),
 	}
-	if !errors.Is(got, err) {
-		t.Fatalf("classifyGCSSaveError() = %v, want wrapped source error", got)
+	for _, source := range tests {
+		got := classifyGCSSaveError(source)
+		if !errors.Is(got, ErrMetadataRateLimit) || !errors.Is(got, source) {
+			t.Fatalf("classifyGCSSaveError(%T) = %v, want rate-limit sentinel wrapping source", source, got)
+		}
 	}
 }
