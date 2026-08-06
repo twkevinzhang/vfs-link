@@ -250,8 +250,7 @@ func (b *gcsTreeBackend) Put(ctx context.Context, key string, data []byte, expec
 		}
 	}
 	w := o.NewWriter(ctx)
-	w.ContentType = "application/json"
-	w.CacheControl = "no-store"
+	configureTreeMetadataWriter(w)
 	if _, err := w.Write(data); err != nil {
 		_ = w.Close()
 		return b.resolveConditionalCreate(ctx, key, data, expected, err)
@@ -260,6 +259,17 @@ func (b *gcsTreeBackend) Put(ctx context.Context, key string, data []byte, expec
 		return b.resolveConditionalCreate(ctx, key, data, expected, err)
 	}
 	return w.Attrs().Generation, nil
+}
+
+func configureTreeMetadataWriter(w *storage.Writer) {
+	w.ContentType = "application/json"
+	w.CacheControl = "no-store"
+	// Tree objects are small JSON envelopes. The default 16 MiB chunk buffer is
+	// wasteful under concurrent metadata mutations and uses the resumable upload
+	// path for every tiny object. A single-request upload avoids that allocation
+	// and protocol overhead; generation preconditions and transaction read-back
+	// provide the required ambiguity handling above this transport layer.
+	w.ChunkSize = 0
 }
 
 func (b *gcsTreeBackend) resolveConditionalCreate(ctx context.Context, key string, data []byte, expected *int64, writeErr error) (int64, error) {

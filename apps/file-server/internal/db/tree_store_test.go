@@ -10,7 +10,20 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"cloud.google.com/go/storage"
 )
+
+func TestConfigureTreeMetadataWriterUsesSingleRequestUploads(t *testing.T) {
+	w := &storage.Writer{ChunkSize: 16 << 20}
+	configureTreeMetadataWriter(w)
+	if w.ChunkSize != 0 {
+		t.Fatalf("chunk size=%d, want 0", w.ChunkSize)
+	}
+	if w.ContentType != "application/json" || w.CacheControl != "no-store" {
+		t.Fatalf("content type=%q cache control=%q", w.ContentType, w.CacheControl)
+	}
+}
 
 func TestLocalTreeBackendListExcludesAtomicPutStagingFiles(t *testing.T) {
 	ctx := context.Background()
