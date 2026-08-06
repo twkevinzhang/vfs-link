@@ -284,6 +284,13 @@ type TreeDerivedRecoveryOptions struct {
 // before reduction, making a crash between namespace commit and delta emission
 // recoverable without coupling the namespace transaction to derived metadata.
 func (s *TreeStore) RunDerivedRecovery(ctx context.Context, options TreeDerivedRecoveryOptions) (TreeDerivedReduceResult, error) {
+	// Drain already-emitted deltas first. This bounds the active transaction set
+	// before recovery scans it and prevents a large healthy reducer backlog from
+	// turning startup recovery into a serial manifest replay.
+	result, reduceErr := s.ReduceDerivedDeltas(ctx, options.TreeDerivedReduceOptions)
+	if reduceErr != nil {
+		return result, reduceErr
+	}
 	var promotionErr error
 	if s.v4 != nil {
 		_, promotionErr = s.v4.recoverTransactions(ctx)
@@ -292,8 +299,19 @@ func (s *TreeStore) RunDerivedRecovery(ctx context.Context, options TreeDerivedR
 	if options.ReplayCommittedTransactions != nil {
 		replayErr = options.ReplayCommittedTransactions(ctx)
 	}
-	result, reduceErr := s.ReduceDerivedDeltas(ctx, options.TreeDerivedReduceOptions)
-	return result, errors.Join(promotionErr, replayErr, reduceErr)
+	if promotionErr != nil || replayErr != nil {
+		return result, errors.Join(promotionErr, replayErr)
+	}
+	// Recovery can recreate a delta whose post-commit emission was interrupted.
+	// Apply that bounded tail in the same loop iteration.
+	tail, tailErr := s.ReduceDerivedDeltas(ctx, options.TreeDerivedReduceOptions)
+	result.Discovered += tail.Discovered
+	result.Applied += tail.Applied
+	result.Replayed += tail.Replayed
+	result.DirectoriesRebuilt += tail.DirectoriesRebuilt
+	result.CompactedTokens += tail.CompactedTokens
+	result.Pending = tail.Pending
+	return result, tailErr
 }
 
 type TreeDerivedReducerLoopOptions struct {
