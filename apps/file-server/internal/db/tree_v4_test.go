@@ -923,7 +923,7 @@ func TestTreeV4SameParentRenameReturnsCommittedRecord(t *testing.T) {
 	}
 }
 
-func TestTreeV4MutationSnapshotContinuesAfterCommittedEnvelopeNormalization(t *testing.T) {
+func TestTreeV4MutationSnapshotFoldsCommittedEnvelopeWithoutPromotion(t *testing.T) {
 	ctx := context.Background()
 	store := newTestTreeV4(t, TreeV4Options{ShardCount: 8})
 	if _, _, err := store.ReplaceFileConditional(ctx, "fixture.txt", "object-fixture", 7, nil, true); err != nil {
@@ -951,7 +951,8 @@ func TestTreeV4MutationSnapshotContinuesAfterCommittedEnvelopeNormalization(t *t
 	}
 	envelope.Pending = &treeV4Pending{TransactionID: transaction.ID, Value: envelope.Current}
 	pendingData, _ := marshalTree(envelope)
-	if _, err = store.objects.Put(ctx, key, pendingData, &object.Generation); err != nil {
+	pendingGeneration, err := store.objects.Put(ctx, key, pendingData, &object.Generation)
+	if err != nil {
 		t.Fatal(err)
 	}
 	snapshot, err := store.v4.readShardMutationSnapshot(ctx, "root", shardID)
@@ -960,6 +961,66 @@ func TestTreeV4MutationSnapshotContinuesAfterCommittedEnvelopeNormalization(t *t
 	}
 	if entry, exists := snapshot.shard.Entries["fixture.txt"]; !exists || entry.Node.PhysicalHash != "object-fixture" {
 		t.Fatalf("snapshot entry=%+v exists=%t", entry, exists)
+	}
+	if snapshot.generation != pendingGeneration {
+		t.Fatalf("snapshot generation=%d, want pending generation %d", snapshot.generation, pendingGeneration)
+	}
+	stillPending, found, err := store.objects.Get(ctx, key)
+	if err != nil || !found {
+		t.Fatalf("pending shard found=%t err=%v", found, err)
+	}
+	var observed treeV4Envelope
+	if err = json.Unmarshal(stillPending.Data, &observed); err != nil {
+		t.Fatal(err)
+	}
+	if stillPending.Generation != pendingGeneration || observed.Pending == nil || observed.Pending.TransactionID != transaction.ID {
+		t.Fatalf("committed pending was promoted: generation=%d envelope=%+v", stillPending.Generation, observed)
+	}
+}
+
+func TestTreeV4SequentialRenamesFoldArchivedPendingParticipants(t *testing.T) {
+	ctx := context.Background()
+	store := newTestTreeV4(t, TreeV4Options{ShardCount: 64})
+	if store.v4.shardFor("fixture-a.txt") == store.v4.shardFor("fixture-b.txt") {
+		t.Fatal("fixture names must exercise two participant shards")
+	}
+	if _, _, err := store.ReplaceFileConditional(ctx, "fixture-a.txt", "object-a", 1, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	store.v4.waitFinalizers()
+	if err := store.RenamePath(ctx, "fixture-a.txt", "fixture-b.txt"); err != nil {
+		t.Fatal(err)
+	}
+	store.v4.waitFinalizers()
+	targetKey := store.v4.shardKey("root", store.v4.shardFor("fixture-b.txt"))
+	targetObject, found, err := store.objects.Get(ctx, targetKey)
+	if err != nil || !found {
+		t.Fatalf("target shard found=%t err=%v", found, err)
+	}
+	var targetEnvelope treeV4Envelope
+	if err = json.Unmarshal(targetObject.Data, &targetEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	if targetEnvelope.Pending == nil {
+		t.Fatal("rename participant was promoted instead of retained pending")
+	}
+	transactionID := targetEnvelope.Pending.TransactionID
+	if _, found, err = store.objects.Get(ctx, store.v4.transactionKey(transactionID)); err != nil || found {
+		t.Fatalf("active rename transaction found=%t err=%v", found, err)
+	}
+	if _, found, err = store.objects.Get(ctx, store.v4.journalKey(transactionID)); err != nil || !found {
+		t.Fatalf("rename journal found=%t err=%v", found, err)
+	}
+	if err := store.RenamePath(ctx, "fixture-b.txt", "fixture-a.txt"); err != nil {
+		t.Fatal(err)
+	}
+	store.v4.waitFinalizers()
+	record, found, err := store.Find(ctx, "fixture-a.txt")
+	if err != nil || !found || record.PhysicalHash != "object-a" {
+		t.Fatalf("record=%+v found=%t err=%v", record, found, err)
+	}
+	if _, found, err = store.Find(ctx, "fixture-b.txt"); err != nil || found {
+		t.Fatalf("old path found=%t err=%v", found, err)
 	}
 }
 

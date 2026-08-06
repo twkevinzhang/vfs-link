@@ -715,6 +715,22 @@ func (n *treeV4Namespace) finishCommittedAsync(transaction treeV4Transaction, ge
 	}()
 }
 
+func (n *treeV4Namespace) finishCommittedRenameAsync(transaction treeV4Transaction, generation int64) {
+	n.finalizers.Add(1)
+	go func() {
+		defer n.finalizers.Done()
+		// Same-parent rename shards are mutated again frequently. Keep the
+		// committed value in the participant's pending slot and retain its
+		// decision in the journal. The next shard CAS can fold that value into
+		// Current while preparing its own pending value, avoiding a separate
+		// promotion GET/PUT on every rename. Readers continue to resolve the
+		// pending value through the archived commit decision.
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		_ = n.archiveTransaction(ctx, transaction, generation)
+	}()
+}
+
 func (n *treeV4Namespace) waitFinalizers() { n.finalizers.Wait() }
 
 func (n *treeV4Namespace) verifyLeases(ctx context.Context, owner string, leases []treeV4HeldLease) error {
@@ -1418,6 +1434,32 @@ func (n *treeV4Namespace) readShardMutationSnapshot(ctx context.Context, directo
 			return treeV4ShardMutationSnapshot{}, err
 		}
 		if envelope.Pending != nil {
+			transaction, _, decisionFound, decisionErr := n.readTransactionDecision(ctx, envelope.Pending.TransactionID)
+			if decisionErr != nil {
+				return treeV4ShardMutationSnapshot{}, decisionErr
+			}
+			if decisionFound && (transaction.Status == "committed" || transaction.Status == "aborted") {
+				if transaction.Status == "committed" {
+					if envelope.Pending.Delete {
+						envelope.Current = nil
+					} else {
+						envelope.Current = envelope.Pending.Value
+					}
+				}
+				// Preserve the observed object generation. prepareShardSnapshot
+				// replaces this resolved representation and its own Pending value
+				// with one conditional write, so no standalone promotion is needed.
+				snapshot.current = append(json.RawMessage(nil), envelope.Current...)
+				if len(snapshot.current) != 0 {
+					if err = json.Unmarshal(snapshot.current, &snapshot.shard); err != nil {
+						return treeV4ShardMutationSnapshot{}, err
+					}
+					if snapshot.shard.Entries == nil {
+						snapshot.shard.Entries = map[string]treeV4DirectoryEntry{}
+					}
+				}
+				return snapshot, nil
+			}
 			if err = n.normalizeEnvelope(ctx, key, object.Generation, envelope); err != nil {
 				return treeV4ShardMutationSnapshot{}, err
 			}
@@ -1627,7 +1669,7 @@ func (n *treeV4Namespace) renameSameParentOptimisticAttempts(ctx context.Context
 					}
 					transaction, generation, err = observed, observedGeneration, nil
 				}
-				n.finishCommittedAsync(transaction, generation, nil)
+				n.finishCommittedRenameAsync(transaction, generation)
 				return entry.Node, nil
 			}
 		}
