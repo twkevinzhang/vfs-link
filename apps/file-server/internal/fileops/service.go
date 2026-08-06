@@ -121,6 +121,19 @@ func (s *Service) Rename(ctx context.Context, logicPath, name string) (RenameRes
 	if err != nil {
 		return RenameResult{}, err
 	}
+	// A v4 same-parent transaction atomically validates the source and target
+	// and returns its committed node. Running it before Find avoids resolving
+	// the complete path twice; stable directory node IDs also make directory
+	// renames a single synchronous shard mutation in v4.
+	if fast, ok := s.store.(sameParentV4RenameStore); ok {
+		renamed, handled, renameErr := fast.RenameSameParentV4(ctx, from, to)
+		if handled {
+			if renameErr != nil {
+				return RenameResult{}, renameErr
+			}
+			return RenameResult{Records: []db.FileRecord{renamed}}, nil
+		}
+	}
 	record, found, err := s.store.Find(ctx, from)
 	if err != nil {
 		return RenameResult{}, err
@@ -135,15 +148,6 @@ func (s *Service) Rename(ctx context.Context, logicPath, name string) (RenameRes
 		}
 		s.kickOperation(operation.ID)
 		return RenameResult{Operation: &operation}, nil
-	}
-	if fast, ok := s.store.(sameParentV4RenameStore); ok {
-		renamed, handled, renameErr := fast.RenameSameParentV4(ctx, from, to)
-		if handled {
-			if renameErr != nil {
-				return RenameResult{}, renameErr
-			}
-			return RenameResult{Records: []db.FileRecord{renamed}}, nil
-		}
 	}
 	if _, exists, err := s.store.Find(ctx, to); err != nil {
 		return RenameResult{}, err

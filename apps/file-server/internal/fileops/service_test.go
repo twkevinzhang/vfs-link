@@ -43,7 +43,7 @@ func (s *sameParentRenameStoreSpy) RenameSameParentV4(ctx context.Context, from,
 	return record, true, nil
 }
 
-func TestRenameUsesV4CommittedRecordWithoutTargetOrResultFind(t *testing.T) {
+func TestRenameUsesV4CommittedRecordWithoutRedundantFind(t *testing.T) {
 	ctx := context.Background()
 	metadata, err := db.NewTreeLocal(filepath.Join(t.TempDir(), "metadata"), "")
 	if err != nil {
@@ -65,8 +65,8 @@ func TestRenameUsesV4CommittedRecordWithoutTargetOrResultFind(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if spy.findCalls != 1 || spy.fastCalls != 1 {
-		t.Fatalf("find calls=%d fast calls=%d, want 1 and 1", spy.findCalls, spy.fastCalls)
+	if spy.findCalls != 0 || spy.fastCalls != 1 {
+		t.Fatalf("find calls=%d fast calls=%d, want 0 and 1", spy.findCalls, spy.fastCalls)
 	}
 	if len(result.Records) != 1 || result.Records[0].LogicPath != "after.txt" || result.Records[0].PhysicalHash != "object-before" {
 		t.Fatalf("result=%+v", result)

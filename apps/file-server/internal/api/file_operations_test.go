@@ -313,6 +313,46 @@ func TestTreeDirectoryRenameReturnsAcceptedOperationAndCanBePolled(t *testing.T)
 	}
 }
 
+func TestTreeV4DirectoryRenameReturnsSynchronousCommittedRecord(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store, err := db.NewTreeLocalV4(filepath.Join(root, "tree"), "v4-directory-rename", db.TreeV4Options{
+		ShardCount: 8, MutationMode: db.TreeV4MutationScoped,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	if err = store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.UpsertDirectory(ctx, "source"); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.UpsertDirectory(ctx, "source/nested"); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.UpsertFile(ctx, "source/nested/a.txt", "object-a", 1); err != nil {
+		t.Fatal(err)
+	}
+	objects, err := blob.NewLocal(filepath.Join(root, "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := New(store, objects, objects, nil, "", "").Handler()
+
+	var renamed entriesResponse
+	requestJSON(t, handler, http.MethodPost, "/api/files/rename", map[string]any{
+		"path": "source", "name": "renamed",
+	}, http.StatusOK, &renamed)
+	if len(renamed.Entries) != 1 || renamed.Entries[0].Path != "renamed" || renamed.Entries[0].Kind != "directory" {
+		t.Fatalf("renamed entries=%+v", renamed.Entries)
+	}
+	if descendant, found, findErr := store.Find(ctx, "renamed/nested/a.txt"); findErr != nil || !found || descendant.PhysicalHash != "object-a" {
+		t.Fatalf("renamed descendant=%+v found=%t err=%v", descendant, found, findErr)
+	}
+}
+
 func TestTreeDirectoryTrashAndRestoreReturnAcceptedOperations(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
