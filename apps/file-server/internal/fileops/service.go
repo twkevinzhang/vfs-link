@@ -2,6 +2,7 @@ package fileops
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -11,6 +12,8 @@ import (
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/blob"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/db"
 )
+
+const permanentDeleteObjectTimeout = 30 * time.Second
 
 type Service struct {
 	store            db.Store
@@ -388,7 +391,7 @@ func (s *Service) deletePermanentlyWithCheckpoint(ctx context.Context, ids []str
 		physicalHashes = append(physicalHashes, record.PhysicalHash)
 	}
 	for index, physicalHash := range physicalHashes {
-		if err := s.objects.Delete(ctx, physicalHash); err != nil {
+		if err := deleteObjectWithTimeout(ctx, s.objects, physicalHash, permanentDeleteObjectTimeout); err != nil {
 			return 0, fmt.Errorf("delete object %s: %w", physicalHash, err)
 		}
 		if checkpoint != nil {
@@ -411,6 +414,16 @@ func (s *Service) deletePermanentlyWithCheckpoint(ctx context.Context, ids []str
 		return 0, err
 	}
 	return deleted, nil
+}
+
+func deleteObjectWithTimeout(ctx context.Context, objects blob.Store, physicalHash string, timeout time.Duration) error {
+	deleteCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	err := objects.Delete(deleteCtx, physicalHash)
+	if errors.Is(err, context.DeadlineExceeded) || (err == nil && deleteCtx.Err() != nil) {
+		return fmt.Errorf("physical object deletion exceeded %s: %w", timeout, context.DeadlineExceeded)
+	}
+	return err
 }
 
 func stringSet(values []string) map[string]bool {

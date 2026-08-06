@@ -172,6 +172,24 @@ type trackingDeleteStore struct {
 	deleted []string
 }
 
+type contextBlockingDeleteStore struct{ blob.Store }
+
+func (*contextBlockingDeleteStore) Delete(ctx context.Context, _ string) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestDeleteObjectWithTimeoutBoundsTransientStorageRetry(t *testing.T) {
+	started := time.Now()
+	err := deleteObjectWithTimeout(context.Background(), &contextBlockingDeleteStore{}, "object", 10*time.Millisecond)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error=%v, want deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("delete elapsed=%s, want bounded retry", elapsed)
+	}
+}
+
 func (s *trackingDeleteStore) Delete(ctx context.Context, physicalHash string) error {
 	s.mu.Lock()
 	s.deleted = append(s.deleted, physicalHash)
