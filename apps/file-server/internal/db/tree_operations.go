@@ -44,6 +44,8 @@ type TreeOperationStore interface {
 	RunDeleteTrashOperation(context.Context, string, func(context.Context, []string, func(int, int) error) (int64, error)) (OperationRecord, error)
 }
 
+const deleteTrashCheckpointInterval = 5 * time.Second
+
 func (s *TreeStore) RunDeleteTrashOperation(ctx context.Context, id string, executor func(context.Context, []string, func(int, int) error) (int64, error)) (OperationRecord, error) {
 	op, g, ok, e := s.loadOperation(ctx, id)
 	if e != nil {
@@ -69,7 +71,18 @@ func (s *TreeStore) RunDeleteTrashOperation(ctx context.Context, id string, exec
 	if g, e = s.saveOperationCAS(ctx, op, g); e != nil {
 		return op, e
 	}
+	lastCheckpoint := time.Now()
 	checkpoint := func(done, total int) error {
+		// Object deletion is idempotent, so progress is an optimization for
+		// visibility and lease renewal rather than a correctness boundary. Avoid
+		// rewriting the same GCS operation object for every file: that exceeds the
+		// per-object mutation rate limit on even modest directory deletes. The
+		// terminal CAS below persists the final progress.
+		if done >= total || time.Since(lastCheckpoint) < deleteTrashCheckpointInterval {
+			op.Progress = done
+			op.Total = total
+			return nil
+		}
 		current, cg, ok, e := s.loadOperation(ctx, id)
 		if e != nil {
 			return e
@@ -80,6 +93,11 @@ func (s *TreeStore) RunDeleteTrashOperation(ctx context.Context, id string, exec
 		if current.LeaseOwner != owner {
 			return fmt.Errorf("operation lease lost")
 		}
+		if done <= current.Progress {
+			op = current
+			lastCheckpoint = time.Now()
+			return nil
+		}
 		current.Progress = done
 		current.Total = total
 		renew := time.Now().UTC().Add(5 * time.Minute)
@@ -88,6 +106,7 @@ func (s *TreeStore) RunDeleteTrashOperation(ctx context.Context, id string, exec
 		if e == nil {
 			op = current
 			g = ng
+			lastCheckpoint = time.Now()
 		}
 		return e
 	}
@@ -103,6 +122,12 @@ func (s *TreeStore) RunDeleteTrashOperation(ctx context.Context, id string, exec
 		return current, fmt.Errorf("operation lease lost")
 	}
 	current.Deleted = deleted
+	if op.Total > current.Total {
+		current.Total = op.Total
+	}
+	if op.Progress > current.Progress {
+		current.Progress = op.Progress
+	}
 	current.LeaseOwner = ""
 	current.LeaseUntil = nil
 	if runErr != nil {

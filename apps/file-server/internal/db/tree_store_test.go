@@ -853,6 +853,36 @@ func TestRenameOperationResumesWithoutInflatingTotal(t *testing.T) {
 	}
 }
 
+func TestDeleteTrashOperationCoalescesRapidProgressCheckpoints(t *testing.T) {
+	ctx := context.Background()
+	s := newTestTree(t)
+	op, err := s.CreateDeleteTrashOperation(ctx, []string{"trash-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done, err := s.RunDeleteTrashOperation(ctx, op.ID, func(_ context.Context, _ []string, checkpoint func(int, int) error) (int64, error) {
+		for progress := 1; progress <= 3; progress++ {
+			if err := checkpoint(progress, 3); err != nil {
+				return 0, err
+			}
+			stored, _, found, err := s.loadOperation(ctx, op.ID)
+			if err != nil || !found {
+				return 0, err
+			}
+			if stored.Progress != 0 {
+				t.Fatalf("rapid checkpoint persisted progress=%d, want coalesced", stored.Progress)
+			}
+		}
+		return 3, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done.Status != "completed" || done.Progress != 3 || done.Total != 3 || done.Deleted != 3 {
+		t.Fatalf("operation=%+v", done)
+	}
+}
+
 func TestMoveOperationSupportsMultipleRootsWithSummaryOnly(t *testing.T) {
 	ctx := context.Background()
 	s := newTestTree(t)

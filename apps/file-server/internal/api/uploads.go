@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/db"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/upload"
 )
 
@@ -154,6 +155,10 @@ func writeUploadError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, upload.ErrNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, db.ErrMetadataRateLimit):
+		writeError(w, http.StatusTooManyRequests, err.Error())
+	case errors.Is(err, db.ErrMetadataConflict):
+		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, upload.ErrFileExists), errors.Is(err, upload.ErrConflict), errors.Is(err, upload.ErrInvalidSession):
 		writeError(w, http.StatusConflict, err.Error())
 	default:

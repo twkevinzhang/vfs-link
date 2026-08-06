@@ -26,6 +26,23 @@ func TestWriteFileOperationErrorMapsMetadataRateLimitTo429(t *testing.T) {
 	}
 }
 
+func TestWriteUploadErrorMapsRetryableMetadataErrors(t *testing.T) {
+	tests := []struct {
+		err  error
+		want int
+	}{
+		{err: db.ErrMetadataRateLimit, want: http.StatusTooManyRequests},
+		{err: db.ErrMetadataConflict, want: http.StatusConflict},
+	}
+	for _, test := range tests {
+		recorder := httptest.NewRecorder()
+		writeUploadError(recorder, test.err)
+		if recorder.Code != test.want {
+			t.Fatalf("error=%v status=%d body=%s, want %d", test.err, recorder.Code, recorder.Body.String(), test.want)
+		}
+	}
+}
+
 type blockingOperationStore struct {
 	db.Store
 	db.TreeOperationStore
