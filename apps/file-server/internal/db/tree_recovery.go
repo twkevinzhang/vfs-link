@@ -190,7 +190,9 @@ func (s *TreeStore) ReduceDerivedDeltas(ctx context.Context, options TreeDerived
 	defer func() {
 		cancelWork()
 		<-keepAliveDone
-		lease.release()
+		if !options.RetainLease {
+			lease.release()
+		}
 	}()
 	keys, err := s.objects.List(workCtx, s.treeDerivedDeltaPrefix())
 	if err != nil {
@@ -328,15 +330,10 @@ func (s *TreeStore) RunDerivedRecovery(ctx context.Context, options TreeDerivedR
 		return result, errors.Join(promotionErr, replayErr)
 	}
 	// Recovery can recreate a delta whose post-commit emission was interrupted.
-	// Apply that bounded tail in the same loop iteration.
-	tail, tailErr := s.ReduceDerivedDeltas(ctx, options.TreeDerivedReduceOptions)
-	result.Discovered += tail.Discovered
-	result.Applied += tail.Applied
-	result.Replayed += tail.Replayed
-	result.DirectoriesRebuilt += tail.DirectoriesRebuilt
-	result.CompactedTokens += tail.CompactedTokens
-	result.Pending = tail.Pending
-	return result, tailErr
+	// The next bounded loop pass applies that tail within the configured
+	// eventual-consistency window. Avoiding a second immediate reduction also
+	// prevents two writes to the reducer lease/stats objects in one second.
+	return result, nil
 }
 
 type TreeDerivedReducerLoopOptions struct {
@@ -355,6 +352,10 @@ func (s *TreeStore) RunDerivedReducerLoop(ctx context.Context, options TreeDeriv
 	if options.Interval < time.Second || options.Interval > 5*time.Second {
 		return fmt.Errorf("derived metadata reducer interval must be between 1s and 5s")
 	}
+	if strings.TrimSpace(options.Owner) == "" {
+		options.Owner = "loop-" + uuid.NewString()
+	}
+	options.RetainLease = true
 	run := func() {
 		result, err := s.RunDerivedRecovery(ctx, options.TreeDerivedRecoveryOptions)
 		if err != nil {

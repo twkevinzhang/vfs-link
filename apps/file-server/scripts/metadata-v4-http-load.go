@@ -19,13 +19,16 @@
 // VFS_LOAD_DURATION, VFS_LOAD_BURST_RATE, VFS_LOAD_BURST_DURATION,
 // VFS_LOAD_RETRIES, VFS_LOAD_REQUEST_TIMEOUT, VFS_LOAD_OPERATION_TIMEOUT,
 // VFS_LOAD_AGGREGATE_TIMEOUT, VFS_LOAD_AGGREGATE_POLL,
-// VFS_LOAD_AGGREGATE_SAMPLES (minimum 100), and VFS_LOAD_PREFIX.
+// VFS_LOAD_AGGREGATE_SAMPLES (minimum 100), VFS_LOAD_WORKING_SET,
+// VFS_LOAD_SHARD_COUNT, and VFS_LOAD_PREFIX.
 package main
 
 import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -60,6 +63,8 @@ type config struct {
 	aggregateTimeout time.Duration
 	aggregatePoll    time.Duration
 	aggregateSamples int
+	workingSet       int
+	shardCount       int
 	prefix           string
 	selfTest         bool
 }
@@ -228,6 +233,8 @@ func loadConfig(selfTest bool) (config, error) {
 		aggregateTimeout: envDuration("VFS_LOAD_AGGREGATE_TIMEOUT", 30*time.Second),
 		aggregatePoll:    envDuration("VFS_LOAD_AGGREGATE_POLL", 250*time.Millisecond),
 		aggregateSamples: envInt("VFS_LOAD_AGGREGATE_SAMPLES", 100),
+		workingSet:       envInt("VFS_LOAD_WORKING_SET", 4),
+		shardCount:       envInt("VFS_LOAD_SHARD_COUNT", 64),
 		prefix:           strings.Trim(strings.TrimSpace(envString("VFS_LOAD_PREFIX", "vfs-link-acceptance")), "/"),
 		selfTest:         mock,
 	}
@@ -263,12 +270,18 @@ func loadConfig(selfTest bool) (config, error) {
 		if os.Getenv("VFS_LOAD_AGGREGATE_POLL") == "" {
 			cfg.aggregatePoll = 20 * time.Millisecond
 		}
+		if os.Getenv("VFS_LOAD_WORKING_SET") == "" {
+			cfg.workingSet = 2
+		}
 	}
 	if cfg.clients < 1 || cfg.clients > 128 || cfg.rate <= 0 || cfg.burstRate <= 0 || cfg.duration <= 0 || cfg.burstDuration <= 0 {
 		return cfg, fmt.Errorf("clients, rates, and durations must be positive and clients <= 128")
 	}
 	if cfg.retries < 0 || cfg.retries > 20 || cfg.requestTimeout <= 0 || cfg.operationTimeout <= 0 || cfg.aggregateTimeout <= 0 || cfg.aggregatePoll <= 0 || cfg.aggregateSamples < 100 || cfg.aggregateSamples > 1000 {
 		return cfg, fmt.Errorf("invalid retry or timeout setting")
+	}
+	if cfg.shardCount < 2 || cfg.shardCount > 256 || cfg.shardCount&(cfg.shardCount-1) != 0 || cfg.workingSet < 1 || cfg.workingSet*2 > cfg.shardCount {
+		return cfg, fmt.Errorf("working set must fit distinct source/target pairs within a power-of-two shard count")
 	}
 	if cfg.prefix == "" || strings.Contains(cfg.prefix, "..") {
 		return cfg, fmt.Errorf("VFS_LOAD_PREFIX must be a safe relative path")
@@ -299,11 +312,17 @@ func run(ctx context.Context, cfg config) error {
 	}
 	runID := time.Now().UTC().Format("20060102T150405Z") + "-" + randomHex(4)
 	root := path.Join(cfg.prefix, runID)
-	fixtures := make([]*fixture, cfg.clients)
-	for i := range fixtures {
-		payload := []byte(fmt.Sprintf("vfs-load-%03d", i))
-		parent := path.Join(root, fmt.Sprintf("client-%03d", i))
-		fixtures[i] = &fixture{parent: parent, currentName: "fixture-a.txt", alternate: "fixture-b.txt", currentPath: path.Join(parent, "fixture-a.txt"), payload: payload}
+	namePairs := distinctShardFixtureNames(cfg.workingSet, cfg.shardCount)
+	clientFixtures := make([][]*fixture, cfg.clients)
+	fixtures := make([]*fixture, 0, cfg.clients*cfg.workingSet)
+	for clientIndex := range clientFixtures {
+		parent := path.Join(root, fmt.Sprintf("client-%03d", clientIndex))
+		for slot, pair := range namePairs {
+			payload := []byte(fmt.Sprintf("vfs-load-%03d-%03d", clientIndex, slot))
+			item := &fixture{parent: parent, currentName: pair[0], alternate: pair[1], currentPath: path.Join(parent, pair[0]), payload: payload}
+			clientFixtures[clientIndex] = append(clientFixtures[clientIndex], item)
+			fixtures = append(fixtures, item)
+		}
 	}
 	cleanupNeeded := false
 	defer func() {
@@ -318,7 +337,7 @@ func run(ctx context.Context, cfg config) error {
 		return fmt.Errorf("fixture setup: %w", err)
 	}
 	cleanupNeeded = true
-	contention, err := runSamePathContention(ctx, client, fixtures[0], cfg.clients)
+	contention, err := runSamePathContention(ctx, client, clientFixtures[0][0], cfg.clients)
 	if err != nil {
 		return fmt.Errorf("same-path contention: %w", err)
 	}
@@ -328,15 +347,15 @@ func run(ctx context.Context, cfg config) error {
 	for _, fixture := range fixtures {
 		expectedBytes += int64(len(fixture.payload))
 	}
-	expected := folderSummary{Files: int64(cfg.clients), Directories: int64(cfg.clients), Bytes: expectedBytes}
+	expected := folderSummary{Files: int64(len(fixtures)), Directories: int64(cfg.clients), Bytes: expectedBytes}
 	initialConvergence, err := waitForAggregate(ctx, client, root, expected, cfg.aggregateTimeout, cfg.aggregatePoll)
 	if err != nil {
 		return fmt.Errorf("initial aggregate convergence: %w", err)
 	}
-	fmt.Printf("fixtures_ready clients=%d aggregate_convergence_ms=%.1f\n", cfg.clients, milliseconds(initialConvergence))
-	normal := runPhase(ctx, "steady", client, fixtures, cfg.rate, cfg.duration, cfg.retries)
+	fmt.Printf("fixtures_ready clients=%d working_set=%d shards=%d aggregate_convergence_ms=%.1f\n", cfg.clients, cfg.workingSet, cfg.shardCount, milliseconds(initialConvergence))
+	normal := runPhase(ctx, "steady", client, clientFixtures, cfg.rate, cfg.duration, cfg.retries)
 	printReport(normal)
-	burst := runPhase(ctx, "burst", client, fixtures, cfg.burstRate, cfg.burstDuration, cfg.retries)
+	burst := runPhase(ctx, "burst", client, clientFixtures, cfg.burstRate, cfg.burstDuration, cfg.retries)
 	printReport(burst)
 	convergenceSamples, err := sampleAggregateConvergence(ctx, client, root, expected, cfg.aggregateSamples, cfg.aggregateTimeout, cfg.aggregatePoll)
 	if err != nil {
@@ -437,19 +456,41 @@ func createFixtures(ctx context.Context, client *apiClient, fixtures []*fixture)
 	return errors.Join(channelErrors(errs)...)
 }
 
-func runPhase(parent context.Context, name string, client *apiClient, fixtures []*fixture, rate float64, duration time.Duration, retries int) report {
+func fixtureShard(name string, shards int) int {
+	digest := sha256.Sum256([]byte(name))
+	return int(binary.BigEndian.Uint32(digest[:4]) % uint32(shards))
+}
+
+func distinctShardFixtureNames(count, shards int) [][2]string {
+	pairs := make([][2]string, 0, count)
+	used := make(map[int]bool, count*2)
+	for candidate := 0; len(pairs) < count; candidate++ {
+		first := fmt.Sprintf("fixture-%04d-a.txt", candidate)
+		second := fmt.Sprintf("fixture-%04d-b.txt", candidate)
+		firstShard, secondShard := fixtureShard(first, shards), fixtureShard(second, shards)
+		if firstShard == secondShard || used[firstShard] || used[secondShard] {
+			continue
+		}
+		used[firstShard], used[secondShard] = true, true
+		pairs = append(pairs, [2]string{first, second})
+	}
+	return pairs
+}
+
+func runPhase(parent context.Context, name string, client *apiClient, clients [][]*fixture, rate float64, duration time.Duration, retries int) report {
 	ctx, cancel := context.WithTimeout(parent, duration)
 	defer cancel()
 	m := &metrics{started: time.Now()}
 	interval := time.Duration(float64(time.Second) / rate)
 	var wg sync.WaitGroup
-	for _, f := range fixtures {
-		f := f
+	for _, fixtures := range clients {
+		fixtures := fixtures
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			ticker := time.NewTicker(interval)
 			defer ticker.Stop()
+			next := 0
 			for {
 				select {
 				case <-ctx.Done():
@@ -458,6 +499,8 @@ func runPhase(parent context.Context, name string, client *apiClient, fixtures [
 					// The phase deadline stops new mutations but does not cancel an
 					// already-issued rename. Leaving its outcome ambiguous would make
 					// the next phase target the wrong path.
+					f := fixtures[next%len(fixtures)]
+					next++
 					latency, retryCount, exhausted, correctness := mutateOnce(parent, client, f, retries)
 					m.record(latency, retryCount, exhausted, correctness)
 				}

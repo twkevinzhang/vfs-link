@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -326,7 +327,7 @@ func TestSeedDerivedMetadataIsConditionalAndRetryable(t *testing.T) {
 	}
 }
 
-func TestRunDerivedRecoveryReplaysBeforeReduction(t *testing.T) {
+func TestRunDerivedRecoveryAppliesReplayOnNextBoundedPass(t *testing.T) {
 	ctx := context.Background()
 	store := newDerivedTestTree(t)
 	replayed := 0
@@ -337,8 +338,37 @@ func TestRunDerivedRecoveryReplaysBeforeReduction(t *testing.T) {
 			return store.emitDerivedDelta(ctx, "committed-tx", MetadataStats{LogicalFiles: 1}, nil)
 		},
 	})
-	if err != nil || replayed != 1 || result.Applied != 1 {
+	if err != nil || replayed != 1 || result.Applied != 0 {
 		t.Fatalf("result=%+v replayed=%d err=%v", result, replayed, err)
+	}
+	result, err = store.RunDerivedRecovery(ctx, TreeDerivedRecoveryOptions{
+		TreeDerivedReduceOptions: TreeDerivedReduceOptions{Owner: "recovery"},
+	})
+	if err != nil || result.Applied != 1 {
+		t.Fatalf("next result=%+v err=%v", result, err)
+	}
+}
+
+func TestDerivedReducerCanRetainStableLoopLease(t *testing.T) {
+	ctx := context.Background()
+	store := newDerivedTestTree(t)
+	options := TreeDerivedReduceOptions{Owner: "stable-loop", RetainLease: true}
+	if _, err := store.ReduceDerivedDeltas(ctx, options); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReduceDerivedDeltas(ctx, options); err != nil {
+		t.Fatal(err)
+	}
+	leaseObject, found, err := store.objects.Get(ctx, store.treeDerivedLeaseKey())
+	if err != nil || !found {
+		t.Fatalf("retained lease found=%t err=%v", found, err)
+	}
+	var lease treeDerivedReducerLease
+	if err = json.Unmarshal(leaseObject.Data, &lease); err != nil || lease.Owner != "stable-loop" {
+		t.Fatalf("lease=%+v err=%v", lease, err)
+	}
+	if _, err = store.ReduceDerivedDeltas(ctx, TreeDerivedReduceOptions{Owner: "other"}); !errors.Is(err, ErrDerivedReducerBusy) {
+		t.Fatalf("other owner error=%v", err)
 	}
 }
 

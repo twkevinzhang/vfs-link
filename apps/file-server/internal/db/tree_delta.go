@@ -67,8 +67,12 @@ type treeDerivedReducerLease struct {
 // be idempotent and publish an absolute summary. It can run again after a
 // crash before the delta is checkpointed.
 type TreeDerivedReduceOptions struct {
-	Owner              string
-	LeaseTTL           time.Duration
+	Owner    string
+	LeaseTTL time.Duration
+	// RetainLease keeps the lease object until its TTL expires. Long-running
+	// reducer loops use a stable owner and renew once per interval, avoiding a
+	// create/delete burst against GCS's per-object mutation limit.
+	RetainLease        bool
 	RebuildDirectory   func(context.Context, string) error
 	RebuildDirectories func(context.Context, []string) error
 }

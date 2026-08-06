@@ -264,12 +264,10 @@ func (b *gcsTreeBackend) Put(ctx context.Context, key string, data []byte, expec
 func configureTreeMetadataWriter(w *storage.Writer) {
 	w.ContentType = "application/json"
 	w.CacheControl = "no-store"
-	// Tree objects are small JSON envelopes. The default 16 MiB chunk buffer is
-	// wasteful under concurrent metadata mutations and uses the resumable upload
-	// path for every tiny object. A single-request upload avoids that allocation
-	// and protocol overhead; generation preconditions and transaction read-back
-	// provide the required ambiguity handling above this transport layer.
-	w.ChunkSize = 0
+	// Tree objects are small JSON envelopes. Keep resumable-upload retries for
+	// transient GCS 429/5xx responses, but cap each concurrent writer at the
+	// minimum chunk size instead of the 16 MiB default buffer.
+	w.ChunkSize = 256 << 10
 }
 
 func (b *gcsTreeBackend) resolveConditionalCreate(ctx context.Context, key string, data []byte, expected *int64, writeErr error) (int64, error) {
