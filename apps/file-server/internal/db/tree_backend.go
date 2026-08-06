@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"cloud.google.com/go/storage"
 	"google.golang.org/api/googleapi"
@@ -22,6 +23,7 @@ import (
 )
 
 const treeCASAttempts = 8
+const treeGCSWriteHedgeDelay = 500 * time.Millisecond
 
 var ErrMetadataConflict = errors.New("metadata changed concurrently")
 
@@ -251,6 +253,67 @@ func (b *gcsTreeBackend) Get(ctx context.Context, key string) (treeObject, bool,
 	return treeObject{Data: data, Generation: r.Attrs.Generation}, true, nil
 }
 func (b *gcsTreeBackend) Put(ctx context.Context, key string, data []byte, expected *int64) (int64, error) {
+	if expected != nil {
+		generation, err := runHedgedTreeWrite(ctx, treeGCSWriteHedgeDelay, func(writeCtx context.Context) (int64, error) {
+			return b.putOnce(writeCtx, key, data, expected)
+		})
+		if err != nil {
+			return b.resolveConditionalWrite(ctx, key, data, expected, err)
+		}
+		return generation, nil
+	}
+	generation, err := b.putOnce(ctx, key, data, expected)
+	if err != nil {
+		return b.resolveConditionalWrite(ctx, key, data, expected, err)
+	}
+	return generation, nil
+}
+
+type treeWriteResult struct {
+	generation int64
+	err        error
+}
+
+func runHedgedTreeWrite(ctx context.Context, delay time.Duration, write func(context.Context) (int64, error)) (int64, error) {
+	writeCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make(chan treeWriteResult, 2)
+	start := func() {
+		go func() {
+			generation, err := write(writeCtx)
+			results <- treeWriteResult{generation: generation, err: err}
+		}()
+	}
+	start()
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case result := <-results:
+		return result.generation, result.err
+	case <-timer.C:
+		start()
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
+	var firstErr error
+	for range 2 {
+		select {
+		case result := <-results:
+			if result.err == nil {
+				cancel()
+				return result.generation, nil
+			}
+			if firstErr == nil {
+				firstErr = result.err
+			}
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		}
+	}
+	return 0, firstErr
+}
+
+func (b *gcsTreeBackend) putOnce(ctx context.Context, key string, data []byte, expected *int64) (int64, error) {
 	o := b.client.Bucket(b.bucket).Object(key)
 	if expected != nil {
 		if *expected == 0 {
@@ -263,10 +326,10 @@ func (b *gcsTreeBackend) Put(ctx context.Context, key string, data []byte, expec
 	configureTreeMetadataWriter(w)
 	if _, err := w.Write(data); err != nil {
 		_ = w.Close()
-		return b.resolveConditionalCreate(ctx, key, data, expected, err)
+		return 0, err
 	}
 	if err := w.Close(); err != nil {
-		return b.resolveConditionalCreate(ctx, key, data, expected, err)
+		return 0, err
 	}
 	return w.Attrs().Generation, nil
 }
@@ -280,14 +343,14 @@ func configureTreeMetadataWriter(w *storage.Writer) {
 	w.ChunkSize = 256 << 10
 }
 
-func (b *gcsTreeBackend) resolveConditionalCreate(ctx context.Context, key string, data []byte, expected *int64, writeErr error) (int64, error) {
+func (b *gcsTreeBackend) resolveConditionalWrite(ctx context.Context, key string, data []byte, expected *int64, writeErr error) (int64, error) {
 	classified := classifyGCSSaveError(writeErr)
-	// A conditional create can reach GCS successfully while its response is
-	// lost. A transport retry then receives 412 during Write or Close because
-	// the first attempt already created the object. Accept that ambiguous result
-	// only when the live object is byte-for-byte identical; a different value
-	// remains a real concurrent mutation conflict.
-	if classified == ErrMetadataConflict && expected != nil && *expected == 0 {
+	// A conditional write can reach GCS successfully while its response is lost.
+	// A hedge or transport retry then receives 412 because the first attempt
+	// already advanced the generation. Accept that ambiguous result only when
+	// the live object is byte-for-byte identical; a different value remains a
+	// real concurrent mutation conflict.
+	if expected != nil {
 		existing, found, getErr := b.Get(ctx, key)
 		if getErr == nil && found && bytes.Equal(existing.Data, data) {
 			return existing.Generation, nil

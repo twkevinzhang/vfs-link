@@ -705,12 +705,15 @@ func TestTreeV4ConcurrentChildCreateAndTrashNeverLeavesOrphan(t *testing.T) {
 	if err = store.UpsertDirectory(ctx, "dir"); err != nil {
 		t.Fatal(err)
 	}
+	store.v4.waitFinalizers()
 	directory, found, err := store.v4.resolve(ctx, "dir")
 	if err != nil || !found {
 		t.Fatalf("directory found=%t err=%v", found, err)
 	}
 	resource := fmt.Sprintf("directory:%s:shard:%03d", directory.NodeID, store.v4.shardFor("child.txt"))
+	backend.mu.Lock()
 	backend.targetKey, backend.armed = store.v4.leaseKey(resource), true
+	backend.mu.Unlock()
 	createErr := make(chan error, 1)
 	go func() {
 		_, _, writeErr := store.ReplaceFileConditional(ctx, "dir/child.txt", "child", 1, nil, true)
