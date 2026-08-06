@@ -85,6 +85,7 @@ type treeV4Pending struct {
 	Value         json.RawMessage `json:"value,omitempty"`
 	Delete        bool            `json:"delete,omitempty"`
 	Fence         int64           `json:"fence"`
+	LeaseUntil    time.Time       `json:"leaseUntil,omitempty"`
 }
 
 // treeV4Envelope keeps the previously committed value alongside a prepared
@@ -822,6 +823,12 @@ func (n *treeV4Namespace) normalizeEnvelope(ctx context.Context, key string, gen
 			return err
 		}
 	}
+	if !found && envelope.Pending.LeaseUntil.After(n.now()) {
+		// Same-parent rename prepares participants before publishing its atomic
+		// decision. Its embedded lease prevents another writer from discarding a
+		// live preparation during that short window.
+		return ErrMetadataConflict
+	}
 	if found && transaction.Status == "preparing" && transaction.LeaseUntil.After(n.now()) {
 		return ErrMetadataConflict
 	}
@@ -1460,6 +1467,9 @@ func (n *treeV4Namespace) readShardMutationSnapshot(ctx context.Context, directo
 				}
 				return snapshot, nil
 			}
+			if !decisionFound && envelope.Pending.LeaseUntil.After(n.now()) {
+				return treeV4ShardMutationSnapshot{}, ErrMetadataConflict
+			}
 			if err = n.normalizeEnvelope(ctx, key, object.Generation, envelope); err != nil {
 				return treeV4ShardMutationSnapshot{}, err
 			}
@@ -1483,18 +1493,28 @@ func (n *treeV4Namespace) readShardMutationSnapshot(ctx context.Context, directo
 	return treeV4ShardMutationSnapshot{}, ErrMetadataConflict
 }
 
-func (n *treeV4Namespace) prepareShardSnapshot(ctx context.Context, transactionID string, snapshot treeV4ShardMutationSnapshot, value treeV4DirectoryShard) error {
+func (n *treeV4Namespace) prepareShardSnapshot(ctx context.Context, transactionID string, leaseUntil time.Time, snapshot treeV4ShardMutationSnapshot, value treeV4DirectoryShard) error {
 	raw, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}
 	envelope := treeV4Envelope{
 		Current: snapshot.current,
-		Pending: &treeV4Pending{TransactionID: transactionID, Value: raw},
+		Pending: &treeV4Pending{TransactionID: transactionID, Value: raw, LeaseUntil: leaseUntil},
 	}
 	data, _ := marshalTree(envelope)
 	_, err = n.store.objects.Put(ctx, snapshot.key, data, &snapshot.generation)
 	return err
+}
+
+func (n *treeV4Namespace) publishRenameDecision(ctx context.Context, transaction treeV4Transaction) (int64, error) {
+	transaction.UpdatedAt = n.now()
+	data, err := marshalTree(transaction)
+	if err != nil {
+		return 0, err
+	}
+	zero := int64(0)
+	return n.store.objects.Put(ctx, n.transactionKey(transaction.ID), data, &zero)
 }
 
 func (n *treeV4Namespace) renameSameParentOptimistic(ctx context.Context, parentPath, fromName, toName string) (treeV4Node, error) {
@@ -1561,17 +1581,6 @@ func (n *treeV4Namespace) renameSameParentOptimisticAttempts(ctx context.Context
 			Participants: participantKeys, DerivedApplied: true,
 			CreatedAt: now, UpdatedAt: now, LeaseUntil: now.Add(v4LeaseTTL(len(resources))),
 		}
-		data, _ := marshalTree(transaction)
-		type manifestCreateResult struct {
-			generation int64
-			err        error
-		}
-		manifestCreated := make(chan manifestCreateResult, 1)
-		go func() {
-			zero := int64(0)
-			generation, createErr := n.store.objects.Put(ctx, n.transactionKey(id), data, &zero)
-			manifestCreated <- manifestCreateResult{generation: generation, err: createErr}
-		}()
 		snapshots := make([]treeV4ShardMutationSnapshot, 2)
 		readErrors := make([]error, 2)
 		var reads sync.WaitGroup
@@ -1591,30 +1600,27 @@ func (n *treeV4Namespace) renameSameParentOptimisticAttempts(ctx context.Context
 			}()
 			reads.Wait()
 		}
-		created := <-manifestCreated
-		if created.err != nil {
-			return treeV4Node{}, created.err
-		}
-		generation := created.generation
 		abort := func() {
 			transaction.Status = "aborted"
 			transaction.LeaseUntil = time.Time{}
-			_, _ = n.writeTransaction(context.Background(), transaction, generation)
+			abortCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			generation, publishErr := n.publishRenameDecision(abortCtx, transaction)
+			if publishErr == nil {
+				n.finishCommittedRenameAsync(transaction, generation)
+			}
 		}
 		if readErrors[0] != nil || readErrors[1] != nil {
 			err = errors.Join(readErrors...)
-			abort()
 			if !errors.Is(err, ErrMetadataConflict) {
 				return treeV4Node{}, err
 			}
 		} else {
 			entry, exists := snapshots[0].shard.Entries[fromName]
 			if !exists {
-				abort()
 				return treeV4Node{}, ErrNotFound
 			}
 			if _, collision := snapshots[1].shard.Entries[toName]; collision {
-				abort()
 				return treeV4Node{}, ErrPathConflict
 			}
 			values := []treeV4DirectoryShard{snapshots[0].shard, snapshots[1].shard}
@@ -1644,7 +1650,7 @@ func (n *treeV4Namespace) renameSameParentOptimisticAttempts(ctx context.Context
 			for index, item := range participants {
 				index, item := index, item
 				prepareTasks = append(prepareTasks, func(taskCtx context.Context) error {
-					prepareErrors[index] = n.prepareShardSnapshot(taskCtx, id, item.snapshot, item.value)
+					prepareErrors[index] = n.prepareShardSnapshot(taskCtx, id, transaction.LeaseUntil, item.snapshot, item.value)
 					return nil
 				})
 			}
@@ -1661,13 +1667,14 @@ func (n *treeV4Namespace) renameSameParentOptimisticAttempts(ctx context.Context
 			} else {
 				transaction.Status = "committed"
 				transaction.LeaseUntil = time.Time{}
-				generation, err = n.writeTransaction(ctx, transaction, generation)
+				generation, err := n.publishRenameDecision(ctx, transaction)
 				if err != nil {
 					observed, observedGeneration, observedFound, readErr := n.readActiveTransaction(ctx, id)
 					if readErr != nil || !observedFound || observed.Status != "committed" {
+						abort()
 						return treeV4Node{}, err
 					}
-					transaction, generation, err = observed, observedGeneration, nil
+					transaction, generation = observed, observedGeneration
 				}
 				n.finishCommittedRenameAsync(transaction, generation)
 				return entry.Node, nil

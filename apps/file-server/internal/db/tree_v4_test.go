@@ -978,6 +978,100 @@ func TestTreeV4MutationSnapshotFoldsCommittedEnvelopeWithoutPromotion(t *testing
 	}
 }
 
+func TestTreeV4MutationSnapshotPreservesUndecidedLivePreparation(t *testing.T) {
+	ctx := context.Background()
+	store := newTestTreeV4(t, TreeV4Options{ShardCount: 8})
+	if _, _, err := store.ReplaceFileConditional(ctx, "fixture.txt", "object-fixture", 7, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	store.v4.waitFinalizers()
+	shardID := store.v4.shardFor("fixture.txt")
+	key := store.v4.shardKey("root", shardID)
+	object, found, err := store.objects.Get(ctx, key)
+	if err != nil || !found {
+		t.Fatalf("shard found=%t err=%v", found, err)
+	}
+	var envelope treeV4Envelope
+	if err = json.Unmarshal(object.Data, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	envelope.Pending = &treeV4Pending{
+		TransactionID: "unpublished-live-rename",
+		Value:         envelope.Current,
+		LeaseUntil:    time.Now().UTC().Add(time.Minute),
+	}
+	payload, _ := marshalTree(envelope)
+	pendingGeneration, err := store.objects.Put(ctx, key, payload, &object.Generation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.v4.readShardMutationSnapshot(ctx, "root", shardID); !errors.Is(err, ErrMetadataConflict) {
+		t.Fatalf("snapshot error=%v, want ErrMetadataConflict", err)
+	}
+	observed, found, err := store.objects.Get(ctx, key)
+	if err != nil || !found || observed.Generation != pendingGeneration {
+		t.Fatalf("pending generation=%d observed=%d found=%t err=%v", pendingGeneration, observed.Generation, found, err)
+	}
+}
+
+type observeV4RenameDecisionsBackend struct {
+	treeBackend
+	mu        sync.Mutex
+	preparing int
+	committed int
+	aborted   int
+}
+
+func (backend *observeV4RenameDecisionsBackend) Put(ctx context.Context, key string, data []byte, expected *int64) (int64, error) {
+	if strings.Contains(key, "/v4/transactions/active/") {
+		var transaction treeV4Transaction
+		if json.Unmarshal(data, &transaction) == nil && transaction.DerivedApplied {
+			backend.mu.Lock()
+			switch transaction.Status {
+			case "preparing":
+				backend.preparing++
+			case "committed":
+				backend.committed++
+			case "aborted":
+				backend.aborted++
+			}
+			backend.mu.Unlock()
+		}
+	}
+	return backend.treeBackend.Put(ctx, key, data, expected)
+}
+
+func TestTreeV4SameParentRenamePublishesOneCommittedDecision(t *testing.T) {
+	ctx := context.Background()
+	local, err := newLocalTreeBackend(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := &observeV4RenameDecisionsBackend{treeBackend: local}
+	store, err := newTreeStoreV4(backend, "rename-direct-commit-v4", TreeV4Options{ShardCount: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	if err = store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = store.ReplaceFileConditional(ctx, "fixture-a.txt", "object-a", 1, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	store.v4.waitFinalizers()
+	if err = store.RenamePath(ctx, "fixture-a.txt", "fixture-b.txt"); err != nil {
+		t.Fatal(err)
+	}
+	store.v4.waitFinalizers()
+	backend.mu.Lock()
+	preparing, committed, aborted := backend.preparing, backend.committed, backend.aborted
+	backend.mu.Unlock()
+	if preparing != 0 || committed != 1 || aborted != 0 {
+		t.Fatalf("rename decisions preparing=%d committed=%d aborted=%d", preparing, committed, aborted)
+	}
+}
+
 func TestTreeV4SequentialRenamesFoldArchivedPendingParticipants(t *testing.T) {
 	ctx := context.Background()
 	store := newTestTreeV4(t, TreeV4Options{ShardCount: 64})
