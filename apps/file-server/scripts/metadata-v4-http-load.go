@@ -332,7 +332,7 @@ func run(ctx context.Context, cfg config) error {
 			_ = cleanup(cleanupCtx, client, root)
 		}
 	}()
-	if err = createFixtures(ctx, client, fixtures); err != nil {
+	if err = createFixtures(ctx, client, clientFixtures); err != nil {
 		cleanupNeeded = true
 		return fmt.Errorf("fixture setup: %w", err)
 	}
@@ -435,19 +435,22 @@ func runSamePathContention(ctx context.Context, client *apiClient, f *fixture, c
 	return gate, nil
 }
 
-func createFixtures(ctx context.Context, client *apiClient, fixtures []*fixture) error {
+func createFixtures(ctx context.Context, client *apiClient, clients [][]*fixture) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	errs := make(chan error, len(fixtures))
+	errs := make(chan error, len(clients))
 	var wg sync.WaitGroup
-	for _, f := range fixtures {
-		f := f
+	for _, fixtures := range clients {
+		fixtures := fixtures
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := client.upload(ctx, f, false); err != nil {
-				errs <- err
-				cancel()
+			for _, item := range fixtures {
+				if err := client.upload(ctx, item, false); err != nil {
+					errs <- err
+					cancel()
+					return
+				}
 			}
 		}()
 	}
