@@ -100,7 +100,11 @@ func NewTreeLocalV4(root, prefix string, options TreeV4Options) (Store, error) {
 }
 
 func NewTreeGCSV4(ctx context.Context, bucket, prefix string, options TreeV4Options) (Store, error) {
-	c, err := storage.NewClient(ctx)
+	// V4 performs many small conditional metadata reads and writes. Reuse the
+	// Storage gRPC transport's long-lived HTTP/2 connections instead of paying
+	// the JSON resumable-upload round trips on every CAS. Blob uploads and the
+	// legacy V3 constructor intentionally keep their existing HTTP clients.
+	c, err := storage.NewGRPCClient(ctx)
 	if err != nil {
 		return nil, err
 	}

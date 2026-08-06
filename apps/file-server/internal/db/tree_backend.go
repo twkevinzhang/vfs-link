@@ -23,7 +23,7 @@ import (
 )
 
 const treeCASAttempts = 8
-const treeGCSWriteHedgeDelay = 250 * time.Millisecond
+const treeGCSWriteHedgeDelay = 500 * time.Millisecond
 
 var ErrMetadataConflict = errors.New("metadata changed concurrently")
 
