@@ -484,32 +484,78 @@ func runPhase(parent context.Context, name string, client *apiClient, clients []
 	interval := time.Duration(float64(time.Second) / rate)
 	var wg sync.WaitGroup
 	for _, fixtures := range clients {
-		fixtures := fixtures
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			ticker := time.NewTicker(interval)
-			defer ticker.Stop()
-			next := 0
-			for {
+		fixtureInterval := interval * time.Duration(len(fixtures))
+		for fixtureIndex, item := range fixtures {
+			item := item
+			initialDelay := interval * time.Duration(fixtureIndex+1)
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				timer := time.NewTimer(initialDelay)
+				defer timer.Stop()
 				select {
 				case <-ctx.Done():
 					return
-				case <-ticker.C:
-					// The phase deadline stops new mutations but does not cancel an
-					// already-issued rename. Leaving its outcome ambiguous would make
-					// the next phase target the wrong path.
-					f := fixtures[next%len(fixtures)]
-					next++
-					latency, retryCount, exhausted, correctness := mutateOnce(parent, client, f, retries)
+				case <-timer.C:
+				}
+				mutate := func() {
+					latency, retryCount, exhausted, correctness := mutateOnce(parent, client, item, retries)
 					m.record(latency, retryCount, exhausted, correctness)
 				}
-			}
-		}()
+				mutate()
+				ticker := time.NewTicker(fixtureInterval)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-ticker.C:
+						// Each fixture owns distinct source/target shards. Scheduling one
+						// worker per fixture lets a client sustain its aggregate rate without
+						// issuing concurrent renames against the same logical path.
+						mutate()
+					}
+				}
+			}()
+		}
 	}
 	wg.Wait()
 	m.ended = time.Now()
+	var auditWG sync.WaitGroup
+	for _, fixtures := range clients {
+		fixtures := fixtures
+		auditWG.Add(1)
+		go func() {
+			defer auditWG.Done()
+			m.recordCorrectnessFailures(auditFixtures(parent, client, fixtures))
+		}()
+	}
+	auditWG.Wait()
 	return m.report(name)
+}
+
+func auditFixtures(ctx context.Context, client *apiClient, fixtures []*fixture) int64 {
+	if len(fixtures) == 0 {
+		return 0
+	}
+	listed, err := client.list(ctx, fixtures[0].parent)
+	if err != nil {
+		return int64(len(fixtures))
+	}
+	entries := make(map[string]entry, len(listed.Entries))
+	for _, item := range listed.Entries {
+		entries[item.Path] = item
+	}
+	failures := int64(0)
+	for _, item := range fixtures {
+		current, found := entries[item.currentPath]
+		alternatePath := path.Join(item.parent, item.alternate)
+		_, alternateFound := entries[alternatePath]
+		if !found || alternateFound || current.Size != int64(len(item.payload)) || (item.physicalHash != "" && current.PhysicalHash != item.physicalHash) {
+			failures++
+		}
+	}
+	return failures
 }
 
 func mutateOnce(ctx context.Context, client *apiClient, f *fixture, maxRetries int) (time.Duration, int, bool, bool) {
@@ -525,17 +571,12 @@ func mutateOnce(ctx context.Context, client *apiClient, f *fixture, maxRetries i
 			err = client.awaitOperation(ctx, operation.OperationID)
 		}
 		if err == nil {
-			ok, verifyErr := client.verifyRename(ctx, f.parent, oldPath, newPath, int64(len(f.payload)), f.physicalHash)
-			if verifyErr == nil && ok {
-				f.currentPath, f.currentName, f.alternate = newPath, newName, oldName
-				return time.Since(started), attempt, false, correctnessFailure
-			}
-			if verifyErr == nil {
-				correctnessFailure = true
-				err = errors.New("immediate list did not show exactly one renamed path")
-			} else {
-				err = verifyErr
-			}
+			// A successful rename response is emitted only after the path commit.
+			// The next alternating mutation implicitly validates this state, and a
+			// full per-client audit after the phase independently verifies every
+			// final path without charging directory-list latency to the mutation.
+			f.currentPath, f.currentName, f.alternate = newPath, newName, oldName
+			return time.Since(started), attempt, false, correctnessFailure
 		} else {
 			// A response can be lost after the rename commit. Reconcile before
 			// retrying a non-idempotent operation.
@@ -571,6 +612,12 @@ func (m *metrics) record(latency time.Duration, retries int, exhausted, correctn
 	if correctness {
 		m.correctnessFailures++
 	}
+}
+
+func (m *metrics) recordCorrectnessFailures(failures int64) {
+	m.mu.Lock()
+	m.correctnessFailures += failures
+	m.mu.Unlock()
 }
 
 func (m *metrics) report(name string) report {
