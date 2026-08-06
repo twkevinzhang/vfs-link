@@ -198,6 +198,12 @@ func (b *localTreeBackend) List(_ context.Context, prefix string) ([]string, err
 		if entry.IsDir() {
 			return nil
 		}
+		// Put writes atomic-rename staging files beside the target object. They
+		// are backend implementation details and must never become namespace
+		// objects while a concurrent List walks the directory.
+		if strings.HasPrefix(entry.Name(), ".tree-") && strings.HasSuffix(entry.Name(), ".tmp") {
+			return nil
+		}
 		rel, err := filepath.Rel(b.root, name)
 		if err != nil {
 			return err

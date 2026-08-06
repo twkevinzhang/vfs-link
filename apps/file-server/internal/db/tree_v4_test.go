@@ -96,7 +96,11 @@ func TestTreeV4ConcurrentDisjointWrites(t *testing.T) {
 	}
 	page, err := store.ListDirectChildren(ctx, "", DirectChildrenOptions{})
 	if err != nil || page.Total != writers {
-		t.Fatalf("total=%d err=%v", page.Total, err)
+		paths := make([]string, 0, len(page.Records))
+		for _, record := range page.Records {
+			paths = append(paths, record.LogicPath)
+		}
+		t.Fatalf("total=%d paths=%v err=%v", page.Total, paths, err)
 	}
 }
 
@@ -111,6 +115,7 @@ func TestTreeV4ConcurrentWritesRetrySharedShardConflicts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(store.Close)
 	if err = store.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -166,6 +171,73 @@ type failV4PromotionBackend struct {
 	failNext bool
 }
 
+type blockingV4PromotionBackend struct {
+	treeBackend
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (backend *blockingV4PromotionBackend) Put(ctx context.Context, key string, data []byte, expected *int64) (int64, error) {
+	if strings.Contains(key, "/v4/directories/") {
+		var envelope treeV4Envelope
+		if json.Unmarshal(data, &envelope) == nil && envelope.Pending == nil && len(envelope.Current) != 0 {
+			backend.once.Do(func() { close(backend.entered) })
+			select {
+			case <-backend.release:
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			}
+		}
+	}
+	return backend.treeBackend.Put(ctx, key, data, expected)
+}
+
+func TestTreeV4CommittedMutationReturnsBeforeParticipantPromotion(t *testing.T) {
+	ctx := context.Background()
+	local, err := newLocalTreeBackend(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := &blockingV4PromotionBackend{
+		treeBackend: local,
+		entered:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	store, err := newTreeStoreV4(backend, "async-finalize-v4", TreeV4Options{ShardCount: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	if err = store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	returned := make(chan error, 1)
+	go func() {
+		_, _, writeErr := store.ReplaceFileConditional(ctx, "a.txt", "object-a", 1, nil, true)
+		returned <- writeErr
+	}()
+	select {
+	case <-backend.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("background participant promotion did not start")
+	}
+	select {
+	case writeErr := <-returned:
+		if writeErr != nil {
+			t.Fatal(writeErr)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("committed mutation waited for participant promotion")
+	}
+	close(backend.release)
+	store.v4.waitFinalizers()
+	record, found, err := store.Find(ctx, "a.txt")
+	if err != nil || !found || record.PhysicalHash != "object-a" {
+		t.Fatalf("record=%+v found=%t err=%v", record, found, err)
+	}
+}
+
 func (backend *failV4PromotionBackend) Put(ctx context.Context, key string, data []byte, expected *int64) (int64, error) {
 	backend.mu.Lock()
 	defer backend.mu.Unlock()
@@ -190,6 +262,7 @@ func TestTreeV4ReaderResolvesArchivedCommitAfterPromotionFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(store.Close)
 	if err = store.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -197,6 +270,7 @@ func TestTreeV4ReaderResolvesArchivedCommitAfterPromotionFailure(t *testing.T) {
 	if _, matched, err := store.ReplaceFileConditional(ctx, "a.txt", "object-a", 1, nil, true); err != nil || !matched {
 		t.Fatalf("write matched=%t err=%v", matched, err)
 	}
+	store.v4.waitFinalizers()
 	if _, err = store.ReduceDerivedDeltas(ctx, TreeDerivedReduceOptions{RebuildDirectory: func(context.Context, string) error { return nil }}); err != nil {
 		t.Fatal(err)
 	}
@@ -239,6 +313,7 @@ func TestTreeV4CommitResponseLossIsResolvedByReadBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(store.Close)
 	if err = store.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -258,6 +333,7 @@ func TestTreeV4MarkDerivedAppliedIsIdempotentAfterArchive(t *testing.T) {
 	if _, _, err := store.ReplaceFileConditional(ctx, "a.txt", "object-a", 1, nil, true); err != nil {
 		t.Fatal(err)
 	}
+	store.v4.waitFinalizers()
 	active, err := store.objects.List(ctx, store.prefix+"/v4/transactions/active/")
 	if err != nil || len(active) != 1 {
 		t.Fatalf("active=%v err=%v", active, err)
@@ -337,6 +413,7 @@ func TestTreeV4OperationLeaseRejectsLiveRunnerAndOldOwnerCannotOverwrite(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(store.Close)
 	if err = store.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -392,6 +469,7 @@ func TestTreeV4OperationMarksPermanentRaceLoserFailed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(store.Close)
 	if err = store.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -464,6 +542,7 @@ func TestTreeV4RecoveryRereadsManifestWhenAbortLosesToCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(store.Close)
 	if err = store.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -569,6 +648,7 @@ func TestTreeV4DeleteAbsentDoesNotDeleteDirectoryCreatedAfterInitialRead(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(store.Close)
 	if err = store.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -593,6 +673,7 @@ func TestTreeV4ConcurrentChildCreateAndTrashNeverLeavesOrphan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(store.Close)
 	if err = store.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -656,6 +737,7 @@ func TestTreeV4CreateThenTrashBeforeReductionConvergesStatsToZero(t *testing.T) 
 	if _, err := store.TrashPaths(ctx, []TrashPath{{Path: "dir", TrashID: "stats-trash"}}); err != nil {
 		t.Fatal(err)
 	}
+	store.v4.waitFinalizers()
 	if _, err := store.ReduceDerivedDeltas(ctx, TreeDerivedReduceOptions{RebuildDirectory: func(context.Context, string) error { return nil }}); err != nil {
 		t.Fatal(err)
 	}
@@ -700,6 +782,7 @@ func TestTreeV4LargeDirectoryTrashBudgetsLeaseAcquisitionTime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(store.Close)
 	store.v4.now = backend.current
 	if err = store.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
@@ -727,6 +810,10 @@ type observeV4WritesBackend struct {
 
 func (backend *observeV4WritesBackend) Put(ctx context.Context, key string, data []byte, expected *int64) (int64, error) {
 	observed := strings.Contains(key, "/v4/directories/")
+	if observed {
+		var envelope treeV4Envelope
+		observed = json.Unmarshal(data, &envelope) == nil && envelope.Pending != nil
+	}
 	if observed {
 		backend.mu.Lock()
 		backend.active++
@@ -767,6 +854,7 @@ func TestTreeV4ScopedLeasesAllowDisjointWritesAndSerializeSamePath(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(store.Close)
 	if err = store.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -849,6 +937,7 @@ func TestTreeV4FailedCommitKeepsPreviousValueAndRecovers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(store.Close)
 	if err = store.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -951,6 +1040,7 @@ func TestBulkImportTreeV4DoesNotPublishCompletionWhenTrashReadBackIsMissing(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(store.Close)
 	now := time.Now().UTC()
 	snapshot := TreeImportSnapshot{SourceSHA256: "missing-trash", Records: []FileRecord{{
 		ID: 1, LogicPath: "gone.txt", PhysicalHash: "gone", Size: 1, UpdatedAt: now,

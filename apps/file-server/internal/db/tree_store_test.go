@@ -5,11 +5,34 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestLocalTreeBackendListExcludesAtomicPutStagingFiles(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	backend, err := newLocalTreeBackend(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = backend.Put(ctx, "visible/object.json", []byte("visible"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(root, "visible", ".tree-interrupted.tmp"), []byte("staging"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := backend.List(ctx, "visible")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 1 || keys[0] != "visible/object.json" {
+		t.Fatalf("keys=%v, want only committed object", keys)
+	}
+}
 
 func TestTreeDriftActionsListPaginateAndDismiss(t *testing.T) {
 	ctx := context.Background()

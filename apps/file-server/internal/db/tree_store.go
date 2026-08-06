@@ -137,7 +137,12 @@ func newTreeStore(b treeBackend, prefix string) *TreeStore {
 	prefix = cleanTreePrefix(prefix)
 	return &TreeStore{objects: b, prefix: prefix}
 }
-func (s *TreeStore) Close() { _ = s.objects.Close() }
+func (s *TreeStore) Close() {
+	if s.v4 != nil {
+		s.v4.waitFinalizers()
+	}
+	_ = s.objects.Close()
+}
 func (s *TreeStore) EnsureSchema(ctx context.Context) error {
 	if s.v4 != nil {
 		return s.v4.ensureSchema(ctx)

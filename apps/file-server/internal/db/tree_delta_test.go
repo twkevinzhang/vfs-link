@@ -266,6 +266,7 @@ func TestV4DerivedReducerPublishesNestedStatsAndSummaries(t *testing.T) {
 	if err = store.UpsertFile(ctx, "docs/nested/a.txt", "object-a", 7); err != nil {
 		t.Fatal(err)
 	}
+	store.v4.waitFinalizers()
 	result, err := store.ReduceDerivedDeltas(ctx, TreeDerivedReduceOptions{Owner: "integration", RebuildDirectories: store.rebuildV4DirectorySummaries})
 	if err != nil || result.Applied != 3 {
 		t.Fatalf("result=%+v err=%v", result, err)

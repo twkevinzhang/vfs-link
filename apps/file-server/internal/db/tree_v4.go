@@ -11,6 +11,7 @@ import (
 	pathpkg "path"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -32,6 +33,7 @@ type treeV4Namespace struct {
 	shardCount   int
 	mutationMode string
 	now          func() time.Time
+	finalizers   sync.WaitGroup
 }
 
 type treeV4Root struct {
@@ -586,6 +588,22 @@ func (n *treeV4Namespace) releaseLeases(leases []treeV4HeldLease) {
 	}
 }
 
+func (n *treeV4Namespace) finishCommittedAsync(transaction treeV4Transaction, generation int64, leases []treeV4HeldLease) {
+	n.finalizers.Add(1)
+	go func() {
+		defer n.finalizers.Done()
+		// The manifest CAS is the namespace commit point. Releasing its scoped
+		// fences and promoting envelopes are maintenance work; neither needs to
+		// extend the client-visible mutation latency.
+		n.releaseLeases(leases)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		_ = n.finalizeCommittedTransaction(ctx, transaction, generation)
+	}()
+}
+
+func (n *treeV4Namespace) waitFinalizers() { n.finalizers.Wait() }
+
 func (n *treeV4Namespace) verifyLeases(ctx context.Context, owner string, leases []treeV4HeldLease) error {
 	for _, held := range leases {
 		object, found, err := n.store.objects.Get(ctx, held.key)
@@ -772,7 +790,7 @@ func (n *treeV4Namespace) transactOnce(ctx context.Context, resources []string, 
 		_, _ = n.writeTransaction(context.Background(), transaction, generation)
 		return nil, "", err
 	}
-	defer n.releaseLeases(leases)
+	defer func() { n.releaseLeases(leases) }()
 	fences := make(map[string]int64, len(leases))
 	for _, lease := range leases {
 		fences[lease.resource] = lease.generation
@@ -823,10 +841,11 @@ func (n *treeV4Namespace) transactOnce(ctx context.Context, resources []string, 
 		}
 		transaction, generation, err = observed, observedGeneration, nil
 	}
-	// The manifest CAS above is the namespace commit point. Derived emission and
-	// participant promotion are retryable maintenance; they must not turn a
-	// committed client mutation into an apparent failure.
-	_ = n.finalizeCommittedTransaction(ctx, transaction, generation)
+	// Readers resolve pending envelopes through the committed manifest. Release
+	// scoped fences and emit/promote in the background so eventual aggregates
+	// and representation cleanup do not extend the strong path mutation.
+	n.finishCommittedAsync(transaction, generation, leases)
+	leases = nil
 	return result, id, nil
 }
 
@@ -1024,8 +1043,11 @@ func RecoverTreeV4Transactions(ctx context.Context, store Store) (int, error) {
 	return tree.v4.recoverTransactions(ctx)
 }
 
-func v4PathResources(path string, parent treeV4Node, shard int) []string {
-	return []string{"path:" + path, fmt.Sprintf("directory:%s:shard:%03d", parent.NodeID, shard)}
+func v4PathResources(_ string, parent treeV4Node, shard int) []string {
+	// The parent shard is the authoritative mapping for every direct child. Its
+	// lease already serializes create, replace, rename, move, and delete for a
+	// logical path; a second per-path lease only adds GCS round trips.
+	return []string{fmt.Sprintf("directory:%s:shard:%03d", parent.NodeID, shard)}
 }
 
 func (n *treeV4Namespace) replaceFileConditional(ctx context.Context, path, hash string, size int64, expected *string, absent bool) (string, bool, error) {
