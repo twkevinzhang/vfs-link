@@ -840,7 +840,7 @@ type countV4LeaseAccessBackend struct {
 }
 
 func (backend *countV4LeaseAccessBackend) observe(key string) {
-	if strings.Contains(key, "/v4/leases/mutations/") {
+	if strings.Contains(key, "/v4/leases/") {
 		backend.mu.Lock()
 		backend.accesses++
 		backend.mu.Unlock()
@@ -1053,7 +1053,23 @@ func TestTreeV4WarmParentChainValidatesAncestorsConcurrently(t *testing.T) {
 
 func TestTreeV4OptimisticSamePathRenameHasSingleWinner(t *testing.T) {
 	ctx := context.Background()
-	store := newTestTreeV4(t, TreeV4Options{ShardCount: 64})
+	local, err := newLocalTreeBackend(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Delay participant CAS writes so all contenders overlap across the two
+	// shards. This deterministically exercises the conflict fallback that GCS
+	// needs when a same-path race would otherwise have no winner.
+	delayed := &observeV4WritesBackend{treeBackend: local, delay: 100 * time.Millisecond}
+	backend := &countV4LeaseAccessBackend{treeBackend: delayed}
+	store, err := newTreeStoreV4(backend, "rename-race-v4", TreeV4Options{ShardCount: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	if err = store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
 	if _, _, err := store.ReplaceFileConditional(ctx, "fixture-a.txt", "object-a", 1, nil, true); err != nil {
 		t.Fatal(err)
 	}
@@ -1081,6 +1097,12 @@ func TestTreeV4OptimisticSamePathRenameHasSingleWinner(t *testing.T) {
 	}
 	if successes != 1 {
 		t.Fatalf("rename successes=%d, want 1", successes)
+	}
+	backend.mu.Lock()
+	leaseAccesses := backend.accesses
+	backend.mu.Unlock()
+	if leaseAccesses == 0 {
+		t.Fatal("same-path contention did not exercise lease fallback")
 	}
 	page, err := store.ListDirectChildren(ctx, "", DirectChildrenOptions{})
 	if err != nil || page.Total != 1 || page.Records[0].LogicPath != "fixture-b.txt" {

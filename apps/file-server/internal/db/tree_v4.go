@@ -1456,6 +1456,40 @@ func (n *treeV4Namespace) prepareShardSnapshot(ctx context.Context, transactionI
 }
 
 func (n *treeV4Namespace) renameSameParentOptimistic(ctx context.Context, parentPath, fromName, toName string) (treeV4Node, error) {
+	node, err := n.renameSameParentOptimisticAttempts(ctx, parentPath, fromName, toName)
+	if !errors.Is(err, ErrMetadataConflict) {
+		return node, err
+	}
+
+	// Keep the normal rename path lease-free. Under a true same-path race,
+	// however, contenders can each prepare a different participant shard and
+	// exhaust optimistic retries without any transaction reaching commit. Once
+	// that happens, serialize only this shard pair and retry the same protocol so
+	// the race has one durable winner instead of a distributed livelock.
+	parent, _, found, resolveErr := n.resolveDirectoryChain(ctx, parentPath)
+	if resolveErr != nil {
+		return treeV4Node{}, resolveErr
+	}
+	if !found || !parent.IsDirectory {
+		return treeV4Node{}, ErrNotFound
+	}
+	resources, resolveErr := n.normalizeLeaseResources([]string{
+		fmt.Sprintf("directory:%s:shard:%03d", parent.NodeID, n.shardFor(fromName)),
+		fmt.Sprintf("directory:%s:shard:%03d", parent.NodeID, n.shardFor(toName)),
+	})
+	if resolveErr != nil {
+		return treeV4Node{}, resolveErr
+	}
+	owner := uuid.NewString()
+	leases, acquireErr := n.acquireLeases(ctx, owner, resources, v4LeaseTTL(len(resources)))
+	if acquireErr != nil {
+		return treeV4Node{}, acquireErr
+	}
+	defer n.releaseLeases(leases)
+	return n.renameSameParentOptimisticAttempts(ctx, parentPath, fromName, toName)
+}
+
+func (n *treeV4Namespace) renameSameParentOptimisticAttempts(ctx context.Context, parentPath, fromName, toName string) (treeV4Node, error) {
 	fromShardID, toShardID := n.shardFor(fromName), n.shardFor(toName)
 	retrySeed := uuid.NewString()
 	for attempt := 0; attempt < treeCASAttempts; attempt++ {
