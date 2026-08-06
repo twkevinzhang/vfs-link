@@ -24,17 +24,34 @@ const (
 	// A scoped transaction acquires leases sequentially. Budget enough time for
 	// every conditional GET/PUT pair so the first lease cannot expire merely
 	// while later resources are being fenced.
-	v4LeaseResourceBudget     = 500 * time.Millisecond
-	maxV4TransactionResources = 16384
+	v4LeaseResourceBudget      = 500 * time.Millisecond
+	maxV4TransactionResources  = 16384
+	maxV4DirectoryCacheEntries = 2048
 )
 
 type treeV4Namespace struct {
-	store        *TreeStore
-	shardCount   int
-	mutationMode string
-	now          func() time.Time
-	rootNode     treeV4Node
-	finalizers   sync.WaitGroup
+	store            *TreeStore
+	shardCount       int
+	mutationMode     string
+	now              func() time.Time
+	rootNode         treeV4Node
+	finalizers       sync.WaitGroup
+	directoryCacheMu sync.RWMutex
+	directoryCache   map[string]treeV4DirectoryCacheEntry
+}
+
+type treeV4DirectoryCacheLink struct {
+	ParentID   string
+	ShardID    int
+	Name       string
+	ChildID    string
+	Generation int64
+}
+
+type treeV4DirectoryCacheEntry struct {
+	Node  treeV4Node
+	Chain []string
+	Links []treeV4DirectoryCacheLink
 }
 
 type treeV4Root struct {
@@ -138,7 +155,11 @@ func newTreeV4Namespace(store *TreeStore, options TreeV4Options) (*treeV4Namespa
 	if mode != TreeV4MutationScoped && mode != TreeV4MutationGlobal {
 		return nil, fmt.Errorf("unsupported v4 mutation mode %q", options.MutationMode)
 	}
-	return &treeV4Namespace{store: store, shardCount: shards, mutationMode: mode, now: func() time.Time { return time.Now().UTC() }}, nil
+	return &treeV4Namespace{
+		store: store, shardCount: shards, mutationMode: mode,
+		now:            func() time.Time { return time.Now().UTC() },
+		directoryCache: make(map[string]treeV4DirectoryCacheEntry),
+	}, nil
 }
 
 func (n *treeV4Namespace) rootKey() string { return n.store.prefix + "/v4/root.json" }
@@ -379,8 +400,22 @@ func (n *treeV4Namespace) resolveDirectoryChain(ctx context.Context, path string
 	if path == "" {
 		return node, chain, true, nil
 	}
+	if cached, ok := n.cachedDirectory(path); ok {
+		valid, validateErr := n.validateCachedDirectory(ctx, cached)
+		if validateErr != nil {
+			return treeV4Node{}, nil, false, validateErr
+		}
+		if valid {
+			return cached.Node, append([]string(nil), cached.Chain...), true, nil
+		}
+		n.directoryCacheMu.Lock()
+		delete(n.directoryCache, path)
+		n.directoryCacheMu.Unlock()
+	}
+	links := make([]treeV4DirectoryCacheLink, 0, strings.Count(path, "/")+1)
 	for _, segment := range strings.Split(path, "/") {
-		shard, _, shardErr := n.readShard(ctx, node.NodeID, n.shardFor(segment))
+		shardID := n.shardFor(segment)
+		shard, generation, _, shardErr := n.readShardSnapshot(ctx, node.NodeID, shardID)
 		if shardErr != nil {
 			return treeV4Node{}, nil, false, shardErr
 		}
@@ -388,10 +423,57 @@ func (n *treeV4Namespace) resolveDirectoryChain(ctx context.Context, path string
 		if !exists || !entry.Node.IsDirectory {
 			return treeV4Node{}, nil, false, nil
 		}
+		links = append(links, treeV4DirectoryCacheLink{
+			ParentID: node.NodeID, ShardID: shardID, Name: segment,
+			ChildID: entry.Node.NodeID, Generation: generation,
+		})
 		node = entry.Node
 		chain = append(chain, node.NodeID)
 	}
+	n.cacheDirectory(path, treeV4DirectoryCacheEntry{Node: node, Chain: append([]string(nil), chain...), Links: links})
 	return node, chain, true, nil
+}
+
+func (n *treeV4Namespace) cachedDirectory(path string) (treeV4DirectoryCacheEntry, bool) {
+	n.directoryCacheMu.RLock()
+	entry, ok := n.directoryCache[path]
+	n.directoryCacheMu.RUnlock()
+	return entry, ok
+}
+
+func (n *treeV4Namespace) cacheDirectory(path string, entry treeV4DirectoryCacheEntry) {
+	n.directoryCacheMu.Lock()
+	defer n.directoryCacheMu.Unlock()
+	if len(n.directoryCache) >= maxV4DirectoryCacheEntries {
+		clear(n.directoryCache)
+	}
+	n.directoryCache[path] = entry
+}
+
+func (n *treeV4Namespace) validateCachedDirectory(ctx context.Context, cached treeV4DirectoryCacheEntry) (bool, error) {
+	valid := make([]bool, len(cached.Links))
+	tasks := make([]func(context.Context) error, 0, len(cached.Links))
+	for index, link := range cached.Links {
+		index, link := index, link
+		tasks = append(tasks, func(taskCtx context.Context) error {
+			shard, generation, found, err := n.readShardSnapshot(taskCtx, link.ParentID, link.ShardID)
+			if err != nil {
+				return err
+			}
+			entry, exists := shard.Entries[link.Name]
+			valid[index] = found && exists && entry.Node.IsDirectory && entry.Node.NodeID == link.ChildID && generation == link.Generation
+			return nil
+		})
+	}
+	if err := runTreeImportTasks(ctx, 16, tasks); err != nil {
+		return false, err
+	}
+	for _, linkValid := range valid {
+		if !linkValid {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func v4FileRecord(path string, node treeV4Node) FileRecord {
@@ -1384,6 +1466,29 @@ func (n *treeV4Namespace) renameSameParentOptimistic(ctx context.Context, parent
 		if err != nil {
 			return err
 		}
+		id := uuid.NewString()
+		now := n.now()
+		participantKeys := []string{n.shardKey(parent.NodeID, fromShardID)}
+		if toShardID != fromShardID {
+			participantKeys = append(participantKeys, n.shardKey(parent.NodeID, toShardID))
+		}
+		sort.Strings(participantKeys)
+		transaction := treeV4Transaction{
+			ID: id, Status: "preparing", Owner: id, Resources: resources,
+			Participants: participantKeys, DerivedApplied: true,
+			CreatedAt: now, UpdatedAt: now, LeaseUntil: now.Add(v4LeaseTTL(len(resources))),
+		}
+		data, _ := marshalTree(transaction)
+		type manifestCreateResult struct {
+			generation int64
+			err        error
+		}
+		manifestCreated := make(chan manifestCreateResult, 1)
+		go func() {
+			zero := int64(0)
+			generation, createErr := n.store.objects.Put(ctx, n.transactionKey(id), data, &zero)
+			manifestCreated <- manifestCreateResult{generation: generation, err: createErr}
+		}()
 		snapshots := make([]treeV4ShardMutationSnapshot, 2)
 		readErrors := make([]error, 2)
 		var reads sync.WaitGroup
@@ -1403,17 +1508,30 @@ func (n *treeV4Namespace) renameSameParentOptimistic(ctx context.Context, parent
 			}()
 			reads.Wait()
 		}
+		created := <-manifestCreated
+		if created.err != nil {
+			return created.err
+		}
+		generation := created.generation
+		abort := func() {
+			transaction.Status = "aborted"
+			transaction.LeaseUntil = time.Time{}
+			_, _ = n.writeTransaction(context.Background(), transaction, generation)
+		}
 		if readErrors[0] != nil || readErrors[1] != nil {
 			err = errors.Join(readErrors...)
+			abort()
 			if !errors.Is(err, ErrMetadataConflict) {
 				return err
 			}
 		} else {
 			entry, exists := snapshots[0].shard.Entries[fromName]
 			if !exists {
+				abort()
 				return ErrNotFound
 			}
 			if _, collision := snapshots[1].shard.Entries[toName]; collision {
+				abort()
 				return ErrPathConflict
 			}
 			values := []treeV4DirectoryShard{snapshots[0].shard, snapshots[1].shard}
@@ -1438,31 +1556,22 @@ func (n *treeV4Namespace) renameSameParentOptimistic(ctx context.Context, parent
 				participants[index] = participant{snapshot: snapshots[index], value: values[index]}
 			}
 			sort.Slice(participants, func(i, j int) bool { return participants[i].snapshot.key < participants[j].snapshot.key })
-			id := uuid.NewString()
-			now := n.now()
-			transaction := treeV4Transaction{
-				ID: id, Status: "preparing", Owner: id, Resources: resources,
-				DerivedApplied: true, CreatedAt: now, UpdatedAt: now,
-				LeaseUntil: now.Add(v4LeaseTTL(len(resources))),
+			prepareErrors := make([]error, len(participants))
+			prepareTasks := make([]func(context.Context) error, 0, len(participants))
+			for index, item := range participants {
+				index, item := index, item
+				prepareTasks = append(prepareTasks, func(taskCtx context.Context) error {
+					prepareErrors[index] = n.prepareShardSnapshot(taskCtx, id, item.snapshot, item.value)
+					return nil
+				})
 			}
-			for _, item := range participants {
-				transaction.Participants = append(transaction.Participants, item.snapshot.key)
-			}
-			data, _ := marshalTree(transaction)
-			zero := int64(0)
-			generation, createErr := n.store.objects.Put(ctx, n.transactionKey(id), data, &zero)
-			if createErr != nil {
-				return createErr
-			}
-			for _, item := range participants {
-				if err = n.prepareShardSnapshot(ctx, id, item.snapshot, item.value); err != nil {
-					break
-				}
+			if runErr := runTreeImportTasks(ctx, len(prepareTasks), prepareTasks); runErr != nil {
+				err = runErr
+			} else {
+				err = errors.Join(prepareErrors...)
 			}
 			if err != nil {
-				transaction.Status = "aborted"
-				transaction.LeaseUntil = time.Time{}
-				_, _ = n.writeTransaction(context.Background(), transaction, generation)
+				abort()
 				if !errorsIsConflict(err) {
 					return err
 				}

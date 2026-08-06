@@ -899,6 +899,97 @@ func TestTreeV4SameParentRenameUsesParticipantCASWithoutLeaseRoundTrips(t *testi
 	}
 }
 
+func TestTreeV4CachedParentChainInvalidatesAfterAncestorRename(t *testing.T) {
+	ctx := context.Background()
+	store := newTestTreeV4(t, TreeV4Options{ShardCount: 64})
+	if err := store.UpsertDirectory(ctx, "parent"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.ReplaceFileConditional(ctx, "parent/a.txt", "object-a", 1, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RenamePath(ctx, "parent", "moved"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RenamePath(ctx, "parent/a.txt", "parent/b.txt"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("rename through stale parent cache error=%v", err)
+	}
+	if _, found, err := store.Find(ctx, "moved/a.txt"); err != nil || !found {
+		t.Fatalf("moved child found=%t err=%v", found, err)
+	}
+	if _, found, err := store.Find(ctx, "moved/b.txt"); err != nil || found {
+		t.Fatalf("stale-cache target found=%t err=%v", found, err)
+	}
+}
+
+type observeV4DirectoryReadsBackend struct {
+	treeBackend
+	mu        sync.Mutex
+	active    int
+	maxActive int
+	delay     time.Duration
+}
+
+func (backend *observeV4DirectoryReadsBackend) Get(ctx context.Context, key string) (treeObject, bool, error) {
+	if !strings.Contains(key, "/v4/directories/") {
+		return backend.treeBackend.Get(ctx, key)
+	}
+	backend.mu.Lock()
+	backend.active++
+	if backend.active > backend.maxActive {
+		backend.maxActive = backend.active
+	}
+	backend.mu.Unlock()
+	defer func() {
+		backend.mu.Lock()
+		backend.active--
+		backend.mu.Unlock()
+	}()
+	select {
+	case <-ctx.Done():
+		return treeObject{}, false, ctx.Err()
+	case <-time.After(backend.delay):
+	}
+	return backend.treeBackend.Get(ctx, key)
+}
+
+func TestTreeV4WarmParentChainValidatesAncestorsConcurrently(t *testing.T) {
+	ctx := context.Background()
+	local, err := newLocalTreeBackend(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := &observeV4DirectoryReadsBackend{treeBackend: local, delay: 10 * time.Millisecond}
+	store, err := newTreeStoreV4(backend, "parent-cache-v4", TreeV4Options{ShardCount: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	if err = store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"one", "one/two", "one/two/three"} {
+		if err = store.UpsertDirectory(ctx, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err = store.ReplaceFileConditional(ctx, "one/two/three/a.txt", "object-a", 1, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	backend.mu.Lock()
+	backend.maxActive = 0
+	backend.mu.Unlock()
+	if err = store.RenamePath(ctx, "one/two/three/a.txt", "one/two/three/b.txt"); err != nil {
+		t.Fatal(err)
+	}
+	backend.mu.Lock()
+	maximum := backend.maxActive
+	backend.mu.Unlock()
+	if maximum < 3 {
+		t.Fatalf("cached ancestor validation max concurrency=%d, want >=3", maximum)
+	}
+}
+
 func TestTreeV4OptimisticSamePathRenameHasSingleWinner(t *testing.T) {
 	ctx := context.Background()
 	store := newTestTreeV4(t, TreeV4Options{ShardCount: 64})
@@ -969,6 +1060,37 @@ func (backend *observeV4WritesBackend) maximum() int {
 	backend.mu.Lock()
 	defer backend.mu.Unlock()
 	return backend.maxActive
+}
+
+func TestTreeV4SameParentRenamePreparesDistinctShardsConcurrently(t *testing.T) {
+	ctx := context.Background()
+	local, err := newLocalTreeBackend(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := &observeV4WritesBackend{treeBackend: local, delay: 15 * time.Millisecond}
+	store, err := newTreeStoreV4(backend, "rename-parallel-v4", TreeV4Options{ShardCount: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	if err = store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if store.v4.shardFor("fixture-a.txt") == store.v4.shardFor("fixture-b.txt") {
+		t.Fatal("fixture names must exercise two participant shards")
+	}
+	if _, _, err = store.ReplaceFileConditional(ctx, "fixture-a.txt", "object-a", 1, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	store.v4.waitFinalizers()
+	backend.reset()
+	if err = store.RenamePath(ctx, "fixture-a.txt", "fixture-b.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if maximum := backend.maximum(); maximum < 2 {
+		t.Fatalf("rename participant prepare max concurrency=%d, want 2", maximum)
+	}
 }
 
 func TestTreeV4ScopedLeasesAllowDisjointWritesAndSerializeSamePath(t *testing.T) {
