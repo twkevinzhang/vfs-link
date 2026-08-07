@@ -76,7 +76,7 @@
     "eslint-plugin-vue": "^9.16.1",
     "jiti": "2.4.2",
     "jsdom": "~22.1.0",
-    "nx": "22.7.2",
+    "nx": "22.7.7",
     "prettier": "^2.6.2",
     "prisma": "7.5.0",
     "tailwindcss": "^4.1.14",
