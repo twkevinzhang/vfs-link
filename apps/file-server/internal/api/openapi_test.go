@@ -104,6 +104,7 @@ func TestOpenAPIDocumentCoversPublicRESTOperations(t *testing.T) {
 		"GET /api/shares/{shareId}":             {},
 		"POST /api/shares/{shareId}/start":      {},
 		"POST /api/uploads":                     {},
+		"POST /api/uploads/preflight":           {},
 		"GET /api/uploads/{uploadId}":           {},
 		"DELETE /api/uploads/{uploadId}":        {},
 		"PUT /api/uploads/{uploadId}/content":   {},

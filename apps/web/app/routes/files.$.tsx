@@ -286,7 +286,9 @@ export default function FileBrowserRoute() {
   useEffect(() => {
     const failedKeys = new Set(
       uploadQueue.items
-        .filter((item) => item.state === 'failed')
+        .filter(
+          (item) => item.state === 'failed' || item.state === 'needs-decision'
+        )
         .map((item) => item.key)
     );
     if ([...failedKeys].some((key) => !failedUploadKeysRef.current.has(key))) {
@@ -1180,6 +1182,10 @@ function UploadActivity({
     | 'resumeAll'
     | 'reconnect'
     | 'authorizeSource'
+    | 'replaceOne'
+    | 'skipOne'
+    | 'replaceAll'
+    | 'skipAll'
     | 'globallyPaused'
   >;
   expanded: boolean;
@@ -1188,16 +1194,33 @@ function UploadActivity({
 }) {
   const { items, summary } = queue;
   const roundedProgress = Math.round(summary.progress);
-  const pendingCount = summary.queued + summary.uploading + summary.retrying;
+  const pendingCount =
+    summary.checking + summary.queued + summary.uploading + summary.retrying;
   const retryableCount = items.filter(
     (item) => item.state === 'failed' && item.retryEligible
   ).length;
+  const decisionBatches = Array.from(
+    items
+      .filter((item) => item.state === 'needs-decision')
+      .reduce((batches, item) => {
+        const batch = batches.get(item.batchId) ?? [];
+        batch.push(item);
+        batches.set(item.batchId, batch);
+        return batches;
+      }, new Map<string, UploadQueueItem[]>())
+  );
   const queueListId = 'background-upload-queue';
   const headline =
-    summary.uploading > 0
+    summary.needsDecision > 0
+      ? `${summary.needsDecision} ${
+          summary.needsDecision === 1 ? 'upload needs' : 'uploads need'
+        } a decision`
+      : summary.uploading > 0
       ? `Uploading ${summary.uploading} ${
           summary.uploading === 1 ? 'file' : 'files'
         }`
+      : summary.checking > 0
+      ? 'Checking upload paths'
       : summary.queued > 0
       ? 'Preparing uploads'
       : summary.paused > 0
@@ -1213,7 +1236,12 @@ function UploadActivity({
       <div className="grid gap-1.5">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <div className="flex min-w-0 items-center gap-2">
-            {pendingCount > 0 ? (
+            {summary.needsDecision > 0 ? (
+              <AlertCircle
+                aria-hidden="true"
+                className="h-4 w-4 shrink-0 text-amber-600"
+              />
+            ) : pendingCount > 0 ? (
               <LoaderCircle
                 aria-hidden="true"
                 className="h-4 w-4 shrink-0 animate-spin text-accent"
@@ -1246,7 +1274,7 @@ function UploadActivity({
                 {formatBytes(summary.totalBytes)} · {roundedProgress}%
               </span>
             </p>
-            {pendingCount + summary.paused > 0 && (
+            {pendingCount + summary.paused + summary.needsDecision > 0 && (
               <Button
                 variant="ghost"
                 size="sm"
@@ -1306,6 +1334,11 @@ function UploadActivity({
         {expanded && (
           <p className="text-xs text-muted-foreground" aria-live="polite">
             {summary.complete} complete · {summary.queued} queued
+            {summary.checking > 0 ? ` · ${summary.checking} checking` : ''}
+            {summary.needsDecision > 0
+              ? ` · ${summary.needsDecision} need a decision`
+              : ''}
+            {summary.skipped > 0 ? ` · ${summary.skipped} skipped` : ''}
             {summary.paused > 0 ? ` · ${summary.paused} paused` : ''}
             {summary.retrying > 0 ? ` · ${summary.retrying} retrying` : ''}
             {summary.failed > 0 ? ` · ${summary.failed} failed` : ''}
@@ -1317,23 +1350,72 @@ function UploadActivity({
       </div>
 
       {expanded && (
-        <ul id={queueListId} className="grid gap-2" aria-label="Upload queue">
-          {items.map((item) => (
-            <UploadActivityItem
-              key={item.key}
-              item={item}
-              onCancel={() => queue.cancel(item.key)}
-              onRetry={() => queue.retry(item.key)}
-              onPause={() => queue.pause(item.key)}
-              onResume={() => queue.resume(item.key)}
-              onReconnect={(file, handle) =>
-                queue.reconnect(item.key, file, handle)
-              }
-              onAuthorize={() => void queue.authorizeSource(item.key)}
-              onDismiss={() => queue.dismiss(item.key)}
-            />
-          ))}
-        </ul>
+        <div className="grid gap-3">
+          {decisionBatches.map(([batchId, conflicts]) => {
+            const duplicateCount = conflicts.filter(
+              (item) => item.localDuplicate
+            ).length;
+            const replaceableCount = conflicts.filter(
+              (item) =>
+                !item.localDuplicate && item.targetStatus !== 'directory'
+            ).length;
+            return (
+              <section
+                key={batchId}
+                className="flex flex-col gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 sm:flex-row sm:items-center"
+                aria-label={`Resolve ${conflicts.length} upload path conflicts`}
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-semibold text-amber-950">
+                    {conflicts.length} path{' '}
+                    {conflicts.length === 1 ? 'conflict' : 'conflicts'}
+                  </p>
+                  <p className="text-xs text-amber-900/80">
+                    Other files keep uploading while these wait.
+                    {duplicateCount > 0
+                      ? ' Duplicate local paths must be chosen individually.'
+                      : ''}
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  <Button
+                    size="sm"
+                    disabled={replaceableCount === 0}
+                    onClick={() => queue.replaceAll(batchId)}
+                  >
+                    Replace all
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => queue.skipAll(batchId)}
+                  >
+                    Skip all
+                  </Button>
+                </div>
+              </section>
+            );
+          })}
+          <ul id={queueListId} className="grid gap-2" aria-label="Upload queue">
+            {items.map((item) => (
+              <UploadActivityItem
+                key={item.key}
+                item={item}
+                onCancel={() => queue.cancel(item.key)}
+                onRetry={() => queue.retry(item.key)}
+                onPause={() => queue.pause(item.key)}
+                onResume={() => queue.resume(item.key)}
+                onReconnect={(file, handle) =>
+                  queue.reconnect(item.key, file, handle)
+                }
+                onAuthorize={() => void queue.authorizeSource(item.key)}
+                onReplace={() => queue.replaceOne(item.key)}
+                onSkip={() => queue.skipOne(item.key)}
+                onDismiss={() => queue.dismiss(item.key)}
+              />
+            ))}
+          </ul>
+        </div>
       )}
     </section>
   );
@@ -1347,6 +1429,8 @@ function UploadActivityItem({
   onResume,
   onReconnect,
   onAuthorize,
+  onReplace,
+  onSkip,
   onDismiss,
 }: {
   item: UploadQueueItem;
@@ -1359,11 +1443,19 @@ function UploadActivityItem({
     handle?: FileSystemFileHandle
   ) => string | undefined;
   onAuthorize: () => void;
+  onReplace: () => void;
+  onSkip: () => void;
   onDismiss: () => void;
 }) {
   const roundedProgress = Math.round(item.progress);
   const statusLabel =
-    item.state === 'queued'
+    item.state === 'checking'
+      ? 'Checking path'
+      : item.state === 'needs-decision'
+      ? 'Needs decision'
+      : item.state === 'skipped'
+      ? 'Skipped'
+      : item.state === 'queued'
       ? 'Queued'
       : item.state === 'uploading'
       ? `${roundedProgress}%`
@@ -1380,17 +1472,24 @@ function UploadActivityItem({
   return (
     <li className="grid gap-1.5 rounded-lg border border-border bg-muted/20 p-2.5">
       <div className="flex min-w-0 flex-wrap items-center gap-2">
-        {item.state === 'complete' ? (
+        {item.state === 'complete' || item.state === 'skipped' ? (
           <Check
             aria-hidden="true"
             className="h-4 w-4 shrink-0 text-[#11615a]"
+          />
+        ) : item.state === 'needs-decision' ? (
+          <AlertCircle
+            aria-hidden="true"
+            className="h-4 w-4 shrink-0 text-amber-600"
           />
         ) : item.state === 'failed' || item.state === 'local-missing' ? (
           <AlertCircle
             aria-hidden="true"
             className="h-4 w-4 shrink-0 text-destructive"
           />
-        ) : item.state === 'uploading' || item.state === 'retrying' ? (
+        ) : item.state === 'checking' ||
+          item.state === 'uploading' ||
+          item.state === 'retrying' ? (
           <LoaderCircle
             aria-hidden="true"
             className="h-4 w-4 shrink-0 animate-spin text-accent"
@@ -1412,6 +1511,20 @@ function UploadActivityItem({
         <span className="shrink-0 text-xs text-muted-foreground">
           {statusLabel}
         </span>
+        {item.state === 'needs-decision' && (
+          <div className="flex shrink-0 flex-wrap items-center gap-1">
+            <Button
+              size="sm"
+              onClick={onReplace}
+              disabled={item.targetStatus === 'directory'}
+            >
+              {item.localDuplicate ? 'Use this file' : 'Replace this'}
+            </Button>
+            <Button size="sm" variant="outline" onClick={onSkip}>
+              Skip
+            </Button>
+          </div>
+        )}
         {(item.state === 'queued' ||
           item.state === 'uploading' ||
           item.state === 'retrying') && (
@@ -1481,7 +1594,9 @@ function UploadActivityItem({
             onReconnect={onReconnect}
           />
         )}
-        {(item.state === 'complete' || item.state === 'local-missing') && (
+        {(item.state === 'complete' ||
+          item.state === 'skipped' ||
+          item.state === 'local-missing') && (
           <Button
             variant="ghost"
             size="icon"
@@ -1493,7 +1608,22 @@ function UploadActivityItem({
           </Button>
         )}
       </div>
-      <UploadProgress value={roundedProgress} label={item.relativePath} />
+      {item.state === 'needs-decision' && (
+        <p className="text-xs text-amber-800">
+          {item.targetStatus === 'directory'
+            ? 'A folder already exists at this path. Skip this file or choose another destination.'
+            : item.localDuplicate
+            ? 'More than one selected file targets this same path. Choose the source to keep.'
+            : `A file already exists at this path${
+                item.existingTarget
+                  ? ` · ${formatBytes(item.existingTarget.size)}`
+                  : ''
+              }.`}
+        </p>
+      )}
+      {!['needs-decision', 'skipped', 'checking'].includes(item.state) && (
+        <UploadProgress value={roundedProgress} label={item.relativePath} />
+      )}
       {item.error && (
         <p className="text-xs text-destructive" role="alert">
           {item.error}

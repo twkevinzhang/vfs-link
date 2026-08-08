@@ -193,7 +193,11 @@ func TestLocalOversizedOverwritePreservesExistingFinalObject(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	overwrite, err := service.Create(ctx, CreateInput{LogicPath: "report.txt", Size: 4, Overwrite: true})
+	preflight, err := service.Preflight(ctx, []PreflightInput{{ClientID: "report", LogicPath: "report.txt"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	overwrite, err := service.Create(ctx, CreateInput{LogicPath: "report.txt", Size: 4, Overwrite: true, TargetVersion: preflight[0].TargetVersion})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,6 +222,113 @@ func TestLocalOversizedOverwritePreservesExistingFinalObject(t *testing.T) {
 	}
 	if string(content) != "safe" {
 		t.Fatalf("final content = %q, want original", content)
+	}
+}
+
+func TestPreflightReportsAvailableConflictAndDirectory(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store, err := db.NewTreeLocal(filepath.Join(root, "metadata"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	if err := store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertFile(ctx, "existing.txt", "existing-object", 27); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertDirectory(ctx, "folder"); err != nil {
+		t.Fatal(err)
+	}
+	objects, err := blob.NewLocal(filepath.Join(root, "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewWithBlob(store, objects)
+
+	results, err := service.Preflight(ctx, []PreflightInput{
+		{ClientID: "new", LogicPath: "new.txt"},
+		{ClientID: "old", LogicPath: "existing.txt"},
+		{ClientID: "dir", LogicPath: "folder"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("results = %#v", results)
+	}
+	if results[0].Status != PreflightAvailable || results[0].LogicPath != "new.txt" || results[0].Existing != nil || results[0].TargetVersion == "" {
+		t.Fatalf("available result = %#v", results[0])
+	}
+	if results[1].Status != PreflightConflict || results[1].Existing == nil || results[1].Existing.Kind != "file" || results[1].Existing.Size != 27 || results[1].TargetVersion == "" {
+		t.Fatalf("conflict result = %#v", results[1])
+	}
+	if results[2].Status != PreflightDirectory || results[2].Existing == nil || results[2].Existing.Kind != "directory" || results[2].TargetVersion == "" {
+		t.Fatalf("directory result = %#v", results[2])
+	}
+}
+
+type snapshotPublisher struct {
+	file  File
+	found bool
+}
+
+func (p *snapshotPublisher) FindFile(context.Context, string) (File, bool, error) {
+	return p.file, p.found, nil
+}
+func (*snapshotPublisher) EnsureDirectory(context.Context, string) error { return nil }
+func (*snapshotPublisher) ReplaceFile(context.Context, string, string, int64, *string, bool) (string, bool, error) {
+	panic("unexpected call")
+}
+
+type prepareCountingStorage struct{ prepares int }
+
+func (*prepareCountingStorage) Driver() string { return "test" }
+func (s *prepareCountingStorage) Prepare(context.Context, Session) (PreparedTarget, error) {
+	s.prepares++
+	return PreparedTarget{}, nil
+}
+func (*prepareCountingStorage) Write(context.Context, Session, io.Reader) (int64, error) {
+	panic("unexpected call")
+}
+func (*prepareCountingStorage) Stat(context.Context, string) (int64, error) { panic("unexpected call") }
+func (*prepareCountingStorage) Delete(context.Context, string) error        { panic("unexpected call") }
+func (*prepareCountingStorage) Cancel(context.Context, Session) error       { panic("unexpected call") }
+
+func TestCreateRejectsChangedPreflightTargetBeforePreparingStorage(t *testing.T) {
+	publisher := &snapshotPublisher{file: File{PhysicalHash: "object-v1", Size: 4, UpdatedAt: time.Unix(1, 0)}, found: true}
+	storage := &prepareCountingStorage{}
+	service := New(&singleSessionRepository{}, publisher, storage)
+	results, err := service.Preflight(context.Background(), []PreflightInput{{ClientID: "one", LogicPath: "report.txt"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	publisher.file = File{PhysicalHash: "object-v2", Size: 8, UpdatedAt: time.Unix(2, 0)}
+
+	_, err = service.Create(context.Background(), CreateInput{
+		LogicPath: "report.txt", Size: 4, Overwrite: true, TargetVersion: results[0].TargetVersion,
+	})
+	if !errors.Is(err, ErrTargetChanged) {
+		t.Fatalf("Create() error = %v, want ErrTargetChanged", err)
+	}
+	if storage.prepares != 0 {
+		t.Fatalf("Prepare() calls = %d, want 0", storage.prepares)
+	}
+}
+
+func TestCreateOverwriteRequiresTargetVersion(t *testing.T) {
+	publisher := &snapshotPublisher{file: File{PhysicalHash: "object", Size: 4, UpdatedAt: time.Unix(1, 0)}, found: true}
+	storage := &prepareCountingStorage{}
+	service := New(&singleSessionRepository{}, publisher, storage)
+
+	_, err := service.Create(context.Background(), CreateInput{LogicPath: "report.txt", Size: 4, Overwrite: true})
+	if !errors.Is(err, ErrTargetVersionRequired) {
+		t.Fatalf("Create() error = %v, want ErrTargetVersionRequired", err)
+	}
+	if storage.prepares != 0 {
+		t.Fatalf("Prepare() calls = %d, want 0", storage.prepares)
 	}
 }
 

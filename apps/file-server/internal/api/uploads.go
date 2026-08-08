@@ -13,10 +13,24 @@ import (
 )
 
 type createUploadRequest struct {
-	Path        string `json:"path"`
-	Size        int64  `json:"size"`
-	ContentType string `json:"contentType"`
-	Overwrite   bool   `json:"overwrite"`
+	Path          string `json:"path"`
+	Size          int64  `json:"size"`
+	ContentType   string `json:"contentType"`
+	Overwrite     bool   `json:"overwrite"`
+	TargetVersion string `json:"targetVersion,omitempty"`
+}
+
+type preflightUploadRequest struct {
+	Items []preflightUploadItem `json:"items"`
+}
+
+type preflightUploadItem struct {
+	ClientID string `json:"clientId"`
+	Path     string `json:"path"`
+}
+
+type preflightUploadResponse struct {
+	Items []upload.PreflightResult `json:"items"`
 }
 
 type uploadResponse struct {
@@ -53,7 +67,8 @@ func (s *Server) handleCreateUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	session, err := s.uploads.Create(r.Context(), upload.CreateInput{
 		LogicPath: request.Path, Size: request.Size, ContentType: request.ContentType, Overwrite: request.Overwrite,
-		Origin: requestOrigin(r),
+		TargetVersion: request.TargetVersion,
+		Origin:        requestOrigin(r),
 	})
 	if err != nil {
 		writeUploadError(w, err)
@@ -62,6 +77,38 @@ func (s *Server) handleCreateUpload(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	writeJSON(w, toUploadResponse(session, true))
+}
+
+func (s *Server) handlePreflightUploads(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if s.uploads == nil {
+		writeError(w, http.StatusServiceUnavailable, "uploads are not configured")
+		return
+	}
+	var request preflightUploadRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if len(request.Items) == 0 || len(request.Items) > 1000 {
+		writeError(w, http.StatusBadRequest, "items must contain between 1 and 1000 entries")
+		return
+	}
+	inputs := make([]upload.PreflightInput, len(request.Items))
+	for index, item := range request.Items {
+		inputs[index] = upload.PreflightInput{ClientID: item.ClientID, LogicPath: item.Path}
+	}
+	results, err := s.uploads.Preflight(r.Context(), inputs)
+	if err != nil {
+		writeUploadError(w, err)
+		return
+	}
+	writeJSON(w, preflightUploadResponse{Items: results})
 }
 
 func requestOrigin(r *http.Request) string {
@@ -248,8 +295,14 @@ func writeUploadError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusTooManyRequests, err.Error())
 	case errors.Is(err, db.ErrMetadataConflict):
 		writeError(w, http.StatusConflict, err.Error())
-	case errors.Is(err, upload.ErrFileExists), errors.Is(err, upload.ErrConflict), errors.Is(err, upload.ErrInvalidSession):
+	case errors.Is(err, upload.ErrFileExists):
+		writeCodedError(w, http.StatusConflict, "UPLOAD_TARGET_EXISTS", err.Error())
+	case errors.Is(err, upload.ErrTargetIsDirectory):
+		writeCodedError(w, http.StatusConflict, "UPLOAD_TARGET_IS_DIRECTORY", err.Error())
+	case errors.Is(err, upload.ErrConflict), errors.Is(err, upload.ErrInvalidSession):
 		writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, upload.ErrTargetChanged):
+		writeCodedError(w, http.StatusConflict, "UPLOAD_TARGET_CHANGED", err.Error())
 	case errors.Is(err, upload.ErrOffsetConflict):
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, upload.ErrExpired):

@@ -2,6 +2,8 @@ package upload
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -28,7 +30,10 @@ const (
 var (
 	ErrNotFound                = errors.New("upload session not found")
 	ErrFileExists              = errors.New("file already exists")
+	ErrTargetIsDirectory       = errors.New("upload destination is a directory")
 	ErrConflict                = errors.New("file changed while upload was in progress")
+	ErrTargetChanged           = errors.New("upload target changed after preflight")
+	ErrTargetVersionRequired   = errors.New("targetVersion is required when overwrite is true")
 	ErrInvalidSession          = errors.New("upload session is not ready")
 	ErrCancellationUnavailable = errors.New("upload session cannot be safely cancelled")
 	ErrOffsetConflict          = errors.New("upload offset does not match committed size")
@@ -57,11 +62,12 @@ type Session struct {
 }
 
 type CreateInput struct {
-	LogicPath   string
-	Size        int64
-	ContentType string
-	Overwrite   bool
-	Origin      string
+	LogicPath     string
+	Size          int64
+	ContentType   string
+	Overwrite     bool
+	TargetVersion string
+	Origin        string
 }
 
 type Repository interface {
@@ -74,6 +80,33 @@ type Repository interface {
 type File struct {
 	PhysicalHash string
 	IsDirectory  bool
+	Size         int64
+	UpdatedAt    time.Time
+}
+
+const (
+	PreflightAvailable = "available"
+	PreflightConflict  = "conflict"
+	PreflightDirectory = "directory"
+)
+
+type PreflightInput struct {
+	ClientID  string
+	LogicPath string
+}
+
+type ExistingMetadata struct {
+	Kind      string    `json:"kind"`
+	Size      int64     `json:"size"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+type PreflightResult struct {
+	ClientID      string            `json:"clientId"`
+	LogicPath     string            `json:"path"`
+	Status        string            `json:"status"`
+	Existing      *ExistingMetadata `json:"existing,omitempty"`
+	TargetVersion string            `json:"targetVersion"`
 }
 
 type Publisher interface {
@@ -160,8 +193,14 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Session, error
 	if err != nil {
 		return Session{}, err
 	}
+	if input.Overwrite && strings.TrimSpace(input.TargetVersion) == "" {
+		return Session{}, ErrTargetVersionRequired
+	}
+	if targetVersion := strings.TrimSpace(input.TargetVersion); targetVersion != "" && targetVersion != targetVersionFor(logicPath, existing, found) {
+		return Session{}, ErrTargetChanged
+	}
 	if found && existing.IsDirectory {
-		return Session{}, errors.New("upload destination is a directory")
+		return Session{}, ErrTargetIsDirectory
 	}
 	if found && !input.Overwrite {
 		return Session{}, ErrFileExists
@@ -202,6 +241,55 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Session, error
 		return Session{}, err
 	}
 	return session, nil
+}
+
+// Preflight snapshots the current logical-path targets before the browser
+// starts any upload. The opaque target version is bound to both the normalized
+// path and its current metadata identity so Create can reject stale overwrite
+// decisions before allocating an upload session or GCS resumable capability.
+func (s *Service) Preflight(ctx context.Context, inputs []PreflightInput) ([]PreflightResult, error) {
+	results := make([]PreflightResult, 0, len(inputs))
+	for _, input := range inputs {
+		clientID := strings.TrimSpace(input.ClientID)
+		if clientID == "" {
+			return nil, errors.New("clientId is required")
+		}
+		logicPath, err := logicpath.Parse(input.LogicPath)
+		if err != nil {
+			return nil, err
+		}
+		if logicPath == "" || path.Base(logicPath) == "." {
+			return nil, errors.New("a file path is required")
+		}
+		existing, found, err := s.files.FindFile(ctx, logicPath)
+		if err != nil {
+			return nil, err
+		}
+		result := PreflightResult{
+			ClientID: clientID, LogicPath: logicPath, Status: PreflightAvailable,
+			TargetVersion: targetVersionFor(logicPath, existing, found),
+		}
+		if found {
+			kind := "file"
+			result.Status = PreflightConflict
+			if existing.IsDirectory {
+				kind = "directory"
+				result.Status = PreflightDirectory
+			}
+			result.Existing = &ExistingMetadata{Kind: kind, Size: existing.Size, UpdatedAt: existing.UpdatedAt}
+		}
+		results = append(results, result)
+	}
+	return results, nil
+}
+
+func targetVersionFor(logicPath string, file File, found bool) string {
+	state := "absent"
+	if found {
+		state = fmt.Sprintf("present\x00%t\x00%s\x00%d\x00%s", file.IsDirectory, file.PhysicalHash, file.Size, file.UpdatedAt.UTC().Format(time.RFC3339Nano))
+	}
+	digest := sha256.Sum256([]byte(logicPath + "\x00" + state))
+	return base64.RawURLEncoding.EncodeToString(digest[:])
 }
 
 func (s *Service) Find(ctx context.Context, id string) (Session, error) {

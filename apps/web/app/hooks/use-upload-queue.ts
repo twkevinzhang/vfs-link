@@ -15,20 +15,25 @@ import {
   completeUpload,
   createUpload,
   getUploadSession,
+  preflightUploads,
   putUploadChunk,
 } from '../lib/api';
 import { normalizePath } from '../lib/format';
 import type { UploadCandidate } from '../lib/folder-upload';
 import {
   MAX_CONCURRENT_UPLOADS,
+  duplicateLogicPaths,
   fileFingerprint,
   isOffsetConflict,
   isRetryAllEligible,
   isTransientUploadError,
+  isUploadTargetChanged,
   matchesFingerprint,
   nextChunkRange,
+  nextRunnableUploadKeys,
   retryDelayMs,
   shouldAutomaticallyRetry,
+  uploadStateNeedsSource,
   type UploadFingerprint,
 } from '../lib/upload-queue-core';
 import {
@@ -38,7 +43,11 @@ import {
   type PersistedUploadState,
   type UploadSourceSnapshot,
 } from '../lib/upload-queue-storage';
-import type { UploadSession } from '../types/upload';
+import type {
+  UploadPreflightExisting,
+  UploadPreflightStatus,
+  UploadSession,
+} from '../types/upload';
 
 const SOURCE_CHECK_INTERVAL_MS = 15_000;
 
@@ -46,6 +55,8 @@ export type UploadQueueState = PersistedUploadState;
 
 export type UploadQueueItem = {
   key: string;
+  /** One user selection event; bulk conflict actions never cross this boundary. */
+  batchId: string;
   file?: File;
   fileHandle?: FileSystemFileHandle;
   fingerprint: UploadFingerprint;
@@ -62,6 +73,12 @@ export type UploadQueueItem = {
   session?: UploadSession;
   /** Whether a direct child with this name existed when the item was added. */
   overwrite: boolean;
+  /** Opaque target version captured by the most recent server preflight. */
+  targetVersion?: string;
+  targetStatus?: UploadPreflightStatus;
+  existingTarget?: UploadPreflightExisting;
+  /** Multiple source files in this batch resolve to the same logical path. */
+  localDuplicate: boolean;
   archiveGroupId?: string;
   retryCount: number;
   retryEligible: boolean;
@@ -72,6 +89,9 @@ export type UploadQueueItem = {
 type UploadQueueSummary = {
   total: number;
   queued: number;
+  checking: number;
+  needsDecision: number;
+  skipped: number;
   uploading: number;
   retrying: number;
   paused: number;
@@ -108,19 +128,15 @@ function makeQueueKey(candidate: UploadCandidate) {
   return `${candidate.relativePath}-${candidate.file.size}-${candidate.file.lastModified}-${randomId}`;
 }
 
+function makeBatchId() {
+  return typeof crypto !== 'undefined' &&
+    typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `batch-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : 'Upload failed';
-}
-
-function isAlreadyExistsError(error: unknown) {
-  return errorMessage(error).toLowerCase().includes('already exists');
-}
-
-function confirmOverwrite(relativePath: string) {
-  return (
-    typeof window !== 'undefined' &&
-    window.confirm(`${relativePath} already exists. Replace it?`)
-  );
 }
 
 function progressFor(uploadedBytes: number, size: number) {
@@ -134,6 +150,7 @@ function progressFor(uploadedBytes: number, size: number) {
 function toPersisted(item: UploadQueueItem): PersistedUploadItem {
   return {
     key: item.key,
+    batchId: item.batchId,
     relativePath: item.relativePath,
     destinationPath: item.destinationPath,
     logicPath: item.logicPath,
@@ -145,6 +162,10 @@ function toPersisted(item: UploadQueueItem): PersistedUploadItem {
     error: item.error,
     session: item.session,
     overwrite: item.overwrite,
+    targetVersion: item.targetVersion,
+    targetStatus: item.targetStatus,
+    existingTarget: item.existingTarget,
+    localDuplicate: item.localDuplicate,
     archiveGroupId: item.archiveGroupId,
     retryCount: item.retryCount,
     retryEligible: item.retryEligible,
@@ -215,6 +236,9 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
   const pendingProgressRef = useRef(new Map<string, number>());
   const persistenceRef = useRef(Promise.resolve());
   const scheduleRef = useRef<(() => void) | undefined>(undefined);
+  const preflightRef = useRef<((keys: string[]) => Promise<void>) | undefined>(
+    undefined
+  );
 
   onItemCompleteRef.current = onItemComplete;
   globallyPausedRef.current = globallyPaused;
@@ -227,7 +251,9 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
         key: item.key,
         file: item.file,
         fileHandle: item.fileHandle,
-        retainFile: !['complete', 'local-missing'].includes(item.state),
+        retainFile: !['complete', 'skipped', 'local-missing'].includes(
+          item.state
+        ),
       }));
       persistenceRef.current = persistenceRef.current
         .catch(() => undefined)
@@ -444,7 +470,14 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
   const cancelAll = useCallback(() => {
     const keys = itemsRef.current
       .filter((item) =>
-        ['queued', 'uploading', 'retrying', 'paused'].includes(item.state)
+        [
+          'checking',
+          'needs-decision',
+          'queued',
+          'uploading',
+          'retrying',
+          'paused',
+        ].includes(item.state)
       )
       .map((item) => item.key);
     for (const key of keys) cancel(key);
@@ -461,14 +494,20 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
       )
         return;
       pauseRequestedKeysRef.current.delete(key);
+      const needsPreflight = !item.targetStatus && !item.session;
       updateItem(key, (current) => ({
         ...current,
-        state: globallyPausedRef.current ? 'paused' : 'queued',
+        state: needsPreflight
+          ? 'checking'
+          : globallyPausedRef.current
+          ? 'paused'
+          : 'queued',
         error: undefined,
         retryCount: 0,
         retryAt: undefined,
       }));
-      scheduleRef.current?.();
+      if (needsPreflight) void preflightRef.current?.([key]);
+      else scheduleRef.current?.();
     },
     [updateItem]
   );
@@ -515,6 +554,10 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
       const resumeState =
         item.missingFromState === 'complete'
           ? 'complete'
+          : item.missingFromState === 'needs-decision'
+          ? 'needs-decision'
+          : item.missingFromState === 'checking'
+          ? 'checking'
           : globallyPausedRef.current
           ? 'paused'
           : 'queued';
@@ -528,7 +571,8 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
         retryEligible: true,
         error: undefined,
       }));
-      scheduleRef.current?.();
+      if (resumeState === 'checking') void preflightRef.current?.([key]);
+      else scheduleRef.current?.();
       return undefined;
     },
     [updateItem]
@@ -557,15 +601,24 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
           return;
         }
         pauseRequestedKeysRef.current.delete(key);
+        const resumeState =
+          item.missingFromState === 'needs-decision'
+            ? 'needs-decision'
+            : item.missingFromState === 'checking'
+            ? 'checking'
+            : globallyPausedRef.current
+            ? 'paused'
+            : 'queued';
         updateItem(key, (current) => ({
           ...current,
           file,
-          state: globallyPausedRef.current ? 'paused' : 'queued',
+          state: resumeState,
           missingFromState: undefined,
           retryEligible: true,
           error: undefined,
         }));
-        scheduleRef.current?.();
+        if (resumeState === 'checking') void preflightRef.current?.([key]);
+        else scheduleRef.current?.();
       } catch (error) {
         if ((error as { name?: string }).name === 'NotFoundError') {
           markLocalMissing(key);
@@ -579,6 +632,181 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
       }
     },
     [markLocalMissing, updateItem]
+  );
+
+  const runPreflight = useCallback(
+    async (keys: string[]) => {
+      const requestedKeys = new Set(keys);
+      const candidates = itemsRef.current.filter(
+        (item) => requestedKeys.has(item.key) && item.state === 'checking'
+      );
+      if (candidates.length === 0) return;
+      try {
+        const response = await preflightUploads(
+          candidates.map((item) => ({
+            clientId: item.key,
+            path: item.logicPath,
+          }))
+        );
+        const results = new Map(
+          response.items.map((result) => [result.clientId, result] as const)
+        );
+        updateItems((current) =>
+          current.map((item) => {
+            if (!requestedKeys.has(item.key) || item.state !== 'checking') {
+              return item;
+            }
+            const result = results.get(item.key);
+            if (!result) {
+              return {
+                ...item,
+                state: 'failed',
+                retryEligible: true,
+                error: 'Preflight response did not include this upload.',
+              };
+            }
+            const needsDecision =
+              item.localDuplicate || result.status !== 'available';
+            return {
+              ...item,
+              targetStatus: result.status,
+              targetVersion: result.targetVersion,
+              existingTarget: result.existing,
+              overwrite: false,
+              state: needsDecision
+                ? 'needs-decision'
+                : globallyPausedRef.current
+                ? 'paused'
+                : 'queued',
+              retryCount: 0,
+              retryEligible: false,
+              error:
+                result.status === 'directory'
+                  ? '目的路徑是資料夾，無法用檔案取代。'
+                  : undefined,
+            };
+          })
+        );
+        scheduleRef.current?.();
+      } catch (error) {
+        updateItems((current) =>
+          current.map((item) =>
+            requestedKeys.has(item.key) && item.state === 'checking'
+              ? {
+                  ...item,
+                  state: 'failed',
+                  retryEligible: isTransientUploadError(error),
+                  error: errorMessage(error),
+                }
+              : item
+          )
+        );
+      }
+    },
+    [updateItems]
+  );
+
+  preflightRef.current = runPreflight;
+
+  const replaceOne = useCallback(
+    (key: string) => {
+      const selected = itemsRef.current.find((item) => item.key === key);
+      if (
+        !selected ||
+        selected.state !== 'needs-decision' ||
+        selected.targetStatus === 'directory'
+      ) {
+        return;
+      }
+      updateItems((current) =>
+        current.map((item) => {
+          const isDuplicatePeer =
+            selected.localDuplicate &&
+            item.key !== selected.key &&
+            item.batchId === selected.batchId &&
+            item.logicPath === selected.logicPath &&
+            item.state === 'needs-decision';
+          if (isDuplicatePeer) {
+            return {
+              ...item,
+              state: 'skipped',
+              retryEligible: false,
+              error: undefined,
+            };
+          }
+          if (item.key !== selected.key) return item;
+          return {
+            ...item,
+            overwrite: item.targetStatus === 'conflict',
+            state: globallyPausedRef.current ? 'paused' : 'queued',
+            retryEligible: false,
+            error: undefined,
+          };
+        })
+      );
+      scheduleRef.current?.();
+    },
+    [updateItems]
+  );
+
+  const skipOne = useCallback(
+    (key: string) => {
+      updateItem(key, (item) =>
+        item.state === 'needs-decision'
+          ? {
+              ...item,
+              state: 'skipped',
+              retryEligible: false,
+              error: undefined,
+            }
+          : item
+      );
+    },
+    [updateItem]
+  );
+
+  const replaceAll = useCallback(
+    (batchId: string) => {
+      updateItems((current) =>
+        current.map((item) => {
+          if (
+            item.batchId !== batchId ||
+            item.state !== 'needs-decision' ||
+            item.localDuplicate ||
+            item.targetStatus === 'directory'
+          ) {
+            return item;
+          }
+          return {
+            ...item,
+            overwrite: item.targetStatus === 'conflict',
+            state: globallyPausedRef.current ? 'paused' : 'queued',
+            retryEligible: false,
+            error: undefined,
+          };
+        })
+      );
+      scheduleRef.current?.();
+    },
+    [updateItems]
+  );
+
+  const skipAll = useCallback(
+    (batchId: string) => {
+      updateItems((current) =>
+        current.map((item) =>
+          item.batchId === batchId && item.state === 'needs-decision'
+            ? {
+                ...item,
+                state: 'skipped',
+                retryEligible: false,
+                error: undefined,
+              }
+            : item
+        )
+      );
+    },
+    [updateItems]
   );
 
   const uploadOnce = useCallback(
@@ -629,21 +857,9 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
           size: item.fingerprint.size,
           contentType: item.contentType,
           overwrite: item.overwrite,
+          targetVersion: item.overwrite ? item.targetVersion : undefined,
         };
-        try {
-          session = await createUpload(createInput);
-        } catch (error) {
-          if (
-            !item.overwrite &&
-            isAlreadyExistsError(error) &&
-            confirmOverwrite(item.relativePath)
-          ) {
-            session = await createUpload({ ...createInput, overwrite: true });
-            updateItem(key, (current) => ({ ...current, overwrite: true }));
-          } else {
-            throw error;
-          }
-        }
+        session = await createUpload(createInput);
       }
 
       if (!session) throw new Error('Upload session unavailable');
@@ -766,6 +982,22 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
             ) {
               return;
             }
+            if (isUploadTargetChanged(error)) {
+              updateItem(key, (item) => ({
+                ...item,
+                state: 'checking',
+                overwrite: false,
+                targetVersion: undefined,
+                targetStatus: undefined,
+                existingTarget: undefined,
+                retryCount: 0,
+                retryEligible: false,
+                retryAt: undefined,
+                error: undefined,
+              }));
+              await runPreflight([key]);
+              return;
+            }
             if (shouldAutomaticallyRetry(error, retryCount)) {
               retryCount += 1;
               const delay = retryDelayMs(retryCount);
@@ -806,7 +1038,7 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
         scheduleRef.current?.();
       }
     },
-    [updateItem, uploadOnce]
+    [runPreflight, updateItem, uploadOnce]
   );
 
   const schedule = useCallback(() => {
@@ -818,15 +1050,14 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
       return;
     const available = MAX_CONCURRENT_UPLOADS - runningKeysRef.current.size;
     if (available <= 0) return;
-    const next = itemsRef.current
-      .filter(
-        (item) =>
-          item.state === 'queued' && !runningKeysRef.current.has(item.key)
-      )
-      .slice(0, available);
-    for (const item of next) {
-      runningKeysRef.current.add(item.key);
-      void startUpload(item.key);
+    const nextKeys = nextRunnableUploadKeys(
+      itemsRef.current,
+      runningKeysRef.current,
+      available
+    );
+    for (const key of nextKeys) {
+      runningKeysRef.current.add(key);
+      void startUpload(key);
     }
   }, [startUpload]);
 
@@ -842,54 +1073,56 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
       destinationPath: string,
       existingNames: Set<string>
     ) => {
+      // Kept for API compatibility; authoritative conflict checks now come
+      // from the full-path server preflight rather than the visible file list.
+      void existingNames;
       const snappedDestination = normalizePath(destinationPath);
-      const snappedNames = new Set(existingNames);
-      const additions: UploadQueueItem[] = candidates.map((candidate) => {
+      const batchId = makeBatchId();
+      const drafts = candidates.map((candidate) => {
         const relativePath = candidate.relativePath;
-        const existingDirectFile =
-          !relativePath.includes('/') && snappedNames.has(relativePath);
-        const overwrite = existingDirectFile && confirmOverwrite(relativePath);
-        const fingerprint = fileFingerprint(candidate.file);
-        return {
-          key: makeQueueKey(candidate),
-          file: candidate.file,
-          fileHandle: candidate.fileHandle,
-          fingerprint,
-          contentType: candidate.file.type || 'application/octet-stream',
-          relativePath,
-          destinationPath: snappedDestination,
-          logicPath: normalizePath(
-            [snappedDestination, relativePath].filter(Boolean).join('/')
-          ),
-          uploadedBytes: 0,
-          progress: 0,
-          state:
-            existingDirectFile && !overwrite
-              ? 'failed'
-              : globallyPausedRef.current
-              ? 'paused'
-              : 'queued',
-          error:
-            existingDirectFile && !overwrite
-              ? 'Existing file was not replaced'
-              : undefined,
-          overwrite,
-          archiveGroupId: candidate.archiveGroupId,
-          retryCount: 0,
-          retryEligible: false,
-        };
+        const logicPath = normalizePath(
+          [snappedDestination, relativePath].filter(Boolean).join('/')
+        );
+        return { candidate, relativePath, logicPath };
       });
+      const duplicatePaths = duplicateLogicPaths(drafts);
+      const additions: UploadQueueItem[] = drafts.map(
+        ({ candidate, relativePath, logicPath }) => {
+          const fingerprint = fileFingerprint(candidate.file);
+          return {
+            key: makeQueueKey(candidate),
+            batchId,
+            file: candidate.file,
+            fileHandle: candidate.fileHandle,
+            fingerprint,
+            contentType: candidate.file.type || 'application/octet-stream',
+            relativePath,
+            destinationPath: snappedDestination,
+            logicPath,
+            uploadedBytes: 0,
+            progress: 0,
+            state: 'checking',
+            overwrite: false,
+            localDuplicate: duplicatePaths.has(logicPath),
+            archiveGroupId: candidate.archiveGroupId,
+            retryCount: 0,
+            retryEligible: false,
+          };
+        }
+      );
       if (additions.length === 0) return;
       void navigator.storage?.persist?.().catch(() => undefined);
       updateItems((current) => [...current, ...additions]);
+      void runPreflight(additions.map((item) => item.key));
     },
-    [updateItems]
+    [runPreflight, updateItems]
   );
 
   const checkSources = useCallback(async () => {
     const candidates = itemsRef.current.filter(
       (item): item is UploadQueueItem & { fileHandle: FileSystemFileHandle } =>
-        Boolean(item.fileHandle) && item.state !== 'local-missing'
+        Boolean(item.fileHandle) &&
+        !['complete', 'skipped', 'local-missing'].includes(item.state)
     );
     await Promise.all(
       candidates.map(async (item) => {
@@ -913,6 +1146,9 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
     const counts: UploadQueueSummary = {
       total: items.length,
       queued: 0,
+      checking: 0,
+      needsDecision: 0,
+      skipped: 0,
       uploading: 0,
       retrying: 0,
       paused: 0,
@@ -923,26 +1159,32 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
       uploadedBytes: 0,
       progress: 0,
     };
+    let progressBytes = 0;
     for (const item of items) {
       if (item.state === 'local-missing') counts.localMissing += 1;
+      else if (item.state === 'needs-decision') counts.needsDecision += 1;
       else counts[item.state] += 1;
       counts.totalBytes += item.fingerprint.size;
       counts.uploadedBytes += Math.min(
         item.fingerprint.size,
         item.uploadedBytes
       );
+      progressBytes +=
+        item.state === 'skipped'
+          ? item.fingerprint.size
+          : Math.min(item.fingerprint.size, item.uploadedBytes);
     }
     counts.progress =
       counts.totalBytes > 0
-        ? Math.min(100, (counts.uploadedBytes / counts.totalBytes) * 100)
+        ? Math.min(100, (progressBytes / counts.totalBytes) * 100)
         : counts.total > 0
-        ? (counts.complete / counts.total) * 100
+        ? ((counts.complete + counts.skipped) / counts.total) * 100
         : 0;
     return counts;
   }, [items]);
 
   const hasPendingUploads = items.some((item) =>
-    ['queued', 'uploading', 'retrying'].includes(item.state)
+    ['checking', 'queued', 'uploading', 'retrying'].includes(item.state)
   );
 
   useEffect(() => {
@@ -989,17 +1231,24 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
             } else if (
               !file &&
               !stored.fileHandle &&
-              !['complete', 'local-missing'].includes(stored.state)
+              uploadStateNeedsSource(stored.state)
             ) {
               state = 'paused';
               error = '請重新選擇原始檔案以繼續上傳。';
             } else if (
               !file &&
               permissionRequired &&
-              !['complete', 'local-missing'].includes(stored.state)
+              uploadStateNeedsSource(stored.state)
             ) {
               state = 'paused';
               error = '請允許讀取原始檔案以繼續上傳。';
+            } else if (
+              !stored.session &&
+              !stored.targetStatus &&
+              ['queued', 'uploading', 'retrying'].includes(stored.state)
+            ) {
+              state = 'checking';
+              error = undefined;
             } else if (
               ['queued', 'uploading', 'retrying'].includes(stored.state)
             ) {
@@ -1007,6 +1256,8 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
             }
             return {
               ...persisted,
+              batchId: persisted.batchId || persisted.key,
+              localDuplicate: persisted.localDuplicate ?? false,
               file,
               state,
               error,
@@ -1026,6 +1277,10 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
         hydratedRef.current = true;
         setHydrated(true);
         persist(restored, storedPaused);
+        const checkingKeys = restored
+          .filter((item) => item.state === 'checking')
+          .map((item) => item.key);
+        if (checkingKeys.length > 0) void runPreflight(checkingKeys);
       })
       .catch(() => {
         hydratedRef.current = true;
@@ -1034,7 +1289,7 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
     return () => {
       mountedRef.current = false;
     };
-  }, [persist]);
+  }, [persist, runPreflight]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -1079,6 +1334,10 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
     add,
     retry,
     retryAll,
+    replaceOne,
+    skipOne,
+    replaceAll,
+    skipAll,
     dismiss,
     cancel,
     cancelAll,

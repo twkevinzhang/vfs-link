@@ -119,6 +119,83 @@ func TestLocalChunkUploadResumesFromCommittedOffset(t *testing.T) {
 	}
 }
 
+func TestUploadPreflightAndCreateRejectChangedTarget(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	metadata, err := db.NewTreeLocal(filepath.Join(root, "metadata"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(metadata.Close)
+	if err := metadata.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := metadata.UpsertFile(ctx, "docs/report.txt", "object-v1", 4); err != nil {
+		t.Fatal(err)
+	}
+	if err := metadata.UpsertDirectory(ctx, "docs/folder"); err != nil {
+		t.Fatal(err)
+	}
+	objects, err := blob.NewLocal(filepath.Join(root, "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := upload.NewWithBlob(metadata, objects)
+	handler := New(metadata, objects, objects, nil, "", "", service).Handler()
+
+	preflightBody := bytes.NewBufferString(`{"items":[{"clientId":"existing","path":"docs/report.txt"},{"clientId":"new","path":"docs/new.txt"},{"clientId":"folder","path":"docs/folder"}]}`)
+	preflightRequest := httptest.NewRequest(http.MethodPost, "/api/uploads/preflight", preflightBody)
+	preflightResponse := httptest.NewRecorder()
+	handler.ServeHTTP(preflightResponse, preflightRequest)
+	if preflightResponse.Code != http.StatusOK {
+		t.Fatalf("preflight = %d %s", preflightResponse.Code, preflightResponse.Body.String())
+	}
+	var preflight preflightUploadResponse
+	if err := json.Unmarshal(preflightResponse.Body.Bytes(), &preflight); err != nil {
+		t.Fatal(err)
+	}
+	if len(preflight.Items) != 3 || preflight.Items[0].Status != upload.PreflightConflict || preflight.Items[0].Existing == nil || preflight.Items[0].Existing.Size != 4 || preflight.Items[1].Status != upload.PreflightAvailable || preflight.Items[2].Status != upload.PreflightDirectory {
+		t.Fatalf("preflight response = %#v", preflight)
+	}
+
+	if err := metadata.UpsertFile(ctx, "docs/report.txt", "object-v2", 8); err != nil {
+		t.Fatal(err)
+	}
+	createBody := bytes.NewBufferString(`{"path":"docs/report.txt","size":6,"contentType":"text/plain","overwrite":true,"targetVersion":"` + preflight.Items[0].TargetVersion + `"}`)
+	createRequest := httptest.NewRequest(http.MethodPost, "/api/uploads", createBody)
+	createResponse := httptest.NewRecorder()
+	handler.ServeHTTP(createResponse, createRequest)
+	if createResponse.Code != http.StatusConflict {
+		t.Fatalf("create = %d %s", createResponse.Code, createResponse.Body.String())
+	}
+	var apiError map[string]string
+	if err := json.Unmarshal(createResponse.Body.Bytes(), &apiError); err != nil {
+		t.Fatal(err)
+	}
+	if apiError["code"] != "UPLOAD_TARGET_CHANGED" {
+		t.Fatalf("create error = %#v", apiError)
+	}
+
+	assertCreateCode := func(body, wantCode string) {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodPost, "/api/uploads", bytes.NewBufferString(body))
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusConflict {
+			t.Fatalf("create = %d %s, want conflict", response.Code, response.Body.String())
+		}
+		var coded map[string]string
+		if err := json.Unmarshal(response.Body.Bytes(), &coded); err != nil {
+			t.Fatal(err)
+		}
+		if coded["code"] != wantCode {
+			t.Fatalf("create code = %#v, want %q", coded, wantCode)
+		}
+	}
+	assertCreateCode(`{"path":"docs/report.txt","size":6,"contentType":"text/plain","overwrite":false}`, "UPLOAD_TARGET_EXISTS")
+	assertCreateCode(`{"path":"docs/folder","size":6,"contentType":"text/plain","overwrite":false}`, "UPLOAD_TARGET_IS_DIRECTORY")
+}
+
 func TestParseUploadContentRange(t *testing.T) {
 	start, end, total, err := parseUploadContentRange("bytes 8-15/32", 8)
 	if err != nil || start != 8 || end != 15 || total != 32 {

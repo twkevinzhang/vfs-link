@@ -2,13 +2,16 @@ import type { UploadSession } from '../types/upload';
 import type { UploadFingerprint } from './upload-queue-core';
 
 const DATABASE_NAME = 'vfs-link-upload-queue';
-const DATABASE_VERSION = 2;
+const DATABASE_VERSION = 3;
 const QUEUE_STORE = 'queue';
 const SETTINGS_STORE = 'settings';
 const SOURCE_STORE = 'sources';
 
 export type PersistedUploadState =
   | 'queued'
+  | 'checking'
+  | 'needs-decision'
+  | 'skipped'
   | 'uploading'
   | 'retrying'
   | 'paused'
@@ -18,6 +21,7 @@ export type PersistedUploadState =
 
 export type PersistedUploadItem = {
   key: string;
+  batchId: string;
   relativePath: string;
   destinationPath: string;
   logicPath: string;
@@ -29,6 +33,14 @@ export type PersistedUploadItem = {
   error?: string;
   session?: UploadSession;
   overwrite: boolean;
+  targetVersion?: string;
+  targetStatus?: 'available' | 'conflict' | 'directory';
+  existingTarget?: {
+    kind: 'file' | 'directory';
+    size: number;
+    updatedAt: string;
+  };
+  localDuplicate: boolean;
   archiveGroupId?: string;
   retryCount: number;
   retryEligible: boolean;

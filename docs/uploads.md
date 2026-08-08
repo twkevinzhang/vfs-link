@@ -1,7 +1,29 @@
 # Browser upload API
 
-Local and GCS storage use the same resumable three-stage contract. The browser
+Local and GCS storage use the same resumable four-stage contract. The browser
 does not need to branch on `STORAGE_DRIVER`.
+
+## 0. Preflight logical paths
+
+Immediately after the user selects files, check their complete logical paths in
+one or more batches of at most 1000 items:
+
+```http
+POST /api/uploads/preflight
+Content-Type: application/json
+
+{"items":[{"clientId":"local-1","path":"reports/2026.pdf"},{"clientId":"local-2","path":"reports/new.pdf"}]}
+```
+
+Results preserve request order and repeat each `clientId` and normalized `path`.
+`status` is `available`, `conflict`, or `directory`. Existing targets also
+include their kind, size, and last metadata update time. Preflight does not read
+file content or calculate a checksum: every existing file is a conflict for the
+browser to present to the user.
+
+Every result includes an opaque `targetVersion`. Store it without inspecting or
+constructing it. Pending conflict decisions do not need to block available
+items from creating sessions and uploading.
 
 ## 1. Create a session
 
@@ -9,8 +31,22 @@ does not need to branch on `STORAGE_DRIVER`.
 POST /api/uploads
 Content-Type: application/json
 
-{"path":"/reports/2026.pdf","size":12345678,"contentType":"application/pdf","overwrite":false}
+{"path":"reports/2026.pdf","size":12345678,"contentType":"application/pdf","overwrite":false}
 ```
+
+When the user elects to replace a conflict, set `overwrite` to true and include
+the exact preflight snapshot:
+
+```json
+{"path":"reports/2026.pdf","size":12345678,"contentType":"application/pdf","overwrite":true,"targetVersion":"opaque-preflight-value"}
+```
+
+An overwrite without `targetVersion` is rejected. The server compares the
+snapshot before allocating a local staging upload or GCS resumable capability.
+If the logical target changed after preflight, create returns `409` with
+`code: "UPLOAD_TARGET_CHANGED"`; the client must preflight that path again and
+return it to pending user decision. It must not silently reuse the earlier
+overwrite choice.
 
 The response contains `method`, `uploadUrl`, fixed `headers`, `completeUrl`,
 `statusUrl`, `uploadedSize`, and an expiry. A local URL points back to
@@ -70,5 +106,7 @@ cancels the GCS session or deletes the local staging file. Pausing or aborting a
 individual HTTP request does not cancel the upload session.
 
 The default maximum is 50 GiB and the default session lifetime is 24 hours.
-Clients should treat `409` on a chunk as an offset mismatch and refresh status;
-`409` on create or complete is a path or conditional-update conflict.
+Clients should treat `409` on a chunk as an offset mismatch and refresh status.
+`UPLOAD_TARGET_CHANGED` on create requires a new preflight and user decision.
+Other `409` responses on create or complete are path or conditional-update
+conflicts.

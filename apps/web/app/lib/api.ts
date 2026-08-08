@@ -8,7 +8,12 @@ import {
   TreeNode,
 } from '../types/files';
 import { ShareRecord } from '../types/share';
-import { CreateUploadInput, UploadSession } from '../types/upload';
+import {
+  CreateUploadInput,
+  UploadPreflightItemInput,
+  UploadPreflightResponse,
+  UploadSession,
+} from '../types/upload';
 import {
   DriftAction,
   DriftActionsResponse,
@@ -26,7 +31,11 @@ const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(
 );
 
 export class UploadHttpError extends Error {
-  constructor(message: string, public readonly status?: number) {
+  constructor(
+    message: string,
+    public readonly status?: number,
+    public readonly code?: string
+  ) {
     super(message);
     this.name = 'UploadHttpError';
   }
@@ -74,14 +83,20 @@ async function postJson<T>(
 
   if (!response.ok) {
     const fallback = `${response.status} ${response.statusText}`;
-    let message = fallback;
+    let responseBody: { error?: string; code?: string } | undefined;
     try {
-      const responseBody = (await response.json()) as { error?: string };
-      message = responseBody.error || fallback;
+      responseBody = (await response.json()) as {
+        error?: string;
+        code?: string;
+      };
     } catch {
-      message = fallback;
+      // Use the HTTP fallback when the response is not JSON.
     }
-    throw new UploadHttpError(message, response.status);
+    throw new UploadHttpError(
+      responseBody?.error || fallback,
+      response.status,
+      responseBody?.code
+    );
   }
 
   return response.json() as Promise<T>;
@@ -272,6 +287,18 @@ export function startShare(id: string) {
 
 export function createUpload(input: CreateUploadInput) {
   return postJson<UploadSession>('/api/uploads', input);
+}
+
+export async function preflightUploads(items: UploadPreflightItemInput[]) {
+  const results: UploadPreflightResponse['items'] = [];
+  for (let start = 0; start < items.length; start += 1000) {
+    const response = await postJson<UploadPreflightResponse>(
+      '/api/uploads/preflight',
+      { items: items.slice(start, start + 1000) }
+    );
+    results.push(...response.items);
+  }
+  return { items: results };
 }
 
 export async function getUploadSession(

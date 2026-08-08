@@ -51,7 +51,7 @@ func (a storeAdapter) DeleteUpload(ctx context.Context, id string) error {
 
 func (a storeAdapter) FindFile(ctx context.Context, logicPath string) (File, bool, error) {
 	record, found, err := a.store.Find(ctx, logicPath)
-	return File{PhysicalHash: record.PhysicalHash, IsDirectory: record.IsDirectory}, found, err
+	return File{PhysicalHash: record.PhysicalHash, IsDirectory: record.IsDirectory, Size: record.Size, UpdatedAt: record.UpdatedAt}, found, err
 }
 
 func (a storeAdapter) EnsureDirectory(ctx context.Context, logicPath string) error {

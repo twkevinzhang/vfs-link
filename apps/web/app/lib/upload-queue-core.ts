@@ -55,6 +55,43 @@ export function isOffsetConflict(error: unknown) {
   return error instanceof UploadHttpError && error.status === 409;
 }
 
+export function isUploadTargetChanged(error: unknown) {
+  return (
+    error instanceof UploadHttpError &&
+    (error.code === 'UPLOAD_TARGET_CHANGED' ||
+      error.code === 'UPLOAD_TARGET_EXISTS' ||
+      error.code === 'UPLOAD_TARGET_IS_DIRECTORY')
+  );
+}
+
+export function uploadStateNeedsSource(state: string) {
+  return !['complete', 'skipped', 'local-missing'].includes(state);
+}
+
+export function duplicateLogicPaths<T extends { logicPath: string }>(
+  items: T[]
+) {
+  const counts = new Map<string, number>();
+  for (const item of items) {
+    counts.set(item.logicPath, (counts.get(item.logicPath) ?? 0) + 1);
+  }
+  return new Set(
+    [...counts.entries()]
+      .filter(([, count]) => count > 1)
+      .map(([logicPath]) => logicPath)
+  );
+}
+
+export function nextRunnableUploadKeys<
+  T extends { key: string; state: string }
+>(items: T[], runningKeys: ReadonlySet<string>, limit: number) {
+  if (limit <= 0) return [];
+  return items
+    .filter((item) => item.state === 'queued' && !runningKeys.has(item.key))
+    .slice(0, limit)
+    .map((item) => item.key);
+}
+
 export function shouldAutomaticallyRetry(
   error: unknown,
   retriesAlreadyUsed: number

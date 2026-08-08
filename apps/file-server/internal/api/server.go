@@ -192,6 +192,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/shares/drafts", s.handleCreateShareDraft)
 	mux.HandleFunc("/api/shares/", s.handleShare)
 	mux.HandleFunc("/api/uploads", s.handleCreateUpload)
+	mux.HandleFunc("/api/uploads/preflight", s.handlePreflightUploads)
 	mux.HandleFunc("/api/uploads/", s.handleUpload)
 	mux.HandleFunc("/api/thumbnails", s.handleThumbnails)
 	mux.HandleFunc("/api/thumbnails/", s.handleThumbnail)
@@ -624,6 +625,12 @@ func writeError(w http.ResponseWriter, code int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
+}
+
+func writeCodedError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": message, "code": code})
 }
 
 func writeAPIError(w http.ResponseWriter, err error) {

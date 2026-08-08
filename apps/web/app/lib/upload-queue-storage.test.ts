@@ -20,6 +20,7 @@ function deleteDatabase() {
 function pendingItem(overrides: Partial<PersistedUploadItem> = {}) {
   return {
     key: 'upload-1',
+    batchId: 'batch-1',
     relativePath: 'source.txt',
     destinationPath: '',
     logicPath: 'source.txt',
@@ -32,6 +33,14 @@ function pendingItem(overrides: Partial<PersistedUploadItem> = {}) {
     uploadedBytes: 5,
     state: 'uploading',
     overwrite: false,
+    targetVersion: 'target-v1',
+    targetStatus: 'conflict',
+    existingTarget: {
+      kind: 'file',
+      size: 8,
+      updatedAt: '2026-08-08T00:00:00Z',
+    },
+    localDuplicate: false,
     retryCount: 0,
     retryEligible: true,
     ...overrides,
@@ -101,6 +110,46 @@ describe('upload queue persistence', () => {
 
     const restored = await loadUploadQueue();
     expect(restored.items[0].state).toBe('complete');
+    expect(restored.items[0].sourceFile).toBeUndefined();
+  });
+
+  it('restores conflict decisions and the opaque target version', async () => {
+    const item = pendingItem({
+      state: 'needs-decision',
+      overwrite: false,
+    });
+    const file = new File(['hello world!'], 'source.txt', {
+      lastModified: 123,
+    });
+
+    await saveUploadQueue([item], false, [
+      { key: item.key, file, retainFile: true },
+    ]);
+
+    const restored = await loadUploadQueue();
+    expect(restored.items[0]).toMatchObject({
+      batchId: 'batch-1',
+      state: 'needs-decision',
+      targetVersion: 'target-v1',
+      targetStatus: 'conflict',
+      localDuplicate: false,
+    });
+  });
+
+  it('releases a skipped source snapshot', async () => {
+    const item = pendingItem();
+    const file = new File(['hello world!'], 'source.txt', {
+      lastModified: 123,
+    });
+    await saveUploadQueue([item], false, [
+      { key: item.key, file, retainFile: true },
+    ]);
+    await saveUploadQueue([{ ...item, state: 'skipped' }], false, [
+      { key: item.key, file, retainFile: false },
+    ]);
+
+    const restored = await loadUploadQueue();
+    expect(restored.items[0].state).toBe('skipped');
     expect(restored.items[0].sourceFile).toBeUndefined();
   });
 });
