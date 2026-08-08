@@ -1,0 +1,10 @@
+@media (max-width: 600px) {
+  .swagger-ui .wrapper {
+    max-width: 100%;
+    padding: 0 8px;
+  }
+
+  .swagger-ui .opblock-body {
+    overflow-x: auto;
+  }
+}

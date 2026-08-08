@@ -175,6 +175,8 @@ func New(store db.Store, objects blob.Store, thumbnailObjects blob.Store, shares
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/openapi.json", handleOpenAPI)
+	mux.HandleFunc("/swagger", handleSwaggerUI)
+	mux.HandleFunc("/swagger/", handleSwaggerUI)
 	mux.HandleFunc("/api/status", s.handleStatus)
 	mux.HandleFunc("/api/files", s.handleFiles)
 	mux.HandleFunc("/api/files/move", s.handleMoveFiles)

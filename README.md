@@ -222,11 +222,23 @@ The machine-readable OpenAPI 3.1 description is available from
 curl -fsS http://localhost:8080/openapi.json
 ```
 
+An offline Swagger UI is available at `GET /swagger/` for browsing the
+description and trying requests against the current deployment. The UI bundles
+its assets with the file-server binary and does not load scripts or styles from
+a CDN. When the API is published below a reverse-proxy prefix, keep the same
+suffix (for example, `/vfs-link/swagger/`).
+
+> [!CAUTION]
+> Swagger UI enables **Try it out** for every documented HTTP method. Requests
+> are sent to the current deployment and mutation operations can move, rename,
+> upload, trash, restore, or permanently delete real data. Confirm the target
+> environment and request body before executing them.
+
 The document describes the public REST API under `/api/*`, including file,
 trash, upload, share, thumbnail, and drift operations. WebDAV, FTP, and the
 internal Pub/Sub push endpoint are outside its scope. Deployments with
-`HTTP_BASIC_AUTH_ENABLED=true` protect `/openapi.json` with the same HTTP Basic
-Auth credentials as the browser and public API.
+`HTTP_BASIC_AUTH_ENABLED=true` protect `/openapi.json`, `/swagger/`, and its
+assets with the same HTTP Basic Auth credentials as the browser and public API.
 
 > [!WARNING]
 > Do not expose the default stack directly to the public internet. Replace every

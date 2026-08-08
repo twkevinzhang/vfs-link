@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>VFS Link API — Swagger UI</title>
+    <link rel="stylesheet" href="swagger-ui.css" />
+    <link rel="stylesheet" href="swagger-ui-overrides.css" />
+  </head>
+  <body>
+    <div id="swagger-ui"></div>
+    <script src="swagger-ui-bundle.js"></script>
+    <script>
+      window.ui = SwaggerUIBundle({
+        url: '../openapi.json',
+        dom_id: '#swagger-ui',
+        deepLinking: true,
+        persistAuthorization: false,
+        supportedSubmitMethods: [
+          'get',
+          'put',
+          'post',
+          'delete',
+          'options',
+          'head',
+          'patch',
+          'trace',
+        ],
+        presets: [SwaggerUIBundle.presets.apis],
+        plugins: [SwaggerUIBundle.plugins.DownloadUrl],
+      });
+    </script>
+  </body>
+</html>
