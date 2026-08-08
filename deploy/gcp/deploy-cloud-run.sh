@@ -141,7 +141,7 @@ COMMON_ENV="FTP_ENABLED=false,WEBDAV_ENABLED=false,STORAGE_DRIVER=gcs,GCS_BUCKET
 
 gcloud run deploy "$SERVICE" --image="$IMAGE" --region="$REGION" --project="$PROJECT_ID" \
   --service-account="$RUNTIME_SA" --allow-unauthenticated --port=8080 \
-  --memory=2Gi --cpu=2 --cpu-throttling --concurrency=8 \
+  --memory=512Mi --cpu=1 --cpu-throttling --concurrency=8 \
   --min=0 --min-instances=0 --max-instances=12 --timeout=3600 \
   --set-env-vars="${COMMON_ENV},PUB_SUB_DRIVER=goroutine" --set-secrets="$SECRET_ARGS"
 
