@@ -42,94 +42,38 @@ import {
   nextRunnableUploadKeys,
   retryDelayMs,
   shouldAutomaticallyRetry,
-  uploadStateNeedsSource,
-  type UploadFingerprint,
 } from '../lib/upload-queue-core';
-import {
-  loadUploadQueue,
-  saveUploadQueue,
-  type PersistedUploadItem,
-  type PersistedUploadState,
-} from '../lib/upload-queue-storage';
 import type {
-  UploadPreflightExisting,
-  UploadPreflightStatus,
-  UploadSession,
-} from '../types/upload';
+  UploadQueueItem,
+  UploadQueueState,
+} from '../lib/upload-queue-model';
+import {
+  restoreUploadQueueItem,
+  summarizeUploadQueue,
+  toPersistedUploadItem,
+  uploadErrorMessage,
+  uploadProgress,
+  waitForUploadRetry,
+} from '../lib/upload-queue-runtime';
+import {
+  inspectUploadSource,
+  type PermissionAwareFileHandle,
+} from '../lib/upload-queue-source';
+import { loadUploadQueue, saveUploadQueue } from '../lib/upload-queue-storage';
+import type { UploadSession } from '../types/upload';
+
+export type {
+  UploadQueueItem,
+  UploadQueueState,
+} from '../lib/upload-queue-model';
 
 const SOURCE_CHECK_INTERVAL_MS = 15_000;
 const ARCHIVE_ORPHAN_GRACE_MS = 24 * 60 * 60 * 1000;
 const UPLOAD_QUEUE_CHANNEL = 'vfs-link-upload-queue-v1';
 
-export type UploadQueueState = PersistedUploadState;
-
-export type UploadQueueItem = {
-  key: string;
-  /** One user selection event; bulk conflict actions never cross this boundary. */
-  batchId: string;
-  file?: File;
-  fileHandle?: FileSystemFileHandle;
-  fingerprint: UploadFingerprint;
-  contentType: string;
-  relativePath: string;
-  /** The folder selected when the item was added, rather than the current view. */
-  destinationPath: string;
-  /** Fully resolved storage path, also captured when the item was added. */
-  logicPath: string;
-  uploadedBytes: number;
-  progress: number;
-  state: UploadQueueState;
-  error?: string;
-  session?: UploadSession;
-  /** Whether a direct child with this name existed when the item was added. */
-  overwrite: boolean;
-  /** Opaque target version captured by the most recent server preflight. */
-  targetVersion?: string;
-  targetStatus?: UploadPreflightStatus;
-  existingTarget?: UploadPreflightExisting;
-  /** Multiple source files in this batch resolve to the same logical path. */
-  localDuplicate: boolean;
-  archiveGroupId?: string;
-  archiveTemporaryManifest?: ArchiveTemporaryManifest;
-  retryCount: number;
-  retryEligible: boolean;
-  retryAt?: number;
-  missingFromState?: Exclude<UploadQueueState, 'local-missing'>;
-};
-
-type UploadQueueSummary = {
-  total: number;
-  queued: number;
-  checking: number;
-  needsDecision: number;
-  skipped: number;
-  uploading: number;
-  retrying: number;
-  paused: number;
-  complete: number;
-  failed: number;
-  localMissing: number;
-  totalBytes: number;
-  uploadedBytes: number;
-  /** Byte-weighted progress across every retained queue item. */
-  progress: number;
-};
-
 type UseUploadQueueOptions = {
   onItemComplete?: (item: UploadQueueItem) => void;
 };
-
-type PermissionAwareFileHandle = FileSystemFileHandle & {
-  queryPermission?: (descriptor: { mode: 'read' }) => Promise<PermissionState>;
-  requestPermission?: (descriptor: {
-    mode: 'read';
-  }) => Promise<PermissionState>;
-};
-
-type HandleFileResult =
-  | { status: 'available'; file: File }
-  | { status: 'permission-required' }
-  | { status: 'missing' };
 
 function makeQueueKey(candidate: UploadCandidate) {
   const randomId =
@@ -144,86 +88,6 @@ function makeBatchId() {
     typeof crypto.randomUUID === 'function'
     ? crypto.randomUUID()
     : `batch-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-}
-
-function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : 'Upload failed';
-}
-
-function progressFor(uploadedBytes: number, size: number) {
-  return size === 0
-    ? uploadedBytes === 0
-      ? 0
-      : 100
-    : (uploadedBytes / size) * 100;
-}
-
-function toPersisted(item: UploadQueueItem): PersistedUploadItem {
-  return {
-    key: item.key,
-    batchId: item.batchId,
-    relativePath: item.relativePath,
-    destinationPath: item.destinationPath,
-    logicPath: item.logicPath,
-    fingerprint: item.fingerprint,
-    contentType: item.contentType,
-    fileHandle: item.fileHandle,
-    uploadedBytes: item.uploadedBytes,
-    state: item.state,
-    error: item.error,
-    session: item.session,
-    overwrite: item.overwrite,
-    targetVersion: item.targetVersion,
-    targetStatus: item.targetStatus,
-    existingTarget: item.existingTarget,
-    localDuplicate: item.localDuplicate,
-    archiveGroupId: item.archiveGroupId,
-    archiveTemporaryManifest: item.archiveTemporaryManifest,
-    retryCount: item.retryCount,
-    retryEligible: item.retryEligible,
-    missingFromState: item.missingFromState,
-  };
-}
-
-function waitForRetry(delay: number, signal: AbortSignal) {
-  return new Promise<void>((resolve, reject) => {
-    const timer = window.setTimeout(resolve, delay);
-    signal.addEventListener(
-      'abort',
-      () => {
-        window.clearTimeout(timer);
-        reject(new DOMException('Upload paused', 'AbortError'));
-      },
-      { once: true }
-    );
-  });
-}
-
-async function inspectHandleFile(
-  handle: FileSystemFileHandle
-): Promise<HandleFileResult> {
-  const permissionHandle = handle as PermissionAwareFileHandle;
-  if (permissionHandle.queryPermission) {
-    try {
-      const permission = await permissionHandle.queryPermission({
-        mode: 'read',
-      });
-      if (permission === 'denied') return { status: 'missing' };
-      if (permission !== 'granted') return { status: 'permission-required' };
-    } catch (error) {
-      if ((error as { name?: string }).name === 'NotAllowedError') {
-        return { status: 'permission-required' };
-      }
-      return { status: 'missing' };
-    }
-  }
-  try {
-    return { status: 'available', file: await handle.getFile() };
-  } catch (error) {
-    return (error as { name?: string }).name === 'NotAllowedError'
-      ? { status: 'permission-required' }
-      : { status: 'missing' };
-  }
 }
 
 /**
@@ -266,7 +130,7 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
   const persist = useCallback(
     (nextItems = itemsRef.current, nextPaused = globallyPausedRef.current) => {
       if (!hydratedRef.current || !isUploadLeaderRef.current) return;
-      const snapshot = nextItems.map(toPersisted);
+      const snapshot = nextItems.map(toPersistedUploadItem);
       persistenceRef.current = persistenceRef.current
         .catch(() => undefined)
         .then(() => saveUploadQueue(snapshot, nextPaused))
@@ -323,7 +187,10 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
             ...item,
             progress: Math.max(
               item.progress,
-              Math.min(100, progressFor(uploadedBytes, item.fingerprint.size))
+              Math.min(
+                100,
+                uploadProgress(uploadedBytes, item.fingerprint.size)
+              )
             ),
           };
         }),
@@ -361,7 +228,10 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
         retryEligible: false,
         retryAt: undefined,
         error: '已從本機移除',
-        progress: progressFor(current.uploadedBytes, current.fingerprint.size),
+        progress: uploadProgress(
+          current.uploadedBytes,
+          current.fingerprint.size
+        ),
       }));
     },
     [updateItem]
@@ -379,7 +249,10 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
         state: 'paused',
         retryAt: undefined,
         error: undefined,
-        progress: progressFor(current.uploadedBytes, current.fingerprint.size),
+        progress: uploadProgress(
+          current.uploadedBytes,
+          current.fingerprint.size
+        ),
       }));
     },
     [updateItem]
@@ -423,7 +296,10 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
               state: 'paused',
               retryAt: undefined,
               error: undefined,
-              progress: progressFor(item.uploadedBytes, item.fingerprint.size),
+              progress: uploadProgress(
+                item.uploadedBytes,
+                item.fingerprint.size
+              ),
             }
           : item
       )
@@ -723,7 +599,7 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
                   ...item,
                   state: 'failed',
                   retryEligible: isTransientUploadError(error),
-                  error: errorMessage(error),
+                  error: uploadErrorMessage(error),
                 }
               : item
           )
@@ -843,7 +719,7 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
 
       let file = item.file;
       if (item.fileHandle) {
-        const handleResult = await inspectHandleFile(item.fileHandle);
+        const handleResult = await inspectUploadSource(item.fileHandle);
         if (handleResult.status === 'missing') {
           markLocalMissing(key);
           return;
@@ -904,7 +780,7 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
         file,
         session: activeSession,
         uploadedBytes: activeSession.uploadedSize ?? current.uploadedBytes,
-        progress: progressFor(
+        progress: uploadProgress(
           activeSession.uploadedSize ?? current.uploadedBytes,
           current.fingerprint.size
         ),
@@ -953,7 +829,7 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
             ...current,
             session: activeSession,
             uploadedBytes: committedSize,
-            progress: progressFor(committedSize, total),
+            progress: uploadProgress(committedSize, total),
           }));
         },
       });
@@ -1039,9 +915,9 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
                 retryCount,
                 retryEligible: true,
                 retryAt: Date.now() + delay,
-                error: errorMessage(error),
+                error: uploadErrorMessage(error),
               }));
-              await waitForRetry(delay, controller.signal);
+              await waitForUploadRetry(delay, controller.signal);
               updateItem(key, (item) => ({
                 ...item,
                 state: 'uploading',
@@ -1056,8 +932,11 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
               retryCount,
               retryEligible: isTransientUploadError(error),
               retryAt: undefined,
-              error: errorMessage(error),
-              progress: progressFor(item.uploadedBytes, item.fingerprint.size),
+              error: uploadErrorMessage(error),
+              progress: uploadProgress(
+                item.uploadedBytes,
+                item.fingerprint.size
+              ),
             }));
             return;
           }
@@ -1161,7 +1040,7 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
     await Promise.all(
       candidates.map(async (item) => {
         try {
-          const result = await inspectHandleFile(item.fileHandle);
+          const result = await inspectUploadSource(item.fileHandle);
           if (
             result.status === 'missing' ||
             (result.status === 'available' &&
@@ -1176,46 +1055,7 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
     );
   }, [markLocalMissing]);
 
-  const summary = useMemo<UploadQueueSummary>(() => {
-    const counts: UploadQueueSummary = {
-      total: items.length,
-      queued: 0,
-      checking: 0,
-      needsDecision: 0,
-      skipped: 0,
-      uploading: 0,
-      retrying: 0,
-      paused: 0,
-      complete: 0,
-      failed: 0,
-      localMissing: 0,
-      totalBytes: 0,
-      uploadedBytes: 0,
-      progress: 0,
-    };
-    let progressBytes = 0;
-    for (const item of items) {
-      if (item.state === 'local-missing') counts.localMissing += 1;
-      else if (item.state === 'needs-decision') counts.needsDecision += 1;
-      else counts[item.state] += 1;
-      counts.totalBytes += item.fingerprint.size;
-      counts.uploadedBytes += Math.min(
-        item.fingerprint.size,
-        item.uploadedBytes
-      );
-      progressBytes +=
-        item.state === 'skipped'
-          ? item.fingerprint.size
-          : Math.min(item.fingerprint.size, item.uploadedBytes);
-    }
-    counts.progress =
-      counts.totalBytes > 0
-        ? Math.min(100, (progressBytes / counts.totalBytes) * 100)
-        : counts.total > 0
-        ? ((counts.complete + counts.skipped) / counts.total) * 100
-        : 0;
-    return counts;
-  }, [items]);
+  const summary = useMemo(() => summarizeUploadQueue(items), [items]);
 
   const hasPendingUploads = items.some((item) =>
     ['checking', 'queued', 'uploading', 'retrying'].includes(item.state)
@@ -1226,79 +1066,9 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
     void loadUploadQueue()
       .then(async ({ items: storedItems, globallyPaused: storedPaused }) => {
         const restored = await Promise.all(
-          storedItems.map(async (stored): Promise<UploadQueueItem> => {
-            const persisted = stored;
-            let file: File | undefined;
-            let sourceMissing = false;
-            let permissionRequired = false;
-            if (stored.fileHandle) {
-              try {
-                const result = await inspectHandleFile(stored.fileHandle);
-                if (result.status === 'available') {
-                  if (matchesFingerprint(result.file, stored.fingerprint)) {
-                    file = result.file;
-                  } else {
-                    sourceMissing = true;
-                  }
-                } else if (result.status === 'missing') {
-                  sourceMissing = true;
-                } else {
-                  permissionRequired = true;
-                }
-              } catch {
-                sourceMissing = true;
-              }
-            }
-            let state: UploadQueueState = stored.state;
-            let error = stored.error;
-            let missingFromState = stored.missingFromState;
-            if (sourceMissing) {
-              missingFromState =
-                stored.state === 'local-missing'
-                  ? stored.missingFromState
-                  : stored.state;
-              state = 'local-missing';
-              error = '已從本機移除';
-            } else if (
-              !file &&
-              !stored.fileHandle &&
-              uploadStateNeedsSource(stored.state)
-            ) {
-              state = 'paused';
-              error = '請重新選擇原始檔案以繼續上傳。';
-            } else if (
-              !file &&
-              permissionRequired &&
-              uploadStateNeedsSource(stored.state)
-            ) {
-              state = 'paused';
-              error = '請允許讀取原始檔案以繼續上傳。';
-            } else if (
-              !stored.session &&
-              !stored.targetStatus &&
-              ['queued', 'uploading', 'retrying'].includes(stored.state)
-            ) {
-              state = 'checking';
-              error = undefined;
-            } else if (
-              ['queued', 'uploading', 'retrying'].includes(stored.state)
-            ) {
-              state = storedPaused ? 'paused' : 'queued';
-            }
-            return {
-              ...persisted,
-              batchId: persisted.batchId || persisted.key,
-              localDuplicate: persisted.localDuplicate ?? false,
-              file,
-              state,
-              error,
-              missingFromState,
-              progress: progressFor(
-                stored.uploadedBytes,
-                stored.fingerprint.size
-              ),
-            };
-          })
+          storedItems.map((stored) =>
+            restoreUploadQueueItem(stored, storedPaused)
+          )
         );
         if (!mountedRef.current) return;
         itemsRef.current = restored;
@@ -1373,7 +1143,7 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
               batchId: stored.batchId || stored.key,
               localDuplicate: stored.localDuplicate ?? false,
               file: undefined,
-              progress: progressFor(
+              progress: uploadProgress(
                 stored.uploadedBytes,
                 stored.fingerprint.size
               ),
