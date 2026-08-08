@@ -179,6 +179,9 @@ Browser ── create session ──> file-server
 - Optional drift viewer, cost plan, and explicit GCS physical reconciliation
 - Docker Compose for self-hosting and an HTTP-only Cloud Run deployment model
 
+Google Cloud 的多專案預算與 Billing 熔斷控制面已移至獨立專案：
+[twkevinzhang/budget-kill-switch](https://github.com/twkevinzhang/budget-kill-switch)。
+
 ## Quick start
 
 ### Prerequisites
