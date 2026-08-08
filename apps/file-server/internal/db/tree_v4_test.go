@@ -400,6 +400,14 @@ type takeoverOperationBackend struct {
 	armed bool
 }
 
+func (backend *takeoverOperationBackend) arm(key string) {
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	backend.key = key
+	backend.armed = true
+	backend.reads = 0
+}
+
 func (backend *takeoverOperationBackend) Get(ctx context.Context, key string) (treeObject, bool, error) {
 	backend.mu.Lock()
 	defer backend.mu.Unlock()
@@ -474,7 +482,7 @@ func TestTreeV4OperationLeaseRejectsLiveRunnerAndOldOwnerCannotOverwrite(t *test
 	if _, err = store.saveOperationCAS(ctx, loaded, generation); err != nil {
 		t.Fatal(err)
 	}
-	backend.key, backend.armed, backend.reads = store.operationKey(operation.ID), true, 0
+	backend.arm(store.operationKey(operation.ID))
 	if _, err = store.RunOperation(ctx, operation.ID); err == nil || !strings.Contains(err.Error(), "operation lease lost") {
 		t.Fatalf("old runner err=%v", err)
 	}
