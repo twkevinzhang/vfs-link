@@ -82,8 +82,8 @@ jobs:
       - name: Enable Corepack
         run: corepack enable
 
-      - name: Install Web dependencies
-        run: pnpm install --frozen-lockfile --filter @vfs-link/web...
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
 
       - name: Run Web checks
         run: pnpm run check:web
