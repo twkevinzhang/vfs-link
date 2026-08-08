@@ -10,6 +10,64 @@ import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { Checkbox } from '../ui/checkbox';
 
+type FileEntryVisualVariant = 'table' | 'grid' | 'mobile';
+
+const fileEntryVisualClasses: Record<
+  FileEntryVisualVariant,
+  { directory: string; file: string; thumbnail: string }
+> = {
+  table: {
+    directory: 'h-4 w-4 shrink-0 text-[#11615a]',
+    file: 'h-4 w-4 shrink-0 text-[#276c93]',
+    thumbnail: 'h-7 w-7 shrink-0 rounded object-cover',
+  },
+  grid: {
+    directory: 'h-16 w-16 text-[#11615a] sm:h-20 sm:w-20',
+    file: 'h-14 w-14 text-[#276c93] sm:h-16 sm:w-16',
+    thumbnail: 'h-full w-full object-contain',
+  },
+  mobile: {
+    directory: 'mt-0.5 h-5 w-5 shrink-0 text-[#11615a]',
+    file: 'mt-0.5 h-5 w-5 shrink-0 text-[#276c93]',
+    thumbnail: 'h-10 w-10 shrink-0 rounded object-cover',
+  },
+};
+
+function FileEntryVisual({
+  entry,
+  variant,
+}: {
+  entry: FileEntry;
+  variant: FileEntryVisualVariant;
+}) {
+  const classes = fileEntryVisualClasses[variant];
+  if (entry.kind === 'directory') {
+    return <Folder aria-hidden="true" className={classes.directory} />;
+  }
+  if (entry.thumbnail) {
+    return (
+      <img
+        src={getThumbnailUrl(entry.thumbnail.id)}
+        alt=""
+        className={classes.thumbnail}
+      />
+    );
+  }
+  return <File aria-hidden="true" className={classes.file} />;
+}
+
+function formatFileEntrySize(entry: FileEntry) {
+  return formatBytes(
+    entry.kind === 'directory' ? entry.folderSummary?.bytes ?? 0 : entry.size
+  );
+}
+
+function formatFileEntryDate(entry: FileEntry, trashView = false) {
+  return formatDate(
+    trashView ? entry.trashedAt ?? entry.updatedAt : entry.updatedAt
+  );
+}
+
 export function FileTable({
   entries,
   viewMode,
@@ -162,23 +220,7 @@ export function FileTable({
                           className="flex max-w-[360px] items-center gap-2 overflow-hidden text-left font-medium"
                           title={entry.path}
                         >
-                          {isDirectory ? (
-                            <Folder
-                              aria-hidden="true"
-                              className="h-4 w-4 shrink-0 text-[#11615a]"
-                            />
-                          ) : entry.thumbnail ? (
-                            <img
-                              src={getThumbnailUrl(entry.thumbnail.id)}
-                              alt=""
-                              className="h-7 w-7 shrink-0 rounded object-cover"
-                            />
-                          ) : (
-                            <File
-                              aria-hidden="true"
-                              className="h-4 w-4 shrink-0 text-[#276c93]"
-                            />
-                          )}
+                          <FileEntryVisual entry={entry} variant="table" />
                           <span className="truncate">{entry.name}</span>
                         </div>
                       </td>
@@ -188,18 +230,10 @@ export function FileTable({
                         </Badge>
                       </td>
                       <td className="px-4 py-3 text-right tabular-nums">
-                        {formatBytes(
-                          isDirectory
-                            ? entry.folderSummary?.bytes ?? 0
-                            : entry.size
-                        )}
+                        {formatFileEntrySize(entry)}
                       </td>
                       <td className="px-4 py-3 text-muted-foreground">
-                        {formatDate(
-                          trashView
-                            ? entry.trashedAt ?? entry.updatedAt
-                            : entry.updatedAt
-                        )}
+                        {formatFileEntryDate(entry, trashView)}
                       </td>
                       <td
                         className="px-4 py-3 text-right"
@@ -321,7 +355,6 @@ export function FileGrid({
     <div className="min-h-0 flex-1 overflow-auto p-3 sm:p-4">
       <div className="grid grid-cols-2 gap-3 sm:gap-4 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-3 2xl:grid-cols-4">
         {entries.map((entry) => {
-          const isDirectory = entry.kind === 'directory';
           const selectionKey = entryKey(entry);
           const isSelected = selectedPaths.has(selectionKey);
 
@@ -397,23 +430,7 @@ export function FileGrid({
                 }}
               >
                 <div className="flex aspect-[4/3] items-center justify-center overflow-hidden bg-muted/25">
-                  {isDirectory ? (
-                    <Folder
-                      aria-hidden="true"
-                      className="h-16 w-16 text-[#11615a] sm:h-20 sm:w-20"
-                    />
-                  ) : entry.thumbnail ? (
-                    <img
-                      src={getThumbnailUrl(entry.thumbnail.id)}
-                      alt=""
-                      className="h-full w-full object-contain"
-                    />
-                  ) : (
-                    <File
-                      aria-hidden="true"
-                      className="h-14 w-14 text-[#276c93] sm:h-16 sm:w-16"
-                    />
-                  )}
+                  <FileEntryVisual entry={entry} variant="grid" />
                 </div>
 
                 <div className="grid min-w-0 gap-1.5 p-3">
@@ -425,17 +442,13 @@ export function FileGrid({
                   </h3>
                   <div className="flex min-w-0 items-center justify-between gap-2 text-xs text-muted-foreground">
                     <span className="shrink-0 tabular-nums">
-                      {formatBytes(
-                        isDirectory
-                          ? entry.folderSummary?.bytes ?? 0
-                          : entry.size
-                      )}
+                      {formatFileEntrySize(entry)}
                     </span>
                     <span
                       className="truncate"
-                      title={formatDate(entry.updatedAt)}
+                      title={formatFileEntryDate(entry)}
                     >
-                      {formatDate(entry.updatedAt)}
+                      {formatFileEntryDate(entry)}
                     </span>
                   </div>
                 </div>
@@ -491,23 +504,7 @@ export function MobileFileList({
               }
               title={entry.path}
             >
-              {isDirectory ? (
-                <Folder
-                  aria-hidden="true"
-                  className="mt-0.5 h-5 w-5 shrink-0 text-[#11615a]"
-                />
-              ) : entry.thumbnail ? (
-                <img
-                  src={getThumbnailUrl(entry.thumbnail.id)}
-                  alt=""
-                  className="h-10 w-10 shrink-0 rounded object-cover"
-                />
-              ) : (
-                <File
-                  aria-hidden="true"
-                  className="mt-0.5 h-5 w-5 shrink-0 text-[#276c93]"
-                />
-              )}
+              <FileEntryVisual entry={entry} variant="mobile" />
               <span className="min-w-0 flex-1 break-words font-medium leading-6">
                 {entry.name}
               </span>
@@ -517,18 +514,8 @@ export function MobileFileList({
               <Badge variant={isDirectory ? 'secondary' : 'outline'}>
                 {entry.kind}
               </Badge>
-              <span className="tabular-nums">
-                {formatBytes(
-                  isDirectory ? entry.folderSummary?.bytes ?? 0 : entry.size
-                )}
-              </span>
-              <span>
-                {formatDate(
-                  trashView
-                    ? entry.trashedAt ?? entry.updatedAt
-                    : entry.updatedAt
-                )}
-              </span>
+              <span className="tabular-nums">{formatFileEntrySize(entry)}</span>
+              <span>{formatFileEntryDate(entry, trashView)}</span>
             </div>
 
             <div className="ml-8 flex flex-wrap gap-2">
