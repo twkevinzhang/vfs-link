@@ -1,0 +1,18 @@
+{
+  "name": "vfs-link-budget-kill-switch",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Dry-run-first Cloud Billing budget kill switch for storage-403503",
+  "main": "index.js",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "functions-framework --target=budgetKillSwitch --signature-type=cloudevent",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@google-cloud/billing": "6.0.0",
+    "@google-cloud/functions-framework": "5.0.5"
+  }
+}
