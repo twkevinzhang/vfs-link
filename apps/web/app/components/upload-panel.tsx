@@ -15,6 +15,7 @@ import {
   buildArchives,
   removeArchiveTemporaryFiles,
   type ArchiveBuildProgress,
+  type ArchiveTemporaryManifest,
 } from '../lib/archive-compression';
 import { buildArchivePlans, type ArchiveOptions } from '../lib/archive-plan';
 import { firstDecodableThumbnail } from '../lib/archive-thumbnail';
@@ -42,6 +43,7 @@ export type PreparedArchiveBatch = {
   candidates: UploadCandidate[];
   thumbnail?: { blob: Blob; width: number; height: number };
   temporaryNames: string[];
+  temporaryManifest?: ArchiveTemporaryManifest;
 };
 
 const DEFAULT_OPTIONS: ArchiveOptions = {
@@ -135,6 +137,10 @@ export function UploadDialog({
     [candidates, options]
   );
   const totalBytes = candidates.reduce((sum, item) => sum + item.file.size, 0);
+  const durableSourceCount = candidates.filter(
+    (candidate) => candidate.sourceHandlePersistence === 'durable'
+  ).length;
+  const nonDurableSourceCount = candidates.length - durableSourceCount;
   const passwordsMatch = options.password === confirmPassword;
 
   const buildAndQueue = useCallback(async () => {
@@ -178,9 +184,11 @@ export function UploadDialog({
           candidates: result.files.map((candidate) => ({
             ...candidate,
             archiveGroupId: groupId,
+            archiveTemporaryManifest: result.temporaryManifest,
           })),
           thumbnail: preparedThumbnails[index]?.thumbnail,
           temporaryNames: result.temporaryNames,
+          temporaryManifest: result.temporaryManifest,
         };
       });
       onAddArchives(batches);
@@ -325,6 +333,21 @@ export function UploadDialog({
               </span>
             </div>
             {candidates.length > 0 && (
+              <div className="grid gap-2 text-xs" aria-live="polite">
+                {durableSourceCount > 0 && (
+                  <p className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-emerald-800">
+                    {durableSourceCount} 個來源可在重新整理後續傳。
+                  </p>
+                )}
+                {nonDurableSourceCount > 0 && (
+                  <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-amber-900">
+                    {nonDurableSourceCount}{' '}
+                    個來源重新整理後需重新選檔，來源內容不會複製到瀏覽器儲存空間。
+                  </p>
+                )}
+              </div>
+            )}
+            {candidates.length > 0 && (
               <div className="max-h-56 overflow-auto rounded-lg border border-border">
                 {candidates.map((candidate, index) => (
                   <div
@@ -337,6 +360,18 @@ export function UploadDialog({
                     </span>
                     <span className="text-xs text-muted-foreground">
                       {formatBytes(candidate.file.size)}
+                    </span>
+                    <span
+                      className={cn(
+                        'shrink-0 rounded-full px-2 py-0.5 text-[11px]',
+                        candidate.sourceHandlePersistence === 'durable'
+                          ? 'bg-emerald-100 text-emerald-800'
+                          : 'bg-amber-100 text-amber-900'
+                      )}
+                    >
+                      {candidate.sourceHandlePersistence === 'durable'
+                        ? '重新整理後可續傳'
+                        : '重新整理後需重選'}
                     </span>
                     <Button
                       type="button"

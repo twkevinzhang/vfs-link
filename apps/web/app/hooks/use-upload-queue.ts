@@ -20,7 +20,17 @@ import {
 } from '../lib/api';
 import { normalizePath } from '../lib/format';
 import type { UploadCandidate } from '../lib/folder-upload';
+import {
+  findArchiveTemporaryOrphanNames,
+  listArchiveTemporaryStorageUsage,
+  removeArchiveTemporaryFiles,
+  type ArchiveTemporaryManifest,
+} from '../lib/archive-compression';
 import { uploadRemainingChunks } from '../lib/upload-chunks';
+import {
+  holdUploadQueueLeadership,
+  type UploadQueueLeadershipState,
+} from '../lib/upload-queue-coordinator';
 import {
   MAX_CONCURRENT_UPLOADS,
   duplicateLogicPaths,
@@ -36,11 +46,14 @@ import {
   type UploadFingerprint,
 } from '../lib/upload-queue-core';
 import {
+  clearUploadQueueStorage,
+  getUploadQueueStorageStatus,
   loadUploadQueue,
   saveUploadQueue,
+  subscribeUploadQueueStorageStatus,
   type PersistedUploadItem,
   type PersistedUploadState,
-  type UploadSourceSnapshot,
+  type UploadQueueStorageStatus,
 } from '../lib/upload-queue-storage';
 import type {
   UploadPreflightExisting,
@@ -49,6 +62,8 @@ import type {
 } from '../types/upload';
 
 const SOURCE_CHECK_INTERVAL_MS = 15_000;
+const ARCHIVE_ORPHAN_GRACE_MS = 24 * 60 * 60 * 1000;
+const UPLOAD_QUEUE_CHANNEL = 'vfs-link-upload-queue-v1';
 
 export type UploadQueueState = PersistedUploadState;
 
@@ -79,6 +94,7 @@ export type UploadQueueItem = {
   /** Multiple source files in this batch resolve to the same logical path. */
   localDuplicate: boolean;
   archiveGroupId?: string;
+  archiveTemporaryManifest?: ArchiveTemporaryManifest;
   retryCount: number;
   retryEligible: boolean;
   retryAt?: number;
@@ -105,6 +121,13 @@ type UploadQueueSummary = {
 
 type UseUploadQueueOptions = {
   onItemComplete?: (item: UploadQueueItem) => void;
+};
+
+type LocalUploadStorageUsage = {
+  usage?: number;
+  quota?: number;
+  archiveBytes: number;
+  archiveFiles: number;
 };
 
 type PermissionAwareFileHandle = FileSystemFileHandle & {
@@ -166,6 +189,7 @@ function toPersisted(item: UploadQueueItem): PersistedUploadItem {
     existingTarget: item.existingTarget,
     localDuplicate: item.localDuplicate,
     archiveGroupId: item.archiveGroupId,
+    archiveTemporaryManifest: item.archiveTemporaryManifest,
     retryCount: item.retryCount,
     retryEligible: item.retryEligible,
     missingFromState: item.missingFromState,
@@ -222,8 +246,22 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
   const [items, setItems] = useState<UploadQueueItem[]>([]);
   const [hydrated, setHydrated] = useState(false);
   const [globallyPaused, setGloballyPaused] = useState(false);
+  const [leadershipState, setLeadershipState] =
+    useState<UploadQueueLeadershipState>('waiting');
+  const [storageStatus, setStorageStatus] = useState<UploadQueueStorageStatus>(
+    getUploadQueueStorageStatus
+  );
+  const [legacySourcesCleaned, setLegacySourcesCleaned] = useState(false);
+  const [clearingLocalData, setClearingLocalData] = useState(false);
+  const [localStorageUsage, setLocalStorageUsage] =
+    useState<LocalUploadStorageUsage>({
+      archiveBytes: 0,
+      archiveFiles: 0,
+    });
   const itemsRef = useRef(items);
+  const clearingLocalDataRef = useRef(false);
   const globallyPausedRef = useRef(globallyPaused);
+  const isUploadLeaderRef = useRef(false);
   const hydratedRef = useRef(false);
   const mountedRef = useRef(true);
   const onItemCompleteRef = useRef(onItemComplete);
@@ -234,6 +272,11 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
   const progressFrameRef = useRef<number | undefined>(undefined);
   const pendingProgressRef = useRef(new Map<string, number>());
   const persistenceRef = useRef(Promise.resolve());
+  const queueChannelRef = useRef<BroadcastChannel | undefined>(undefined);
+  const archiveManifestsRef = useRef(
+    new Map<string, ArchiveTemporaryManifest>()
+  );
+  const orphanCleanupStartedRef = useRef(false);
   const scheduleRef = useRef<(() => void) | undefined>(undefined);
   const preflightRef = useRef<((keys: string[]) => Promise<void>) | undefined>(
     undefined
@@ -242,21 +285,34 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
   onItemCompleteRef.current = onItemComplete;
   globallyPausedRef.current = globallyPaused;
 
+  const refreshLocalStorageUsage = useCallback(async () => {
+    const [estimate, archiveUsage] = await Promise.all([
+      navigator.storage?.estimate?.() ?? Promise.resolve({}),
+      listArchiveTemporaryStorageUsage(),
+    ]);
+    const next = {
+      usage: estimate.usage,
+      quota: estimate.quota,
+      archiveBytes: archiveUsage.totalBytes,
+      archiveFiles: archiveUsage.fileCount,
+    };
+    if (mountedRef.current) setLocalStorageUsage(next);
+    return next;
+  }, []);
+
   const persist = useCallback(
     (nextItems = itemsRef.current, nextPaused = globallyPausedRef.current) => {
-      if (!hydratedRef.current) return;
+      if (
+        !hydratedRef.current ||
+        !isUploadLeaderRef.current ||
+        clearingLocalDataRef.current
+      )
+        return;
       const snapshot = nextItems.map(toPersisted);
-      const sources: UploadSourceSnapshot[] = nextItems.map((item) => ({
-        key: item.key,
-        file: item.file,
-        fileHandle: item.fileHandle,
-        retainFile: !['complete', 'skipped', 'local-missing'].includes(
-          item.state
-        ),
-      }));
       persistenceRef.current = persistenceRef.current
         .catch(() => undefined)
-        .then(() => saveUploadQueue(snapshot, nextPaused, sources));
+        .then(() => saveUploadQueue(snapshot, nextPaused))
+        .then(() => queueChannelRef.current?.postMessage({ type: 'changed' }));
     },
     []
   );
@@ -467,20 +523,74 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
   );
 
   const cancelAll = useCallback(() => {
-    const keys = itemsRef.current
-      .filter((item) =>
-        [
-          'checking',
-          'needs-decision',
-          'queued',
-          'uploading',
-          'retrying',
-          'paused',
-        ].includes(item.state)
+    const cancellableStates = new Set<UploadQueueState>([
+      'checking',
+      'needs-decision',
+      'queued',
+      'uploading',
+      'retrying',
+      'paused',
+    ]);
+    const cancellable = itemsRef.current.filter((item) =>
+      cancellableStates.has(item.state)
+    );
+    if (cancellable.length === 0) return;
+
+    const keys = new Set(cancellable.map((item) => item.key));
+    for (const item of cancellable) {
+      cancelledKeysRef.current.add(item.key);
+      abortControllersRef.current.get(item.key)?.abort();
+      if (item.session) cleanupUploadSession(item.session.id);
+      pendingProgressRef.current.delete(item.key);
+    }
+    updateItems((current) => current.filter((item) => !keys.has(item.key)));
+    for (const key of keys) {
+      if (!runningKeysRef.current.has(key))
+        cancelledKeysRef.current.delete(key);
+    }
+    scheduleRef.current?.();
+  }, [cleanupUploadSession, updateItems]);
+
+  const clearLocalUploadData = useCallback(async () => {
+    if (clearingLocalData) return;
+    clearingLocalDataRef.current = true;
+    setClearingLocalData(true);
+    const current = itemsRef.current;
+    for (const item of current) {
+      cancelledKeysRef.current.add(item.key);
+      abortControllersRef.current.get(item.key)?.abort();
+      pendingProgressRef.current.delete(item.key);
+    }
+    await Promise.allSettled(
+      current.flatMap((item) =>
+        item.session && item.state !== 'complete'
+          ? [cancelUpload(item.session.id)]
+          : []
       )
-      .map((item) => item.key);
-    for (const key of keys) cancel(key);
-  }, [cancel]);
+    );
+    try {
+      await persistenceRef.current.catch(() => undefined);
+      await clearUploadQueueStorage();
+      const archiveUsage = await listArchiveTemporaryStorageUsage();
+      await removeArchiveTemporaryFiles(
+        archiveUsage.files.map((file) => file.name)
+      );
+      archiveManifestsRef.current.clear();
+      itemsRef.current = [];
+      setItems([]);
+      globallyPausedRef.current = false;
+      setGloballyPaused(false);
+      await refreshLocalStorageUsage();
+    } finally {
+      for (const item of current) {
+        if (!runningKeysRef.current.has(item.key)) {
+          cancelledKeysRef.current.delete(item.key);
+        }
+      }
+      clearingLocalDataRef.current = false;
+      if (mountedRef.current) setClearingLocalData(false);
+    }
+  }, [clearingLocalData, refreshLocalStorageUsage]);
 
   const retry = useCallback(
     (key: string) => {
@@ -635,6 +745,7 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
 
   const runPreflight = useCallback(
     async (keys: string[]) => {
+      if (!isUploadLeaderRef.current) return;
       const requestedKeys = new Set(keys);
       const candidates = itemsRef.current.filter(
         (item) => requestedKeys.has(item.key) && item.state === 'checking'
@@ -1049,6 +1160,7 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
     if (
       !mountedRef.current ||
       !hydratedRef.current ||
+      !isUploadLeaderRef.current ||
       globallyPausedRef.current
     )
       return;
@@ -1077,6 +1189,7 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
       destinationPath: string,
       existingNames: Set<string>
     ) => {
+      if (!isUploadLeaderRef.current) return;
       // Kept for API compatibility; authoritative conflict checks now come
       // from the full-path server preflight rather than the visible file list.
       void existingNames;
@@ -1109,13 +1222,13 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
             overwrite: false,
             localDuplicate: duplicatePaths.has(logicPath),
             archiveGroupId: candidate.archiveGroupId,
+            archiveTemporaryManifest: candidate.archiveTemporaryManifest,
             retryCount: 0,
             retryEligible: false,
           };
         }
       );
       if (additions.length === 0) return;
-      void navigator.storage?.persist?.().catch(() => undefined);
       updateItems((current) => [...current, ...additions]);
       void runPreflight(additions.map((item) => item.key));
     },
@@ -1194,98 +1307,102 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
   useEffect(() => {
     mountedRef.current = true;
     void loadUploadQueue()
-      .then(async ({ items: storedItems, globallyPaused: storedPaused }) => {
-        const restored = await Promise.all(
-          storedItems.map(async (stored): Promise<UploadQueueItem> => {
-            const { sourceFile, ...persisted } = stored;
-            let file =
-              sourceFile && matchesFingerprint(sourceFile, stored.fingerprint)
-                ? sourceFile
-                : undefined;
-            let sourceMissing = false;
-            let permissionRequired = false;
-            if (stored.fileHandle) {
-              try {
-                const result = await inspectHandleFile(stored.fileHandle);
-                if (result.status === 'available') {
-                  if (matchesFingerprint(result.file, stored.fingerprint)) {
-                    file = result.file;
-                  } else {
+      .then(
+        async ({
+          items: storedItems,
+          globallyPaused: storedPaused,
+          migratedLegacySources,
+        }) => {
+          if (migratedLegacySources) setLegacySourcesCleaned(true);
+          const restored = await Promise.all(
+            storedItems.map(async (stored): Promise<UploadQueueItem> => {
+              const persisted = stored;
+              let file: File | undefined;
+              let sourceMissing = false;
+              let permissionRequired = false;
+              if (stored.fileHandle) {
+                try {
+                  const result = await inspectHandleFile(stored.fileHandle);
+                  if (result.status === 'available') {
+                    if (matchesFingerprint(result.file, stored.fingerprint)) {
+                      file = result.file;
+                    } else {
+                      sourceMissing = true;
+                    }
+                  } else if (result.status === 'missing') {
                     sourceMissing = true;
+                  } else {
+                    permissionRequired = true;
                   }
-                } else if (result.status === 'missing') {
+                } catch {
                   sourceMissing = true;
-                } else {
-                  permissionRequired = true;
                 }
-              } catch {
-                sourceMissing = true;
               }
-            }
-            let state: UploadQueueState = stored.state;
-            let error = stored.error;
-            let missingFromState = stored.missingFromState;
-            if (sourceMissing) {
-              missingFromState =
-                stored.state === 'local-missing'
-                  ? stored.missingFromState
-                  : stored.state;
-              state = 'local-missing';
-              error = '已從本機移除';
-            } else if (
-              !file &&
-              !stored.fileHandle &&
-              uploadStateNeedsSource(stored.state)
-            ) {
-              state = 'paused';
-              error = '請重新選擇原始檔案以繼續上傳。';
-            } else if (
-              !file &&
-              permissionRequired &&
-              uploadStateNeedsSource(stored.state)
-            ) {
-              state = 'paused';
-              error = '請允許讀取原始檔案以繼續上傳。';
-            } else if (
-              !stored.session &&
-              !stored.targetStatus &&
-              ['queued', 'uploading', 'retrying'].includes(stored.state)
-            ) {
-              state = 'checking';
-              error = undefined;
-            } else if (
-              ['queued', 'uploading', 'retrying'].includes(stored.state)
-            ) {
-              state = storedPaused ? 'paused' : 'queued';
-            }
-            return {
-              ...persisted,
-              batchId: persisted.batchId || persisted.key,
-              localDuplicate: persisted.localDuplicate ?? false,
-              file,
-              state,
-              error,
-              missingFromState,
-              progress: progressFor(
-                stored.uploadedBytes,
-                stored.fingerprint.size
-              ),
-            };
-          })
-        );
-        if (!mountedRef.current) return;
-        itemsRef.current = restored;
-        globallyPausedRef.current = storedPaused;
-        setItems(restored);
-        setGloballyPaused(storedPaused);
-        hydratedRef.current = true;
-        setHydrated(true);
-        persist(restored, storedPaused);
-        const checkingKeys = restored
-          .filter((item) => item.state === 'checking')
-          .map((item) => item.key);
-        if (checkingKeys.length > 0) void runPreflight(checkingKeys);
-      })
+              let state: UploadQueueState = stored.state;
+              let error = stored.error;
+              let missingFromState = stored.missingFromState;
+              if (sourceMissing) {
+                missingFromState =
+                  stored.state === 'local-missing'
+                    ? stored.missingFromState
+                    : stored.state;
+                state = 'local-missing';
+                error = '已從本機移除';
+              } else if (
+                !file &&
+                !stored.fileHandle &&
+                uploadStateNeedsSource(stored.state)
+              ) {
+                state = 'paused';
+                error = '請重新選擇原始檔案以繼續上傳。';
+              } else if (
+                !file &&
+                permissionRequired &&
+                uploadStateNeedsSource(stored.state)
+              ) {
+                state = 'paused';
+                error = '請允許讀取原始檔案以繼續上傳。';
+              } else if (
+                !stored.session &&
+                !stored.targetStatus &&
+                ['queued', 'uploading', 'retrying'].includes(stored.state)
+              ) {
+                state = 'checking';
+                error = undefined;
+              } else if (
+                ['queued', 'uploading', 'retrying'].includes(stored.state)
+              ) {
+                state = storedPaused ? 'paused' : 'queued';
+              }
+              return {
+                ...persisted,
+                batchId: persisted.batchId || persisted.key,
+                localDuplicate: persisted.localDuplicate ?? false,
+                file,
+                state,
+                error,
+                missingFromState,
+                progress: progressFor(
+                  stored.uploadedBytes,
+                  stored.fingerprint.size
+                ),
+              };
+            })
+          );
+          if (!mountedRef.current) return;
+          itemsRef.current = restored;
+          globallyPausedRef.current = storedPaused;
+          setItems(restored);
+          setGloballyPaused(storedPaused);
+          hydratedRef.current = true;
+          setHydrated(true);
+          persist(restored, storedPaused);
+          const checkingKeys = restored
+            .filter((item) => item.state === 'checking')
+            .map((item) => item.key);
+          if (checkingKeys.length > 0) void runPreflight(checkingKeys);
+        }
+      )
       .catch(() => {
         hydratedRef.current = true;
         setHydrated(true);
@@ -1294,6 +1411,125 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
       mountedRef.current = false;
     };
   }, [persist, runPreflight]);
+
+  useEffect(() => subscribeUploadQueueStorageStatus(setStorageStatus), []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let waitingSince = 0;
+    void holdUploadQueueLeadership({
+      locks: navigator.locks,
+      signal: controller.signal,
+      onState: (state) => {
+        if (state === 'waiting') waitingSince = Date.now();
+        const becameLeader = state === 'leader';
+        isUploadLeaderRef.current = becameLeader;
+        if (mountedRef.current) setLeadershipState(state);
+        if (becameLeader) {
+          if (
+            waitingSince > 0 &&
+            Date.now() - waitingSince > 1_000 &&
+            hydratedRef.current
+          ) {
+            window.location.reload();
+            return;
+          }
+          scheduleRef.current?.();
+          const checkingKeys = itemsRef.current
+            .filter((item) => item.state === 'checking')
+            .map((item) => item.key);
+          if (checkingKeys.length > 0) {
+            void preflightRef.current?.(checkingKeys);
+          }
+        }
+      },
+    }).catch(() => {
+      isUploadLeaderRef.current = false;
+      if (mountedRef.current) setLeadershipState('stopped');
+    });
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
+    if (typeof BroadcastChannel === 'undefined') return;
+    const channel = new BroadcastChannel(UPLOAD_QUEUE_CHANNEL);
+    queueChannelRef.current = channel;
+    channel.onmessage = (event: MessageEvent<{ type?: string }>) => {
+      if (event.data?.type !== 'changed' || isUploadLeaderRef.current) return;
+      void loadUploadQueue()
+        .then(({ items: storedItems, globallyPaused: storedPaused }) => {
+          if (!mountedRef.current || isUploadLeaderRef.current) return;
+          const mirrored = storedItems.map(
+            (stored): UploadQueueItem => ({
+              ...stored,
+              batchId: stored.batchId || stored.key,
+              localDuplicate: stored.localDuplicate ?? false,
+              file: undefined,
+              progress: progressFor(
+                stored.uploadedBytes,
+                stored.fingerprint.size
+              ),
+            })
+          );
+          itemsRef.current = mirrored;
+          globallyPausedRef.current = storedPaused;
+          setItems(mirrored);
+          setGloballyPaused(storedPaused);
+        })
+        .catch(() => undefined);
+    };
+    return () => {
+      if (queueChannelRef.current === channel) {
+        queueChannelRef.current = undefined;
+      }
+      channel.close();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    const currentManifests = new Map<string, ArchiveTemporaryManifest>();
+    for (const item of items) {
+      const manifest = item.archiveTemporaryManifest;
+      if (manifest) currentManifests.set(manifest.ownerId, manifest);
+    }
+    for (const [ownerId, manifest] of currentManifests) {
+      archiveManifestsRef.current.set(ownerId, manifest);
+    }
+    for (const [ownerId, manifest] of archiveManifestsRef.current) {
+      const stillNeeded = items.some(
+        (item) =>
+          item.archiveTemporaryManifest?.ownerId === ownerId &&
+          !['complete', 'skipped', 'local-missing'].includes(item.state)
+      );
+      if (stillNeeded) continue;
+      archiveManifestsRef.current.delete(ownerId);
+      void removeArchiveTemporaryFiles(
+        manifest.files.map((file) => file.name)
+      ).then(() => refreshLocalStorageUsage());
+    }
+  }, [hydrated, items, refreshLocalStorageUsage]);
+
+  useEffect(() => {
+    if (!hydrated || orphanCleanupStartedRef.current) return;
+    orphanCleanupStartedRef.current = true;
+    const manifests = items
+      .map((item) => item.archiveTemporaryManifest)
+      .filter((manifest): manifest is ArchiveTemporaryManifest =>
+        Boolean(manifest)
+      );
+    void listArchiveTemporaryStorageUsage()
+      .then(async (usage) => {
+        const orphanNames = findArchiveTemporaryOrphanNames(
+          usage.files,
+          manifests,
+          Date.now() - ARCHIVE_ORPHAN_GRACE_MS
+        );
+        await removeArchiveTemporaryFiles(orphanNames);
+        await refreshLocalStorageUsage();
+      })
+      .catch(() => undefined);
+  }, [hydrated, items, refreshLocalStorageUsage]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -1351,10 +1587,18 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
     resumeAll,
     reconnect,
     authorizeSource,
+    clearLocalUploadData,
+    refreshLocalStorageUsage,
     globallyPaused,
     hydrated,
     hasPendingUploads,
     summary,
+    storageStatus,
+    legacySourcesCleaned,
+    clearingLocalData,
+    localStorageUsage,
+    isUploadLeader: leadershipState === 'leader',
+    leadershipState,
   };
 }
 

@@ -178,6 +178,8 @@ export default function FileBrowserRoute() {
   const [uploadDockExpanded, setUploadDockExpanded] = useState(true);
   const [showCancelUploadsConfirm, setShowCancelUploadsConfirm] =
     useState(false);
+  const [showClearLocalUploadDataConfirm, setShowClearLocalUploadDataConfirm] =
+    useState(false);
   const filesRequestRef = useRef(0);
   const uploadRefreshTimerRef = useRef<number | undefined>(undefined);
   const completedUploadDestinationsRef = useRef(new Set<string>());
@@ -697,6 +699,12 @@ export default function FileBrowserRoute() {
       actionError ||
       activeOperation ||
       uploadQueue.items.length > 0 ||
+      !uploadQueue.isUploadLeader ||
+      uploadQueue.legacySourcesCleaned ||
+      uploadQueue.localStorageUsage.archiveFiles > 0 ||
+      ['blocked', 'version-error', 'error'].includes(
+        uploadQueue.storageStatus.state
+      ) ||
       selection.selected.size > 0
   );
 
@@ -743,9 +751,15 @@ export default function FileBrowserRoute() {
             {view === 'files' && (
               <Button
                 variant="outline"
+                disabled={!uploadQueue.isUploadLeader}
                 onClick={() => setShowUpload((visible) => !visible)}
                 className="h-9 w-full px-3 md:w-auto"
                 aria-expanded={showUpload}
+                title={
+                  uploadQueue.isUploadLeader
+                    ? '上傳'
+                    : '另一個 VFS Link 分頁正在管理上傳'
+                }
               >
                 <Upload aria-hidden="true" className="h-4 w-4" />
                 Upload
@@ -940,7 +954,84 @@ export default function FileBrowserRoute() {
                 expanded={uploadDockExpanded}
                 onExpandedChange={setUploadDockExpanded}
                 onRequestCancelAll={() => setShowCancelUploadsConfirm(true)}
+                onRequestClearLocalData={() =>
+                  setShowClearLocalUploadDataConfirm(true)
+                }
               />
+            )}
+            {!uploadQueue.isUploadLeader && (
+              <Alert className="rounded-none border-0 bg-amber-50 text-amber-950">
+                <div className="flex items-start gap-3">
+                  <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
+                  <div>
+                    <p className="font-semibold">另一個分頁正在管理上傳</p>
+                    <p className="text-sm text-amber-900/80">
+                      為避免重複送出
+                      chunk，本分頁暫停上傳控制；關閉主要分頁後，本頁會接手並重新載入
+                      queue。
+                    </p>
+                  </div>
+                </div>
+              </Alert>
+            )}
+            {(uploadQueue.legacySourcesCleaned ||
+              uploadQueue.localStorageUsage.archiveFiles > 0 ||
+              ['blocked', 'version-error', 'error'].includes(
+                uploadQueue.storageStatus.state
+              )) && (
+              <Alert
+                className={cn(
+                  'rounded-none border-0',
+                  ['blocked', 'version-error', 'error'].includes(
+                    uploadQueue.storageStatus.state
+                  ) && 'text-destructive'
+                )}
+              >
+                <div className="flex flex-wrap items-center gap-3">
+                  <DatabaseZap
+                    aria-hidden="true"
+                    className="h-5 w-5 shrink-0"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <p className="font-semibold">
+                      {['blocked', 'version-error', 'error'].includes(
+                        uploadQueue.storageStatus.state
+                      )
+                        ? '本機上傳資料無法更新'
+                        : uploadQueue.legacySourcesCleaned
+                        ? '已移除舊版完整檔案快照'
+                        : '瀏覽器中仍有壓縮暫存'}
+                    </p>
+                    <p className="text-sm text-muted-foreground">
+                      {uploadQueue.storageStatus.state === 'blocked'
+                        ? '請關閉其他 VFS Link 分頁後重新整理；清理被其他 IndexedDB connection 阻擋。'
+                        : uploadQueue.storageStatus.state === 'version-error'
+                        ? '瀏覽器中的資料庫版本比目前程式新，已停止寫入以避免破壞資料。'
+                        : uploadQueue.storageStatus.state === 'error'
+                        ? uploadQueue.storageStatus.error.message
+                        : uploadQueue.legacySourcesCleaned
+                        ? 'IndexedDB 不再保存 File 或 Blob。舊分頁仍開啟時，Brave 可能延後釋放實體磁碟空間。'
+                        : `${
+                            uploadQueue.localStorageUsage.archiveFiles
+                          } 個暫存檔，${formatBytes(
+                            uploadQueue.localStorageUsage.archiveBytes
+                          )}。`}
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={
+                      uploadQueue.clearingLocalData ||
+                      !uploadQueue.isUploadLeader
+                    }
+                    onClick={() => setShowClearLocalUploadDataConfirm(true)}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    清除本機上傳資料
+                  </Button>
+                </div>
+              </Alert>
             )}
             {state.error && (
               <Alert className="rounded-none border-0 text-destructive">
@@ -1157,6 +1248,47 @@ export default function FileBrowserRoute() {
             </div>
           </AlertDialogContent>
         </AlertDialog>
+        <AlertDialog
+          open={showClearLocalUploadDataConfirm}
+          onOpenChange={setShowClearLocalUploadDataConfirm}
+        >
+          <AlertDialogContent>
+            <AlertDialogTitle className="text-lg font-semibold">
+              清除所有本機上傳資料？
+            </AlertDialogTitle>
+            <AlertDialogDescription className="text-sm text-muted-foreground">
+              這會停止未完成上傳、刪除 queue、session、offset 與 OPFS
+              壓縮暫存。磁碟上的原始檔案不會被刪除；未完成項目之後需要重新加入。
+            </AlertDialogDescription>
+            <div className="flex justify-end gap-2">
+              <AlertDialogCancel asChild>
+                <Button variant="outline">保留資料</Button>
+              </AlertDialogCancel>
+              <AlertDialogAction asChild>
+                <Button
+                  variant="destructive"
+                  disabled={
+                    uploadQueue.clearingLocalData || !uploadQueue.isUploadLeader
+                  }
+                  onClick={() => {
+                    void uploadQueue
+                      .clearLocalUploadData()
+                      .then(() => setShowClearLocalUploadDataConfirm(false))
+                      .catch((error: unknown) =>
+                        setActionError(
+                          error instanceof Error
+                            ? `清除本機上傳資料失敗：${error.message}`
+                            : '清除本機上傳資料失敗。'
+                        )
+                      );
+                  }}
+                >
+                  清除本機資料
+                </Button>
+              </AlertDialogAction>
+            </div>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </main>
   );
@@ -1167,6 +1299,7 @@ function UploadActivity({
   expanded,
   onExpandedChange,
   onRequestCancelAll,
+  onRequestClearLocalData,
 }: {
   queue: Pick<
     ReturnType<typeof useBackgroundUploadQueue>,
@@ -1187,10 +1320,12 @@ function UploadActivity({
     | 'replaceAll'
     | 'skipAll'
     | 'globallyPaused'
+    | 'isUploadLeader'
   >;
   expanded: boolean;
   onExpandedChange: (expanded: boolean) => void;
   onRequestCancelAll: () => void;
+  onRequestClearLocalData: () => void;
 }) {
   const { items, summary } = queue;
   const roundedProgress = Math.round(summary.progress);
@@ -1233,190 +1368,208 @@ function UploadActivity({
 
   return (
     <section className="grid gap-3 p-3" aria-labelledby="upload-activity-title">
-      <div className="grid gap-1.5">
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <div className="flex min-w-0 items-center gap-2">
-            {summary.needsDecision > 0 ? (
-              <AlertCircle
-                aria-hidden="true"
-                className="h-4 w-4 shrink-0 text-amber-600"
-              />
-            ) : pendingCount > 0 ? (
-              <LoaderCircle
-                aria-hidden="true"
-                className="h-4 w-4 shrink-0 animate-spin text-accent"
-              />
-            ) : summary.failed > 0 || summary.localMissing > 0 ? (
-              <AlertCircle
-                aria-hidden="true"
-                className="h-4 w-4 shrink-0 text-destructive"
-              />
-            ) : (
-              <Check
-                aria-hidden="true"
-                className="h-4 w-4 shrink-0 text-[#11615a]"
-              />
-            )}
-            <p
-              id="upload-activity-title"
-              className="truncate text-sm font-semibold"
-            >
-              {headline}
-            </p>
-          </div>
-          <div className="ml-auto flex flex-wrap items-center justify-end gap-1">
-            <p className="text-right text-xs text-muted-foreground">
-              <span className="sm:hidden">
-                {formatBytes(summary.uploadedBytes)} · {roundedProgress}%
-              </span>
-              <span className="hidden sm:inline">
-                {formatBytes(summary.uploadedBytes)} of{' '}
-                {formatBytes(summary.totalBytes)} · {roundedProgress}%
-              </span>
-            </p>
-            {pendingCount + summary.paused + summary.needsDecision > 0 && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-8 px-2 text-destructive hover:text-destructive"
-                onClick={onRequestCancelAll}
+      <fieldset
+        disabled={!queue.isUploadLeader}
+        className="contents disabled:opacity-70"
+      >
+        <div className="grid gap-1.5">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <div className="flex min-w-0 items-center gap-2">
+              {summary.needsDecision > 0 ? (
+                <AlertCircle
+                  aria-hidden="true"
+                  className="h-4 w-4 shrink-0 text-amber-600"
+                />
+              ) : pendingCount > 0 ? (
+                <LoaderCircle
+                  aria-hidden="true"
+                  className="h-4 w-4 shrink-0 animate-spin text-accent"
+                />
+              ) : summary.failed > 0 || summary.localMissing > 0 ? (
+                <AlertCircle
+                  aria-hidden="true"
+                  className="h-4 w-4 shrink-0 text-destructive"
+                />
+              ) : (
+                <Check
+                  aria-hidden="true"
+                  className="h-4 w-4 shrink-0 text-[#11615a]"
+                />
+              )}
+              <p
+                id="upload-activity-title"
+                className="truncate text-sm font-semibold"
               >
-                Cancel all
-              </Button>
-            )}
-            {(pendingCount > 0 || summary.paused > 0) && (
+                {headline}
+              </p>
+            </div>
+            <div className="ml-auto flex flex-wrap items-center justify-end gap-1">
+              <p className="text-right text-xs text-muted-foreground">
+                <span className="sm:hidden">
+                  {formatBytes(summary.uploadedBytes)} · {roundedProgress}%
+                </span>
+                <span className="hidden sm:inline">
+                  {formatBytes(summary.uploadedBytes)} of{' '}
+                  {formatBytes(summary.totalBytes)} · {roundedProgress}%
+                </span>
+              </p>
+              {pendingCount + summary.paused + summary.needsDecision > 0 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 px-2 text-destructive hover:text-destructive"
+                  onClick={onRequestCancelAll}
+                >
+                  Cancel all
+                </Button>
+              )}
+              {(pendingCount > 0 || summary.paused > 0) && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 px-2"
+                  onClick={
+                    queue.globallyPaused ? queue.resumeAll : queue.pauseAll
+                  }
+                >
+                  {queue.globallyPaused ? (
+                    <Play className="h-3.5 w-3.5" aria-hidden="true" />
+                  ) : (
+                    <Pause className="h-3.5 w-3.5" aria-hidden="true" />
+                  )}
+                  {queue.globallyPaused ? 'Resume all' : 'Pause all'}
+                </Button>
+              )}
               <Button
                 variant="outline"
                 size="sm"
                 className="h-8 px-2"
-                onClick={
-                  queue.globallyPaused ? queue.resumeAll : queue.pauseAll
-                }
+                disabled={retryableCount === 0}
+                onClick={queue.retryAll}
               >
-                {queue.globallyPaused ? (
-                  <Play className="h-3.5 w-3.5" aria-hidden="true" />
-                ) : (
-                  <Pause className="h-3.5 w-3.5" aria-hidden="true" />
-                )}
-                {queue.globallyPaused ? 'Resume all' : 'Pause all'}
+                <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+                Retry all
               </Button>
-            )}
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-8 px-2"
-              disabled={retryableCount === 0}
-              onClick={queue.retryAll}
-            >
-              <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
-              Retry all
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8"
-              onClick={() => onExpandedChange(!expanded)}
-              aria-expanded={expanded}
-              aria-controls={queueListId}
-              aria-label={
-                expanded ? 'Collapse upload details' : 'Expand upload details'
-              }
-            >
-              {expanded ? (
-                <ChevronDown aria-hidden="true" className="h-4 w-4" />
-              ) : (
-                <ChevronUp aria-hidden="true" className="h-4 w-4" />
-              )}
-            </Button>
-          </div>
-        </div>
-        <UploadProgress value={roundedProgress} label="Overall upload" />
-        {expanded && (
-          <p className="text-xs text-muted-foreground" aria-live="polite">
-            {summary.complete} complete · {summary.queued} queued
-            {summary.checking > 0 ? ` · ${summary.checking} checking` : ''}
-            {summary.needsDecision > 0
-              ? ` · ${summary.needsDecision} need a decision`
-              : ''}
-            {summary.skipped > 0 ? ` · ${summary.skipped} skipped` : ''}
-            {summary.paused > 0 ? ` · ${summary.paused} paused` : ''}
-            {summary.retrying > 0 ? ` · ${summary.retrying} retrying` : ''}
-            {summary.failed > 0 ? ` · ${summary.failed} failed` : ''}
-            {summary.localMissing > 0
-              ? ` · ${summary.localMissing} local source missing`
-              : ''}
-          </p>
-        )}
-      </div>
-
-      {expanded && (
-        <div className="grid gap-3">
-          {decisionBatches.map(([batchId, conflicts]) => {
-            const duplicateCount = conflicts.filter(
-              (item) => item.localDuplicate
-            ).length;
-            const replaceableCount = conflicts.filter(
-              (item) =>
-                !item.localDuplicate && item.targetStatus !== 'directory'
-            ).length;
-            return (
-              <section
-                key={batchId}
-                className="flex flex-col gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 sm:flex-row sm:items-center"
-                aria-label={`Resolve ${conflicts.length} upload path conflicts`}
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 px-2"
+                onClick={onRequestClearLocalData}
               >
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-semibold text-amber-950">
-                    {conflicts.length} path{' '}
-                    {conflicts.length === 1 ? 'conflict' : 'conflicts'}
-                  </p>
-                  <p className="text-xs text-amber-900/80">
-                    Other files keep uploading while these wait.
-                    {duplicateCount > 0
-                      ? ' Duplicate local paths must be chosen individually.'
-                      : ''}
-                  </p>
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  <Button
-                    size="sm"
-                    disabled={replaceableCount === 0}
-                    onClick={() => queue.replaceAll(batchId)}
-                  >
-                    Replace all
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => queue.skipAll(batchId)}
-                  >
-                    Skip all
-                  </Button>
-                </div>
-              </section>
-            );
-          })}
-          <ul id={queueListId} className="grid gap-2" aria-label="Upload queue">
-            {items.map((item) => (
-              <UploadActivityItem
-                key={item.key}
-                item={item}
-                onCancel={() => queue.cancel(item.key)}
-                onRetry={() => queue.retry(item.key)}
-                onPause={() => queue.pause(item.key)}
-                onResume={() => queue.resume(item.key)}
-                onReconnect={(file, handle) =>
-                  queue.reconnect(item.key, file, handle)
+                <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                清除本機資料
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() => onExpandedChange(!expanded)}
+                aria-expanded={expanded}
+                aria-controls={queueListId}
+                aria-label={
+                  expanded ? 'Collapse upload details' : 'Expand upload details'
                 }
-                onAuthorize={() => void queue.authorizeSource(item.key)}
-                onReplace={() => queue.replaceOne(item.key)}
-                onSkip={() => queue.skipOne(item.key)}
-                onDismiss={() => queue.dismiss(item.key)}
-              />
-            ))}
-          </ul>
+              >
+                {expanded ? (
+                  <ChevronDown aria-hidden="true" className="h-4 w-4" />
+                ) : (
+                  <ChevronUp aria-hidden="true" className="h-4 w-4" />
+                )}
+              </Button>
+            </div>
+          </div>
+          <UploadProgress value={roundedProgress} label="Overall upload" />
+          {expanded && (
+            <p className="text-xs text-muted-foreground" aria-live="polite">
+              {summary.complete} complete · {summary.queued} queued
+              {summary.checking > 0 ? ` · ${summary.checking} checking` : ''}
+              {summary.needsDecision > 0
+                ? ` · ${summary.needsDecision} need a decision`
+                : ''}
+              {summary.skipped > 0 ? ` · ${summary.skipped} skipped` : ''}
+              {summary.paused > 0 ? ` · ${summary.paused} paused` : ''}
+              {summary.retrying > 0 ? ` · ${summary.retrying} retrying` : ''}
+              {summary.failed > 0 ? ` · ${summary.failed} failed` : ''}
+              {summary.localMissing > 0
+                ? ` · ${summary.localMissing} local source missing`
+                : ''}
+            </p>
+          )}
         </div>
-      )}
+
+        {expanded && (
+          <div className="grid gap-3">
+            {decisionBatches.map(([batchId, conflicts]) => {
+              const duplicateCount = conflicts.filter(
+                (item) => item.localDuplicate
+              ).length;
+              const replaceableCount = conflicts.filter(
+                (item) =>
+                  !item.localDuplicate && item.targetStatus !== 'directory'
+              ).length;
+              return (
+                <section
+                  key={batchId}
+                  className="flex flex-col gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 sm:flex-row sm:items-center"
+                  aria-label={`Resolve ${conflicts.length} upload path conflicts`}
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold text-amber-950">
+                      {conflicts.length} path{' '}
+                      {conflicts.length === 1 ? 'conflict' : 'conflicts'}
+                    </p>
+                    <p className="text-xs text-amber-900/80">
+                      Other files keep uploading while these wait.
+                      {duplicateCount > 0
+                        ? ' Duplicate local paths must be chosen individually.'
+                        : ''}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    <Button
+                      size="sm"
+                      disabled={replaceableCount === 0}
+                      onClick={() => queue.replaceAll(batchId)}
+                    >
+                      Replace all
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => queue.skipAll(batchId)}
+                    >
+                      Skip all
+                    </Button>
+                  </div>
+                </section>
+              );
+            })}
+            <ul
+              id={queueListId}
+              className="grid gap-2"
+              aria-label="Upload queue"
+            >
+              {items.map((item) => (
+                <UploadActivityItem
+                  key={item.key}
+                  item={item}
+                  onCancel={() => queue.cancel(item.key)}
+                  onRetry={() => queue.retry(item.key)}
+                  onPause={() => queue.pause(item.key)}
+                  onResume={() => queue.resume(item.key)}
+                  onReconnect={(file, handle) =>
+                    queue.reconnect(item.key, file, handle)
+                  }
+                  onAuthorize={() => void queue.authorizeSource(item.key)}
+                  onReplace={() => queue.replaceOne(item.key)}
+                  onSkip={() => queue.skipOne(item.key)}
+                  onDismiss={() => queue.dismiss(item.key)}
+                />
+              ))}
+            </ul>
+          </div>
+        )}
+      </fieldset>
     </section>
   );
 }

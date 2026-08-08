@@ -1,11 +1,17 @@
+import type { ArchiveTemporaryManifest } from './archive-compression';
+
 export type UploadCandidate = {
   file: File;
   /** A durable Chromium file handle, when the selection API exposes one. */
   fileHandle?: FileSystemFileHandle;
+  /** Whether this source can be reopened after a page reload without reselecting it. */
+  sourceHandlePersistence?: 'durable' | 'non-durable';
   relativePath: string;
   selectionRoot: string;
   selectionRootKind: 'file' | 'directory';
   archiveGroupId?: string;
+  /** JSON-safe ownership metadata for generated OPFS archive output. */
+  archiveTemporaryManifest?: ArchiveTemporaryManifest;
 };
 
 function cleanRelativePath(value: string) {
@@ -27,6 +33,7 @@ export function filesToUploadCandidates(
     const directorySelection = parts.length > 1;
     return {
       file,
+      sourceHandlePersistence: 'non-durable',
       relativePath,
       selectionRoot: directorySelection ? parts[0] : relativePath,
       selectionRootKind: directorySelection ? 'directory' : 'file',
@@ -57,6 +64,7 @@ async function walkHandle(
       {
         file,
         fileHandle,
+        sourceHandlePersistence: 'durable',
         relativePath: cleanRelativePath(`${parentPath}/${file.name}`),
         selectionRoot,
         selectionRootKind: parentPath ? 'directory' : 'file',
@@ -86,6 +94,7 @@ export async function chooseFilesWithHandles() {
       return {
         file,
         fileHandle,
+        sourceHandlePersistence: 'durable' as const,
         relativePath: cleanRelativePath(file.name),
         selectionRoot: file.name,
         selectionRootKind: 'file' as const,
@@ -130,6 +139,7 @@ async function walkEntry(
     return [
       {
         file,
+        sourceHandlePersistence: 'non-durable',
         relativePath: cleanRelativePath(`${parentPath}/${file.name}`),
         selectionRoot,
         selectionRootKind,
@@ -153,32 +163,31 @@ async function walkEntry(
 export async function collectDroppedFiles(
   dataTransfer: DataTransfer
 ): Promise<UploadCandidate[]> {
-  const modernHandles = await Promise.all(
-    Array.from(dataTransfer.items).map((item) =>
-      (item as ModernDataTransferItem).getAsFileSystemHandle?.()
-    )
-  );
-  const availableHandles = modernHandles.filter(
-    (handle): handle is FileSystemHandle => Boolean(handle)
-  );
-  if (availableHandles.length > 0) {
-    const nested = await Promise.all(
-      availableHandles.map((handle) => walkHandle(handle, '', handle.name))
-    );
-    return nested.flat();
-  }
-
-  const entries = Array.from(dataTransfer.items)
-    .map((item) => item.webkitGetAsEntry?.())
-    .filter((entry): entry is FileSystemEntry => Boolean(entry));
-
-  if (entries.length === 0) {
+  const items = Array.from(dataTransfer.items);
+  if (items.length === 0) {
     return filesToUploadCandidates(dataTransfer.files);
   }
+
   const nested = await Promise.all(
-    entries.map((entry) =>
-      walkEntry(entry, '', entry.name, entry.isDirectory ? 'directory' : 'file')
-    )
+    items.map(async (item) => {
+      const handle = await (
+        item as ModernDataTransferItem
+      ).getAsFileSystemHandle?.();
+      if (handle) return walkHandle(handle, '', handle.name);
+
+      const entry = item.webkitGetAsEntry?.();
+      if (entry) {
+        return walkEntry(
+          entry,
+          '',
+          entry.name,
+          entry.isDirectory ? 'directory' : 'file'
+        );
+      }
+
+      const file = item.getAsFile();
+      return file ? filesToUploadCandidates([file]) : [];
+    })
   );
   return nested.flat();
 }

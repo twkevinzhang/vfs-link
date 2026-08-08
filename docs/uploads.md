@@ -3,6 +3,31 @@
 Local and GCS storage use the same resumable four-stage contract. The browser
 does not need to branch on `STORAGE_DRIVER`.
 
+## Browser persistence and local source access
+
+The upload queue may persist small coordination records in IndexedDB: logical
+paths, file fingerprints, upload-session capabilities, server-confirmed
+offsets, queue state, and `FileSystemFileHandle` values. It must never persist a
+`File`, `Blob`, file contents, or source-file snapshot in IndexedDB.
+
+`File` objects are runtime-only. When a durable handle is available, the client
+uses `getFile()` after a reload, verifies the stored fingerprint, reconciles the
+server offset, and resumes. Browser permission can still require a user gesture;
+the client must present an explicit authorization action instead of copying the
+source into browser storage.
+
+When the selection mechanism does not expose a durable handle, pause and resume
+continue to work in the current page. After a reload the queue retains its
+session and offset, but the user must reconnect the original file with the same
+fingerprint before uploading continues. The UI must disclose this limitation at
+selection time.
+
+Archive creation is different from source persistence. Generated archive output
+may use OPFS as an explicit temporary artifact so it can be streamed without
+holding the entire archive in memory. Those artifacts must be visible as local
+temporary storage and removed after completion, cancellation, or orphan
+recovery. They must not be duplicated into IndexedDB.
+
 ## 0. Preflight logical paths
 
 Immediately after the user selects files, check their complete logical paths in
