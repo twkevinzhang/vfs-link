@@ -141,8 +141,20 @@ COMMON_ENV="FTP_ENABLED=false,WEBDAV_ENABLED=false,STORAGE_DRIVER=gcs,GCS_BUCKET
 
 gcloud run deploy "$SERVICE" --image="$IMAGE" --region="$REGION" --project="$PROJECT_ID" \
   --service-account="$RUNTIME_SA" --allow-unauthenticated --port=8080 \
-  --memory=1Gi --cpu=1 --no-cpu-throttling --concurrency=8 --max-instances=10 --timeout=3600 \
+  --memory=2Gi --cpu=2 --cpu-throttling --concurrency=8 \
+  --min=0 --min-instances=0 --max-instances=12 --timeout=3600 \
   --set-env-vars="${COMMON_ENV},PUB_SUB_DRIVER=goroutine" --set-secrets="$SECRET_ARGS"
+
+# Cloud Run manual scaling is a service-level setting and can survive a
+# revision deployment. Explicitly restore automatic scaling so an idle service
+# can scale to zero; never leave a fixed manual instance count behind.
+ACCESS_TOKEN="$(gcloud auth print-access-token)"
+curl --fail --silent --show-error --request PATCH \
+  --header "Authorization: Bearer ${ACCESS_TOKEN}" \
+  --header 'Content-Type: application/json' \
+  --data '{"scaling":{"scalingMode":"AUTOMATIC"}}' \
+  "https://run.googleapis.com/v2/projects/${PROJECT_ID}/locations/${REGION}/services/${SERVICE}?updateMask=scaling" \
+  >/dev/null
 
 SERVICE_URL="$(gcloud run services describe "$SERVICE" --region="$REGION" --project="$PROJECT_ID" --format='value(status.url)')"
 gcloud run services add-iam-policy-binding "$SERVICE" --region="$REGION" --project="$PROJECT_ID" \
@@ -169,7 +181,7 @@ gcloud run services update "$SERVICE" --region="$REGION" --project="$PROJECT_ID"
 
 CORS_FILE="$(mktemp)"
 trap 'rm -f "$CORS_FILE"' EXIT
-printf '[{"origin":["%s"],"method":["PUT","POST","GET","HEAD","OPTIONS"],"responseHeader":["Content-Type","Range"],"maxAgeSeconds":3600}]\n' "$SERVICE_URL" >"$CORS_FILE"
+printf '[{"origin":["%s"],"method":["PUT","POST","GET","HEAD","OPTIONS"],"responseHeader":["Content-Type","Content-Range","Range"],"maxAgeSeconds":3600}]\n' "$SERVICE_URL" >"$CORS_FILE"
 gcloud storage buckets update "gs://${PRIMARY_BUCKET}" --cors-file="$CORS_FILE" --project="$PROJECT_ID"
 
 printf 'Cloud Run URL: %s\n' "$SERVICE_URL"
