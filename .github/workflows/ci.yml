@@ -24,6 +24,22 @@ jobs:
     name: Go quality
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: vfs_link
+          POSTGRES_USER: vfs_link
+          POSTGRES_PASSWORD: vfs_link
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U vfs_link -d vfs_link"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      VFS_LINK_POSTGRES_TEST_URL: postgresql://vfs_link:vfs_link@localhost:5432/vfs_link?sslmode=disable
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
