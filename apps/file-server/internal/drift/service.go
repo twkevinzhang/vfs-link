@@ -127,8 +127,23 @@ type Action struct {
 
 type targetKeyFunc func(string) (string, error)
 
+// MetadataStore is the minimal logical metadata surface needed to detect and
+// reconcile drift. Drift state persistence remains db.DriftStateStore because
+// this service uses that contract in full across snapshots, plans, scans, and
+// actions.
+type MetadataStore interface {
+	Find(context.Context, string) (db.FileRecord, bool, error)
+	ListAll(context.Context) ([]db.FileRecord, error)
+	ListTrashRecords(context.Context, []string) ([]db.FileRecord, error)
+	ReplaceFileConditional(context.Context, string, string, int64, *string, bool) (string, bool, error)
+}
+
+type recordScanner interface {
+	ScanDriftRecords(context.Context) (active []db.FileRecord, trash []db.FileRecord, err error)
+}
+
 type Service struct {
-	metadata db.Store
+	metadata MetadataStore
 	objects  blob.DriftObjectStore
 	state    db.DriftStateStore
 	root     string
@@ -139,20 +154,20 @@ type Service struct {
 	snapshot *Snapshot
 }
 
-func New(metadata db.Store, objects blob.Store) (*Service, error) {
+func New(metadata MetadataStore, objects blob.Store) (*Service, error) {
 	driftObjects, ok := objects.(blob.DriftObjectStore)
 	if !ok {
 		return nil, fmt.Errorf("object backend %T does not support drift operations", objects)
 	}
-	state, err := db.AsDriftStateStore(metadata)
-	if err != nil {
-		return nil, err
+	state, ok := metadata.(db.DriftStateStore)
+	if !ok {
+		return nil, fmt.Errorf("metadata backend %T does not support drift state", metadata)
 	}
 	return &Service{metadata: metadata, objects: driftObjects, state: state, root: objects.Root(), target: objectkey.FromLogicalPath, autoKick: true}, nil
 }
 
 // NewForTest keeps failure-injection tests independent from concrete storage.
-func NewForTest(metadata db.Store, objects blob.DriftObjectStore, state db.DriftStateStore, target targetKeyFunc) *Service {
+func NewForTest(metadata MetadataStore, objects blob.DriftObjectStore, state db.DriftStateStore, target targetKeyFunc) *Service {
 	return &Service{metadata: metadata, objects: objects, state: state, root: "test", target: target}
 }
 
@@ -207,7 +222,7 @@ func (s *Service) refresh(ctx context.Context, onPhase func(string) error) (Snap
 	}
 	var active, trash []db.FileRecord
 	var err error
-	if scanner, ok := s.metadata.(db.DriftRecordScanner); ok {
+	if scanner, ok := s.metadata.(recordScanner); ok {
 		active, trash, err = scanner.ScanDriftRecords(ctx)
 	} else {
 		active, err = s.metadata.ListAll(ctx)

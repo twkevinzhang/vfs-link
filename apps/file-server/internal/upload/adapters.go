@@ -13,7 +13,7 @@ import (
 
 // NewWithBlob wires the common local/server-proxied implementation. A GCS
 // direct-upload implementation can instead call New with its own Storage.
-func NewWithBlob(store db.Store, objects blob.Store, options ...Option) *Service {
+func NewWithBlob(store MetadataStore, objects blob.Store, options ...Option) *Service {
 	if direct, ok := objects.(blob.DirectUploadStore); ok {
 		return NewWithStorage(store, gcsDirectStorage{objects: direct}, options...)
 	}
@@ -22,12 +22,24 @@ func NewWithBlob(store db.Store, objects blob.Store, options ...Option) *Service
 
 // NewWithStorage exposes the persistence adapters while allowing the caller to
 // inject a GCS direct/resumable implementation.
-func NewWithStorage(store db.Store, storage Storage, options ...Option) *Service {
+func NewWithStorage(store MetadataStore, storage Storage, options ...Option) *Service {
 	adapter := storeAdapter{store: store}
 	return New(adapter, adapter, storage, options...)
 }
 
-type storeAdapter struct{ store db.Store }
+// MetadataStore contains only the upload session and publish operations used
+// by the adapters in this package.
+type MetadataStore interface {
+	CreateUpload(context.Context, db.UploadRecord) (db.UploadRecord, error)
+	FindUpload(context.Context, string) (db.UploadRecord, bool, error)
+	UpdateUpload(context.Context, db.UploadRecord) (db.UploadRecord, error)
+	DeleteUpload(context.Context, string) (bool, error)
+	Find(context.Context, string) (db.FileRecord, bool, error)
+	UpsertDirectory(context.Context, string) error
+	ReplaceFileConditional(context.Context, string, string, int64, *string, bool) (string, bool, error)
+}
+
+type storeAdapter struct{ store MetadataStore }
 
 func (a storeAdapter) CreateUpload(ctx context.Context, session Session) error {
 	_, err := a.store.CreateUpload(ctx, toDBUpload(session))

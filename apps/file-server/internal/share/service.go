@@ -34,10 +34,24 @@ const (
 
 type Service struct {
 	cfg        config.Config
-	store      db.Store
+	store      MetadataStore
 	objects    blob.Store
 	logger     *slog.Logger
 	dispatcher Dispatcher
+}
+
+// MetadataStore is the share package's persistence boundary. Backends do not
+// need to expose unrelated file, upload, thumbnail, or DAV operations here.
+type MetadataStore interface {
+	Find(context.Context, string) (db.FileRecord, bool, error)
+	CreateShare(context.Context, db.ShareRecord) (db.ShareRecord, error)
+	FindShare(context.Context, string) (db.ShareRecord, bool, error)
+	MarkShareUploading(context.Context, string, string) (db.ShareRecord, error)
+	MarkShareUploaded(context.Context, string) (db.ShareRecord, error)
+	MarkShareNotified(context.Context, string) (db.ShareRecord, error)
+	MarkShareFailed(context.Context, string, string, string) (db.ShareRecord, error)
+	ClaimShareJob(context.Context, string, string, time.Time) (db.ShareRecord, bool, error)
+	ReleaseShareJob(context.Context, string, string) error
 }
 
 type Option func(*Service)
@@ -46,7 +60,7 @@ func WithDispatcher(dispatcher Dispatcher) Option {
 	return func(service *Service) { service.dispatcher = dispatcher }
 }
 
-func NewService(cfg config.Config, store db.Store, objects blob.Store, logger *slog.Logger, options ...Option) *Service {
+func NewService(cfg config.Config, store MetadataStore, objects blob.Store, logger *slog.Logger, options ...Option) *Service {
 	service := &Service{
 		cfg:     cfg,
 		store:   store,
