@@ -47,7 +47,7 @@ type LoadState = {
   error?: string;
 };
 
-export type FileBrowserView = 'files' | 'trash';
+type FileBrowserView = 'files' | 'trash';
 
 type UseFilesControllerOptions = {
   currentPath: string;
@@ -707,5 +707,3 @@ export function useFilesController({
     hasActivityDock,
   };
 }
-
-export type FilesController = ReturnType<typeof useFilesController>;
