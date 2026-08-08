@@ -178,8 +178,6 @@ export default function FileBrowserRoute() {
   const [uploadDockExpanded, setUploadDockExpanded] = useState(true);
   const [showCancelUploadsConfirm, setShowCancelUploadsConfirm] =
     useState(false);
-  const [showClearLocalUploadDataConfirm, setShowClearLocalUploadDataConfirm] =
-    useState(false);
   const filesRequestRef = useRef(0);
   const uploadRefreshTimerRef = useRef<number | undefined>(undefined);
   const completedUploadDestinationsRef = useRef(new Set<string>());
@@ -700,11 +698,6 @@ export default function FileBrowserRoute() {
       activeOperation ||
       uploadQueue.items.length > 0 ||
       !uploadQueue.isUploadLeader ||
-      uploadQueue.legacySourcesCleaned ||
-      uploadQueue.localStorageUsage.archiveFiles > 0 ||
-      ['blocked', 'version-error', 'error'].includes(
-        uploadQueue.storageStatus.state
-      ) ||
       selection.selected.size > 0
   );
 
@@ -954,9 +947,6 @@ export default function FileBrowserRoute() {
                 expanded={uploadDockExpanded}
                 onExpandedChange={setUploadDockExpanded}
                 onRequestCancelAll={() => setShowCancelUploadsConfirm(true)}
-                onRequestClearLocalData={() =>
-                  setShowClearLocalUploadDataConfirm(true)
-                }
               />
             )}
             {!uploadQueue.isUploadLeader && (
@@ -971,65 +961,6 @@ export default function FileBrowserRoute() {
                       queue。
                     </p>
                   </div>
-                </div>
-              </Alert>
-            )}
-            {(uploadQueue.legacySourcesCleaned ||
-              uploadQueue.localStorageUsage.archiveFiles > 0 ||
-              ['blocked', 'version-error', 'error'].includes(
-                uploadQueue.storageStatus.state
-              )) && (
-              <Alert
-                className={cn(
-                  'rounded-none border-0',
-                  ['blocked', 'version-error', 'error'].includes(
-                    uploadQueue.storageStatus.state
-                  ) && 'text-destructive'
-                )}
-              >
-                <div className="flex flex-wrap items-center gap-3">
-                  <DatabaseZap
-                    aria-hidden="true"
-                    className="h-5 w-5 shrink-0"
-                  />
-                  <div className="min-w-0 flex-1">
-                    <p className="font-semibold">
-                      {['blocked', 'version-error', 'error'].includes(
-                        uploadQueue.storageStatus.state
-                      )
-                        ? '本機上傳資料無法更新'
-                        : uploadQueue.legacySourcesCleaned
-                        ? '已移除舊版完整檔案快照'
-                        : '瀏覽器中仍有壓縮暫存'}
-                    </p>
-                    <p className="text-sm text-muted-foreground">
-                      {uploadQueue.storageStatus.state === 'blocked'
-                        ? '請關閉其他 VFS Link 分頁後重新整理；清理被其他 IndexedDB connection 阻擋。'
-                        : uploadQueue.storageStatus.state === 'version-error'
-                        ? '瀏覽器中的資料庫版本比目前程式新，已停止寫入以避免破壞資料。'
-                        : uploadQueue.storageStatus.state === 'error'
-                        ? uploadQueue.storageStatus.error.message
-                        : uploadQueue.legacySourcesCleaned
-                        ? 'IndexedDB 不再保存 File 或 Blob。舊分頁仍開啟時，Brave 可能延後釋放實體磁碟空間。'
-                        : `${
-                            uploadQueue.localStorageUsage.archiveFiles
-                          } 個暫存檔，${formatBytes(
-                            uploadQueue.localStorageUsage.archiveBytes
-                          )}。`}
-                    </p>
-                  </div>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={
-                      uploadQueue.clearingLocalData ||
-                      !uploadQueue.isUploadLeader
-                    }
-                    onClick={() => setShowClearLocalUploadDataConfirm(true)}
-                  >
-                    <Trash2 className="h-4 w-4" />
-                    清除本機上傳資料
-                  </Button>
                 </div>
               </Alert>
             )}
@@ -1248,47 +1179,6 @@ export default function FileBrowserRoute() {
             </div>
           </AlertDialogContent>
         </AlertDialog>
-        <AlertDialog
-          open={showClearLocalUploadDataConfirm}
-          onOpenChange={setShowClearLocalUploadDataConfirm}
-        >
-          <AlertDialogContent>
-            <AlertDialogTitle className="text-lg font-semibold">
-              清除所有本機上傳資料？
-            </AlertDialogTitle>
-            <AlertDialogDescription className="text-sm text-muted-foreground">
-              這會停止未完成上傳、刪除 queue、session、offset 與 OPFS
-              壓縮暫存。磁碟上的原始檔案不會被刪除；未完成項目之後需要重新加入。
-            </AlertDialogDescription>
-            <div className="flex justify-end gap-2">
-              <AlertDialogCancel asChild>
-                <Button variant="outline">保留資料</Button>
-              </AlertDialogCancel>
-              <AlertDialogAction asChild>
-                <Button
-                  variant="destructive"
-                  disabled={
-                    uploadQueue.clearingLocalData || !uploadQueue.isUploadLeader
-                  }
-                  onClick={() => {
-                    void uploadQueue
-                      .clearLocalUploadData()
-                      .then(() => setShowClearLocalUploadDataConfirm(false))
-                      .catch((error: unknown) =>
-                        setActionError(
-                          error instanceof Error
-                            ? `清除本機上傳資料失敗：${error.message}`
-                            : '清除本機上傳資料失敗。'
-                        )
-                      );
-                  }}
-                >
-                  清除本機資料
-                </Button>
-              </AlertDialogAction>
-            </div>
-          </AlertDialogContent>
-        </AlertDialog>
       </div>
     </main>
   );
@@ -1299,7 +1189,6 @@ function UploadActivity({
   expanded,
   onExpandedChange,
   onRequestCancelAll,
-  onRequestClearLocalData,
 }: {
   queue: Pick<
     ReturnType<typeof useBackgroundUploadQueue>,
@@ -1325,7 +1214,6 @@ function UploadActivity({
   expanded: boolean;
   onExpandedChange: (expanded: boolean) => void;
   onRequestCancelAll: () => void;
-  onRequestClearLocalData: () => void;
 }) {
   const { items, summary } = queue;
   const roundedProgress = Math.round(summary.progress);
@@ -1449,15 +1337,6 @@ function UploadActivity({
               >
                 <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
                 Retry all
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-8 px-2"
-                onClick={onRequestClearLocalData}
-              >
-                <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-                清除本機資料
               </Button>
               <Button
                 variant="ghost"

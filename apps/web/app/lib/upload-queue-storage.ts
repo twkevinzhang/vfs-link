@@ -6,7 +6,6 @@ const DATABASE_NAME = 'vfs-link-upload-queue';
 const DATABASE_VERSION = 4;
 const QUEUE_STORE = 'queue';
 const SETTINGS_STORE = 'settings';
-const LEGACY_SOURCE_STORE = 'sources';
 
 export type PersistedUploadState =
   | 'queued'
@@ -49,38 +48,6 @@ export type PersistedUploadItem = {
   retryEligible: boolean;
   missingFromState?: Exclude<PersistedUploadState, 'local-missing'>;
 };
-
-export type UploadQueueStorageStatus =
-  | { state: 'idle' | 'opening' | 'versionchange' }
-  | { state: 'ready'; migratedLegacySources: boolean }
-  | {
-      state: 'blocked' | 'version-error' | 'error';
-      error: Error;
-    };
-
-type StorageStatusListener = (status: UploadQueueStorageStatus) => void;
-
-let storageStatus: UploadQueueStorageStatus = { state: 'idle' };
-const storageStatusListeners = new Set<StorageStatusListener>();
-
-export function getUploadQueueStorageStatus() {
-  return storageStatus;
-}
-
-export function subscribeUploadQueueStorageStatus(
-  listener: StorageStatusListener
-) {
-  storageStatusListeners.add(listener);
-  listener(storageStatus);
-  return () => {
-    storageStatusListeners.delete(listener);
-  };
-}
-
-function setStorageStatus(status: UploadQueueStorageStatus) {
-  storageStatus = status;
-  for (const listener of storageStatusListeners) listener(status);
-}
 
 function isFileOrBlob(value: unknown) {
   if (!value || typeof value !== 'object') return false;
@@ -220,54 +187,22 @@ function blockedError() {
 }
 
 function openDatabase() {
-  setStorageStatus({ state: 'opening' });
-  return new Promise<{
-    database: IDBDatabase;
-    migratedLegacySources: boolean;
-  }>((resolve, reject) => {
+  return new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
     let settled = false;
-    let migratedLegacySources = false;
 
     request.onupgradeneeded = () => {
       const database = request.result;
-      let queue: IDBObjectStore;
       if (!database.objectStoreNames.contains(QUEUE_STORE)) {
-        queue = database.createObjectStore(QUEUE_STORE, { keyPath: 'key' });
-      } else {
-        const transaction = request.transaction;
-        if (!transaction) {
-          throw new Error('Upload queue migration transaction unavailable');
-        }
-        queue = transaction.objectStore(QUEUE_STORE);
+        database.createObjectStore(QUEUE_STORE, { keyPath: 'key' });
       }
       if (!database.objectStoreNames.contains(SETTINGS_STORE)) {
         database.createObjectStore(SETTINGS_STORE);
       }
-
-      // v3 stored source File snapshots here. Deleting the store inside the
-      // versionchange transaction drops them without reading any values.
-      if (database.objectStoreNames.contains(LEGACY_SOURCE_STORE)) {
-        migratedLegacySources = true;
-        database.deleteObjectStore(LEGACY_SOURCE_STORE);
-      }
-
-      // Re-project legacy queue rows so even unknown runtime fields cannot
-      // survive the v4 migration.
-      const cursorRequest = queue.openCursor();
-      cursorRequest.onsuccess = () => {
-        const cursor = cursorRequest.result;
-        if (!cursor) return;
-        cursor.update(
-          sanitizePersistedItem(cursor.value as PersistedUploadItem)
-        );
-        cursor.continue();
-      };
     };
 
     request.onblocked = () => {
       const error = blockedError();
-      setStorageStatus({ state: 'blocked', error });
       if (!settled) {
         settled = true;
         reject(error);
@@ -281,22 +216,14 @@ function openDatabase() {
         return;
       }
       settled = true;
-      database.onversionchange = () => {
-        setStorageStatus({ state: 'versionchange' });
-        database.close();
-      };
-      setStorageStatus({ state: 'ready', migratedLegacySources });
-      resolve({ database, migratedLegacySources });
+      database.onversionchange = () => database.close();
+      resolve(database);
     };
 
     request.onerror = () => {
       if (settled) return;
       settled = true;
       const error = request.error ?? new Error('Upload queue database failed');
-      setStorageStatus({
-        state: error.name === 'VersionError' ? 'version-error' : 'error',
-        error,
-      });
       reject(error);
     };
   });
@@ -315,10 +242,9 @@ export async function loadUploadQueue() {
     return {
       items: [] as PersistedUploadItem[],
       globallyPaused: false,
-      migratedLegacySources: false,
     };
   }
-  const { database, migratedLegacySources } = await openDatabase();
+  const database = await openDatabase();
   try {
     const transaction = database.transaction(
       [QUEUE_STORE, SETTINGS_STORE],
@@ -331,7 +257,6 @@ export async function loadUploadQueue() {
     const result = await new Promise<{
       items: PersistedUploadItem[];
       globallyPaused: boolean;
-      migratedLegacySources: boolean;
     }>((resolve, reject) => {
       transaction.oncomplete = () =>
         resolve({
@@ -339,7 +264,6 @@ export async function loadUploadQueue() {
             sanitizePersistedItem
           ),
           globallyPaused: pausedRequest.result === true,
-          migratedLegacySources,
         });
       transaction.onerror = () => reject(transaction.error);
       transaction.onabort = () => reject(transaction.error);
@@ -355,7 +279,7 @@ export async function saveUploadQueue(
   globallyPaused: boolean
 ) {
   if (typeof indexedDB === 'undefined') return;
-  const { database } = await openDatabase();
+  const database = await openDatabase();
   try {
     const transaction = database.transaction(
       [QUEUE_STORE, SETTINGS_STORE],
@@ -368,32 +292,6 @@ export async function saveUploadQueue(
       .objectStore(SETTINGS_STORE)
       .put(globallyPaused, 'globallyPaused');
     await transactionDone(transaction);
-  } finally {
-    database.close();
-  }
-}
-
-/** Clears persisted queue metadata without ever touching local source files. */
-export async function clearUploadQueueStorage() {
-  if (typeof indexedDB === 'undefined') return;
-  const { database } = await openDatabase();
-  try {
-    const transaction = database.transaction(
-      [QUEUE_STORE, SETTINGS_STORE],
-      'readwrite'
-    );
-    transaction.objectStore(QUEUE_STORE).clear();
-    transaction.objectStore(SETTINGS_STORE).clear();
-    try {
-      await transactionDone(transaction);
-    } catch (cause) {
-      const error =
-        cause instanceof Error
-          ? cause
-          : new Error('Upload queue database clear failed');
-      setStorageStatus({ state: 'error', error });
-      throw error;
-    }
   } finally {
     database.close();
   }

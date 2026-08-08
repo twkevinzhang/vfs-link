@@ -4,13 +4,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { UploadSession } from '../types/upload';
 import type { PersistedUploadItem } from './upload-queue-storage';
-import {
-  clearUploadQueueStorage,
-  getUploadQueueStorageStatus,
-  loadUploadQueue,
-  saveUploadQueue,
-  subscribeUploadQueueStorageStatus,
-} from './upload-queue-storage';
+import { loadUploadQueue, saveUploadQueue } from './upload-queue-storage';
 
 const DATABASE_NAME = 'vfs-link-upload-queue';
 
@@ -90,31 +84,6 @@ function uploadSession(): UploadSession {
   };
 }
 
-async function createVersion3Database(item: PersistedUploadItem) {
-  const database = await new Promise<IDBDatabase>((resolve, reject) => {
-    const request = indexedDB.open(DATABASE_NAME, 3);
-    request.onupgradeneeded = () => {
-      request.result.createObjectStore('queue', { keyPath: 'key' });
-      request.result.createObjectStore('settings');
-      request.result.createObjectStore('sources', { keyPath: 'key' });
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-  const transaction = database.transaction(
-    ['queue', 'settings', 'sources'],
-    'readwrite'
-  );
-  transaction.objectStore('queue').put(item);
-  transaction.objectStore('settings').put(true, 'globallyPaused');
-  transaction.objectStore('sources').put({
-    key: item.key,
-    file: new File(['legacy snapshot'], 'source.txt'),
-  });
-  await transactionDone(transaction);
-  database.close();
-}
-
 function containsFileOrBlob(value: unknown, seen = new Set<object>()): boolean {
   if (!value || typeof value !== 'object') return false;
   if (value instanceof Blob) return true;
@@ -128,15 +97,14 @@ describe('upload queue persistence v4', () => {
     await deleteDatabase();
   });
 
-  it('migrates v3 in place, preserves queue metadata, and deletes sources', async () => {
+  it('persists queue metadata and global pause state', async () => {
     const item = pendingItem({ session: uploadSession() });
-    await createVersion3Database(item);
+    await saveUploadQueue([item], true);
 
     const restored = await loadUploadQueue();
 
     expect(restored).toMatchObject({
       globallyPaused: true,
-      migratedLegacySources: true,
       items: [
         {
           key: item.key,
@@ -150,10 +118,6 @@ describe('upload queue persistence v4', () => {
     });
     expect(restored.items[0]).not.toHaveProperty('sourceFile');
     expect(restored.items[0]).not.toHaveProperty('file');
-    expect(getUploadQueueStorageStatus()).toEqual({
-      state: 'ready',
-      migratedLegacySources: true,
-    });
 
     const database = await openDatabase();
     expect(database.version).toBe(4);
@@ -163,9 +127,8 @@ describe('upload queue persistence v4', () => {
 
   it('is idempotent across repeated v4 opens and saves', async () => {
     const item = pendingItem();
-    await createVersion3Database(item);
 
-    await loadUploadQueue();
+    await saveUploadQueue([item], true);
     await saveUploadQueue([{ ...item, uploadedBytes: 9 }], false);
     const first = await loadUploadQueue();
     const second = await loadUploadQueue();
@@ -173,11 +136,8 @@ describe('upload queue persistence v4', () => {
     expect(first).toEqual(second);
     expect(second.items).toHaveLength(1);
     expect(second.items[0].uploadedBytes).toBe(9);
-    expect(first.migratedLegacySources).toBe(false);
-    expect(second.migratedLegacySources).toBe(false);
     const database = await openDatabase();
     expect(database.version).toBe(4);
-    expect(database.objectStoreNames.contains('sources')).toBe(false);
     database.close();
   });
 
@@ -234,56 +194,12 @@ describe('upload queue persistence v4', () => {
     });
   });
 
-  it('publishes opening and ready states to observers', async () => {
-    const states: string[] = [];
-    const unsubscribe = subscribeUploadQueueStorageStatus((status) =>
-      states.push(status.state)
-    );
-
-    await loadUploadQueue();
-    unsubscribe();
-
-    expect(states).toContain('opening');
-    expect(states).toContain('ready');
-    expect(getUploadQueueStorageStatus().state).toBe('ready');
-  });
-
-  it('atomically clears queue and settings after the transaction completes', async () => {
-    await saveUploadQueue([pendingItem()], true);
-
-    await clearUploadQueueStorage();
-    const restored = await loadUploadQueue();
-
-    expect(restored.items).toEqual([]);
-    expect(restored.globallyPaused).toBe(false);
-  });
-
-  it('reports blocked upgrades and closes the eventual late connection', async () => {
-    await createVersion3Database(pendingItem());
-    const blocker = await openDatabase(3);
-    const states: string[] = [];
-    const unsubscribe = subscribeUploadQueueStorageStatus((status) =>
-      states.push(status.state)
-    );
-
-    await expect(clearUploadQueueStorage()).rejects.toThrow('blocked');
-    expect(states).toContain('blocked');
-    expect(getUploadQueueStorageStatus().state).toBe('blocked');
-
-    blocker.close();
-    unsubscribe();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    const restored = await loadUploadQueue();
-    expect(restored.items).toHaveLength(1);
-  });
-
-  it('reports VersionError when a newer database already exists', async () => {
+  it('rejects when a newer database already exists', async () => {
     const newer = await openDatabase(5);
     newer.close();
 
     await expect(loadUploadQueue()).rejects.toMatchObject({
       name: 'VersionError',
     });
-    expect(getUploadQueueStorageStatus().state).toBe('version-error');
   });
 });
