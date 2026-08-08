@@ -4,6 +4,9 @@ import { UploadHttpError, committedOffsetFromRange } from './api';
 import {
   MAX_AUTOMATIC_RETRIES,
   MAX_CONCURRENT_UPLOADS,
+  MAX_UPLOAD_CHUNK_SIZE,
+  TARGET_UPLOAD_CHUNK_DURATION_MS,
+  UPLOAD_CHUNK_ALIGNMENT,
   UPLOAD_CHUNK_SIZE,
   duplicateLogicPaths,
   isOffsetConflict,
@@ -11,6 +14,7 @@ import {
   isTransientUploadError,
   isUploadTargetChanged,
   matchesFingerprint,
+  nextAdaptiveChunkSize,
   nextChunkRange,
   nextRunnableUploadKeys,
   retryDelayMs,
@@ -19,7 +23,7 @@ import {
 } from './upload-queue-core';
 
 describe('upload queue coordinator', () => {
-  it('uses fixed 8 MiB chunks and preserves the committed offset', () => {
+  it('starts at 8 MiB and preserves the committed offset', () => {
     expect(UPLOAD_CHUNK_SIZE).toBe(8 * 1024 * 1024);
     expect(
       nextChunkRange(UPLOAD_CHUNK_SIZE, UPLOAD_CHUNK_SIZE * 3 + 4)
@@ -33,6 +37,51 @@ describe('upload queue coordinator', () => {
       start: UPLOAD_CHUNK_SIZE * 3,
       endExclusive: UPLOAD_CHUNK_SIZE * 3 + 4,
     });
+  });
+
+  it('ramps chunk sizes up on a fast high-latency upload', () => {
+    const mib = 1024 * 1024;
+    const first = nextAdaptiveChunkSize(8 * mib, 8 * mib, 550);
+    const second = nextAdaptiveChunkSize(first, first, 1_550);
+
+    expect(first).toBe(32 * mib);
+    expect(second).toBeGreaterThanOrEqual(80 * mib);
+    expect(second % UPLOAD_CHUNK_ALIGNMENT).toBe(0);
+  });
+
+  it('keeps adaptive chunks aligned and within the memory bounds', () => {
+    expect(TARGET_UPLOAD_CHUNK_DURATION_MS).toBe(4_000);
+    expect(nextAdaptiveChunkSize(UPLOAD_CHUNK_SIZE, UPLOAD_CHUNK_SIZE, 1)).toBe(
+      32 * 1024 * 1024
+    );
+    expect(
+      nextAdaptiveChunkSize(MAX_UPLOAD_CHUNK_SIZE, MAX_UPLOAD_CHUNK_SIZE, 1)
+    ).toBe(MAX_UPLOAD_CHUNK_SIZE);
+    expect(nextAdaptiveChunkSize(UPLOAD_CHUNK_SIZE, 1, 60_000)).toBe(
+      UPLOAD_CHUNK_SIZE
+    );
+    expect(nextAdaptiveChunkSize(64 * 1024 * 1024, 0, 0)).toBe(
+      64 * 1024 * 1024
+    );
+  });
+
+  it('uses adaptive chunks to approach line rate despite delayed ACKs', () => {
+    const linkBytesPerSecond = (190 * 1_000_000) / 8;
+    const roundTripMs = 200;
+    let chunkSize = UPLOAD_CHUNK_SIZE;
+    let elapsedMs = 0;
+    let uploadedBytes = 0;
+
+    for (let index = 0; index < 20; index += 1) {
+      const transferMs = (chunkSize / linkBytesPerSecond) * 1_000;
+      const sampleMs = transferMs + roundTripMs;
+      elapsedMs += sampleMs;
+      uploadedBytes += chunkSize;
+      chunkSize = nextAdaptiveChunkSize(chunkSize, chunkSize, sampleMs);
+    }
+
+    const achievedMbps = (uploadedBytes * 8) / (elapsedMs / 1_000) / 1_000_000;
+    expect(achievedMbps).toBeGreaterThanOrEqual(190 * 0.9);
   });
 
   it('converts the inclusive server Range into the next upload offset', () => {

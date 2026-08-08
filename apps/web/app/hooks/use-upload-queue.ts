@@ -20,16 +20,15 @@ import {
 } from '../lib/api';
 import { normalizePath } from '../lib/format';
 import type { UploadCandidate } from '../lib/folder-upload';
+import { uploadRemainingChunks } from '../lib/upload-chunks';
 import {
   MAX_CONCURRENT_UPLOADS,
   duplicateLogicPaths,
   fileFingerprint,
-  isOffsetConflict,
   isRetryAllEligible,
   isTransientUploadError,
   isUploadTargetChanged,
   matchesFingerprint,
-  nextChunkRange,
   nextRunnableUploadKeys,
   retryDelayMs,
   shouldAutomaticallyRetry,
@@ -897,34 +896,39 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
         uploadedSize = result.uploadedSize;
       }
 
-      while (uploadedSize < total) {
-        controller.signal.throwIfAborted();
-        const { start, endExclusive } = nextChunkRange(uploadedSize, total);
-        try {
-          const result = await putUploadChunk(
+      uploadedSize = await uploadRemainingChunks({
+        file,
+        uploadedSize,
+        totalSize: total,
+        contentType: item.contentType,
+        signal: controller.signal,
+        sendChunk: (chunk, start, chunkTotal, onProgress, signal) =>
+          putUploadChunk(
             activeSession,
-            file.slice(start, endExclusive, item.contentType),
+            chunk,
             start,
-            total,
-            (uploaded) => queueProgress(key, uploaded),
-            controller.signal
-          );
-          uploadedSize = result.uploadedSize;
-        } catch (error) {
-          if (!isOffsetConflict(error)) throw error;
+            chunkTotal,
+            onProgress,
+            signal
+          ),
+        reconcileOffset: async () => {
           activeSession = await getUploadSession(
             activeSession,
             controller.signal
           );
-          uploadedSize = activeSession.uploadedSize ?? uploadedSize;
-        }
-        updateItem(key, (current) => ({
-          ...current,
-          session: { ...activeSession, uploadedSize },
-          uploadedBytes: uploadedSize,
-          progress: progressFor(uploadedSize, total),
-        }));
-      }
+          return activeSession.uploadedSize ?? 0;
+        },
+        onProgress: (uploaded) => queueProgress(key, uploaded),
+        onCommitted: (committedSize) => {
+          activeSession = { ...activeSession, uploadedSize: committedSize };
+          updateItem(key, (current) => ({
+            ...current,
+            session: activeSession,
+            uploadedBytes: committedSize,
+            progress: progressFor(committedSize, total),
+          }));
+        },
+      });
 
       const completedSession = await completeUpload(
         { ...activeSession, uploadedSize },

@@ -62,6 +62,12 @@ returned fixed headers and a chunk-specific range:
 Content-Range: bytes 8388608-16777215/33554432
 ```
 
+The browser client starts at 8 MiB, measures each acknowledged request, and
+targets about four seconds per subsequent chunk. It keeps chunk boundaries on
+256 KiB multiples and clamps each request between 8 MiB and 128 MiB. This
+reduces per-request round trips on high-bandwidth, high-latency paths without
+changing the committed-offset contract or making pause memory unbounded.
+
 `start` must equal the latest storage-confirmed `uploadedSize`. Local uploads
 return `308 Resume Incomplete` until the final chunk and expose a committed
 `Range: bytes=0-N` response header. GCS uses the same native `308`/`Range`

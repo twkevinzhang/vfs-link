@@ -623,8 +623,8 @@ export function committedOffsetFromRange(value: string | null) {
   return match ? Number(match[1]) + 1 : undefined;
 }
 
-// Passing an 8 MiB Blob slice directly to XMLHttpRequest keeps memory bounded
-// while preserving native upload progress events and GCS 308 Range headers.
+// Passing a bounded Blob slice directly to XMLHttpRequest preserves native
+// upload progress events and GCS 308 Range headers without copying the file.
 export function putUploadChunk(
   session: UploadSession,
   chunk: Blob,
