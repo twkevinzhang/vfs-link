@@ -2,16 +2,12 @@ import {
   AlertTriangle,
   ArrowLeft,
   ArrowRight,
-  CheckCircle2,
   ChevronLeft,
   ChevronRight,
   CircleDollarSign,
-  CloudCog,
   DatabaseZap,
-  ExternalLink,
   LoaderCircle,
   RefreshCcw,
-  RotateCcw,
   Search,
   ShieldAlert,
 } from 'lucide-react';
@@ -19,6 +15,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, type MetaFunction } from 'react-router';
 
 import { Alert } from '../components/ui/alert';
+import { DriftSummary } from '../components/drift/cost-summary';
+import {
+  DriftLoadingRows,
+  DriftMobileCard,
+  DriftTable,
+  EmptyDriftState,
+} from '../components/drift/drift-list';
+import {
+  DriftActionProgress,
+  DriftScanProgress,
+} from '../components/drift/progress';
+import { formatPricingDate } from '../components/drift/format-pricing-date';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -27,17 +35,8 @@ import {
   AlertDialogDescription,
   AlertDialogTitle,
 } from '../components/ui/alert-dialog';
-import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
-import { Card } from '../components/ui/card';
 import { Checkbox } from '../components/ui/checkbox';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogTitle,
-  DialogTrigger,
-} from '../components/ui/dialog';
 import { Input } from '../components/ui/input';
 import {
   createDriftAction,
@@ -53,10 +52,7 @@ import {
   createDriftActionListResponseGuard,
   driftActionFailedPaths,
   driftActionPaths,
-  driftActionPercent,
   driftMethodLabel,
-  driftStatusLabel,
-  formatUsd,
   formatUsdRange,
   isActionableDriftItem,
   isDriftActionTerminal,
@@ -68,7 +64,6 @@ import { formatBytes, formatDate } from '../lib/format';
 import { cn } from '../lib/utils';
 import type {
   DriftAction,
-  DriftCostItem,
   DriftItem,
   DriftPlan,
   DriftResponse,
@@ -628,7 +623,7 @@ export default function DriftRoute() {
         )}
 
         {scan && (
-          <ScanProgress
+          <DriftScanProgress
             scan={scan}
             retrying={startingScan}
             onRetry={() => void beginScan()}
@@ -641,7 +636,7 @@ export default function DriftRoute() {
               const id = (action.id || action.actionId) ?? '';
               const failedPaths = driftActionFailedPaths(action);
               return (
-                <ActionProgress
+                <DriftActionProgress
                   key={id}
                   action={action}
                   failedPaths={failedPaths}
@@ -660,7 +655,7 @@ export default function DriftRoute() {
           </section>
         )}
 
-        <SummaryGrid data={data} loading={state.loading && !data} />
+        <DriftSummary data={data} loading={state.loading && !data} />
 
         <section className="overflow-hidden rounded-xl border border-border bg-white shadow-sm">
           <div className="grid gap-3 border-b border-border bg-[#fbfaf6] p-4 lg:grid-cols-[minmax(260px,1fr)_190px_auto] lg:items-center">
@@ -713,7 +708,7 @@ export default function DriftRoute() {
           </div>
 
           {state.loading && !data ? (
-            <LoadingRows />
+            <DriftLoadingRows />
           ) : items.length === 0 ? (
             <EmptyDriftState
               hasFilter={Boolean(debouncedQuery || status !== 'all')}
@@ -957,732 +952,6 @@ function emptyDriftResponse(query: string, offset: number): DriftResponse {
   };
 }
 
-function SummaryGrid({
-  data,
-  loading,
-}: {
-  data?: DriftResponse;
-  loading: boolean;
-}) {
-  const summary = data?.summary;
-  const metrics = [
-    {
-      label: 'Drifted objects',
-      value: summary?.drifted.toLocaleString() ?? '—',
-      detail: `${summary?.total.toLocaleString() ?? '—'} scanned`,
-      icon: DatabaseZap,
-    },
-    {
-      label: 'Data affected',
-      value:
-        summary && Number.isFinite(summary.totalBytes)
-          ? formatBytes(summary.totalBytes)
-          : '—',
-      detail: `${summary?.missing.toLocaleString() ?? '—'} missing`,
-      icon: CloudCog,
-    },
-    {
-      label: 'Estimated move cost',
-      value: summary
-        ? formatUsdRange(
-            summary.estimatedCostUsdMin,
-            summary.estimatedCostUsdMax
-          )
-        : '—',
-      detail: 'No move until confirmed',
-      icon: CircleDollarSign,
-    },
-    {
-      label: 'Aligned',
-      value: summary?.aligned.toLocaleString() ?? '—',
-      detail: `${summary?.failed.toLocaleString() ?? '—'} failed checks`,
-      icon: CheckCircle2,
-    },
-  ];
-
-  return (
-    <Dialog>
-      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        {metrics.map((metric) => {
-          const content = (
-            <>
-              <span className="flex items-start justify-between gap-3">
-                <span className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-                  {metric.label}
-                </span>
-                <metric.icon className="h-4 w-4 text-primary" />
-              </span>
-              <span
-                className={cn(
-                  'mt-4 block text-2xl font-semibold tabular-nums',
-                  loading && 'animate-pulse text-muted'
-                )}
-              >
-                {metric.value}
-              </span>
-              <span className="mt-1 block text-xs text-muted-foreground">
-                {metric.detail}
-              </span>
-            </>
-          );
-          if (metric.label === 'Estimated move cost') {
-            return (
-              <Card
-                key={metric.label}
-                className="overflow-hidden shadow-none transition-colors hover:border-primary/60 hover:bg-[#fbfdfc]"
-              >
-                <DialogTrigger asChild>
-                  <button
-                    type="button"
-                    aria-label="View estimated move cost details"
-                    className="group block w-full p-4 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-                  >
-                    {content}
-                    <span className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-primary opacity-80 transition-opacity group-hover:opacity-100">
-                      View calculation
-                      <ArrowRight className="h-3 w-3" />
-                    </span>
-                  </button>
-                </DialogTrigger>
-              </Card>
-            );
-          }
-          return (
-            <Card
-              key={metric.label}
-              className="overflow-hidden p-4 shadow-none"
-            >
-              {content}
-            </Card>
-          );
-        })}
-      </section>
-      <CostEstimateDialog data={data} />
-    </Dialog>
-  );
-}
-
-function CostEstimateDialog({ data }: { data?: DriftResponse }) {
-  const summary = data?.summary;
-  const breakdown = summary?.costBreakdown ?? [];
-  const hasEstimate = Boolean(
-    summary && data?.pricingAsOf && summary.costFormula.minimum
-  );
-
-  return (
-    <DialogContent className="max-h-[calc(100dvh-1rem)] w-[calc(100%-1rem)] max-w-3xl gap-5 rounded-xl p-4 sm:max-h-[calc(100dvh-2rem)] sm:w-[calc(100%-2rem)] sm:p-6">
-      <div className="pr-8">
-        <DialogTitle className="flex items-center gap-2 text-lg font-semibold">
-          <CircleDollarSign className="h-5 w-5 text-primary" />
-          Estimated move cost
-        </DialogTitle>
-        <DialogDescription className="mt-1 text-sm leading-6 text-muted-foreground">
-          Snapshot-wide estimate for every actionable drift item. Search and
-          status filters do not change this total.
-        </DialogDescription>
-      </div>
-
-      {hasEstimate && summary ? (
-        <>
-          <section className="rounded-xl border border-primary/20 bg-[#edf6f3] p-4">
-            <p className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-              Estimated total
-            </p>
-            <p className="mt-1 text-3xl font-semibold tabular-nums text-primary">
-              {formatUsdRange(
-                summary.estimatedCostUsdMin,
-                summary.estimatedCostUsdMax
-              )}
-            </p>
-            <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-3">
-              <CostFact
-                label="Minimum"
-                value={formatDetailedUsd(summary.estimatedCostUsdMin)}
-              />
-              <CostFact
-                label="Maximum"
-                value={formatDetailedUsd(summary.estimatedCostUsdMax)}
-              />
-              <CostFact
-                label="Pricing as of"
-                value={formatPricingDate(data?.pricingAsOf ?? '')}
-              />
-            </dl>
-          </section>
-
-          <section>
-            <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-              Cost breakdown
-            </h3>
-            {breakdown.length > 0 ? (
-              <div className="mt-2 divide-y divide-border overflow-hidden rounded-xl border border-border">
-                {breakdown.map((cost, index) => (
-                  <CostBreakdownRow
-                    key={`${cost.storageClass}-${cost.name}-${index}`}
-                    cost={cost}
-                  />
-                ))}
-              </div>
-            ) : (
-              <p className="mt-2 rounded-xl border border-border bg-white p-4 text-sm text-muted-foreground">
-                No actionable drift items contribute to this estimate.
-              </p>
-            )}
-          </section>
-
-          <section className="grid gap-3 rounded-xl border border-border bg-[#fbfaf6] p-4 text-sm">
-            <div>
-              <p className="font-medium text-foreground">Minimum formula</p>
-              <code className="mt-1 block whitespace-normal text-xs leading-5 text-muted-foreground">
-                {summary.costFormula.minimum}
-              </code>
-            </div>
-            <div>
-              <p className="font-medium text-foreground">Maximum formula</p>
-              <code className="mt-1 block whitespace-normal text-xs leading-5 text-muted-foreground">
-                {summary.costFormula.maximum}
-              </code>
-            </div>
-            {data?.pricingModel && (
-              <p className="border-t border-border pt-3 text-xs text-muted-foreground">
-                Pricing model: {data.pricingModel}
-              </p>
-            )}
-          </section>
-
-          {summary.warnings.length > 0 && (
-            <section className="rounded-xl border border-amber-300 bg-amber-50 p-4">
-              <h3 className="flex items-center gap-2 text-sm font-semibold text-amber-950">
-                <AlertTriangle className="h-4 w-4" />
-                Assumptions and exclusions
-              </h3>
-              <ul className="mt-2 grid gap-1.5 pl-5 text-xs leading-5 text-amber-950/80">
-                {summary.warnings.map((warning) => (
-                  <li key={warning} className="list-disc">
-                    {warning}
-                  </li>
-                ))}
-              </ul>
-            </section>
-          )}
-
-          <section>
-            <h3 className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-              Official sources
-            </h3>
-            <div className="mt-2 flex flex-wrap gap-2">
-              {(data?.pricingSources ?? []).map((source) => (
-                <a
-                  key={source.url}
-                  href={source.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-1.5 rounded-md border border-border bg-white px-3 py-2 text-xs font-medium text-primary hover:border-primary/50 hover:bg-[#f7fbfa] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                >
-                  {source.label}
-                  <ExternalLink className="h-3 w-3" />
-                </a>
-              ))}
-            </div>
-          </section>
-        </>
-      ) : (
-        <Alert className="border-destructive/40 bg-red-50 text-destructive">
-          The cached snapshot does not contain a cost breakdown. Run a manual
-          rescan before reviewing or approving physical moves.
-        </Alert>
-      )}
-    </DialogContent>
-  );
-}
-
-function CostBreakdownRow({ cost }: { cost: DriftCostItem }) {
-  return (
-    <div className="grid gap-3 bg-white p-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
-      <div className="min-w-0">
-        <div className="flex flex-wrap items-center gap-2">
-          <p className="font-medium text-foreground">{cost.name}</p>
-          {cost.storageClass && (
-            <Badge variant="outline" className="text-[10px]">
-              {cost.storageClass}
-            </Badge>
-          )}
-        </div>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">
-          {cost.formula}
-        </p>
-        <p className="mt-1 font-mono text-[11px] leading-5 text-foreground/75">
-          {formatCostNumber(cost.units)} {cost.unitLabel} ×{' '}
-          {formatDetailedUsd(cost.rate)} / {cost.rateUnit.replace('USD/', '')}
-        </p>
-        <p className="mt-1 text-[11px] leading-5 text-muted-foreground">
-          {cost.details}
-        </p>
-      </div>
-      <div className="text-left sm:text-right">
-        <p className="font-semibold tabular-nums">
-          {formatDetailedUsdRange(cost.usdMin, cost.usdMax)}
-        </p>
-      </div>
-    </div>
-  );
-}
-
-function CostFact({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <dt className="text-xs text-muted-foreground">{label}</dt>
-      <dd className="mt-1 font-semibold tabular-nums">{value}</dd>
-    </div>
-  );
-}
-
-function formatCostNumber(value: number) {
-  return new Intl.NumberFormat('en-US', {
-    maximumFractionDigits: 4,
-  }).format(value);
-}
-
-function formatPricingDate(value: string) {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-  if (!match) return formatDate(value);
-  return `${Number(match[1])}年${Number(match[2])}月${Number(match[3])}日`;
-}
-
-function formatDetailedUsd(value: number) {
-  if (!Number.isFinite(value) || value < 0) return formatUsd(0);
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 6,
-  }).format(value);
-}
-
-function formatDetailedUsdRange(min: number, max: number) {
-  if (min === max) return formatDetailedUsd(min);
-  return `${formatDetailedUsd(min)}–${formatDetailedUsd(max)}`;
-}
-
-function DriftTable({
-  items,
-  selected,
-  canAct,
-  allActionableSelected,
-  onToggleAll,
-  onToggle,
-}: {
-  items: DriftItem[];
-  selected: Set<string>;
-  canAct: boolean;
-  allActionableSelected: boolean;
-  onToggleAll: (checked: boolean) => void;
-  onToggle: (path: string, checked: boolean) => void;
-}) {
-  return (
-    <table className="w-full min-w-[1120px] table-fixed text-left text-sm">
-      <thead className="border-b border-border bg-white text-[11px] uppercase tracking-[0.1em] text-muted-foreground">
-        <tr>
-          <th className="w-11 px-4 py-3">
-            <Checkbox
-              aria-label="Select all actionable drift items on this page"
-              checked={allActionableSelected}
-              disabled={!canAct || !items.some(isActionableDriftItem)}
-              onChange={(event) => onToggleAll(event.target.checked)}
-            />
-          </th>
-          <th className="w-[22%] px-2 py-3">Logical path</th>
-          <th className="w-[23%] px-2 py-3">Object key move</th>
-          <th className="w-[12%] px-2 py-3">Status</th>
-          <th className="w-[11%] px-2 py-3">Size / class</th>
-          <th className="w-[15%] px-2 py-3">Generation</th>
-          <th className="w-[13%] px-4 py-3 text-right">Estimated cost</th>
-        </tr>
-      </thead>
-      <tbody className="divide-y divide-border">
-        {items.map((item) => {
-          const actionable = canAct && isActionableDriftItem(item);
-          return (
-            <tr
-              key={item.logicPath}
-              className={cn(
-                'align-top hover:bg-[#f8faf7]',
-                selected.has(item.logicPath) && 'bg-[#edf6f3]'
-              )}
-            >
-              <td className="px-4 py-3.5">
-                <Checkbox
-                  aria-label={`Select ${item.logicPath}`}
-                  checked={selected.has(item.logicPath)}
-                  disabled={!actionable}
-                  onChange={(event) =>
-                    onToggle(item.logicPath, event.target.checked)
-                  }
-                />
-              </td>
-              <td className="px-2 py-3.5">
-                <p className="break-words font-medium leading-5">
-                  {item.logicPath}
-                </p>
-                {item.error && (
-                  <p className="mt-1 text-xs text-destructive">{item.error}</p>
-                )}
-              </td>
-              <td className="px-2 py-3.5 text-xs">
-                <KeyMove
-                  currentKey={item.currentKey}
-                  targetKey={item.targetKey}
-                  status={item.status}
-                />
-              </td>
-              <td className="px-2 py-3.5">
-                <DriftStatus status={item.status} />
-              </td>
-              <td className="px-2 py-3.5">
-                <p className="font-medium tabular-nums">
-                  {formatBytes(item.size)}
-                </p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {item.storageClass || '—'}
-                </p>
-              </td>
-              <td className="px-2 py-3.5 font-mono text-xs text-muted-foreground">
-                <span className="break-all">{item.generation || '—'}</span>
-              </td>
-              <td className="px-4 py-3.5 text-right font-medium tabular-nums">
-                {formatUsdRange(
-                  item.estimatedCostUsdMin,
-                  item.estimatedCostUsdMax
-                )}
-              </td>
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
-  );
-}
-
-function DriftMobileCard({
-  item,
-  checked,
-  canAct,
-  onToggle,
-}: {
-  item: DriftItem;
-  checked: boolean;
-  canAct: boolean;
-  onToggle: (path: string, checked: boolean) => void;
-}) {
-  return (
-    <article className={cn('grid gap-3 p-4', checked && 'bg-[#edf6f3]')}>
-      <div className="flex items-start gap-3">
-        <Checkbox
-          aria-label={`Select ${item.logicPath}`}
-          checked={checked}
-          disabled={!canAct || !isActionableDriftItem(item)}
-          onChange={(event) => onToggle(item.logicPath, event.target.checked)}
-          className="mt-1"
-        />
-        <div className="min-w-0 flex-1">
-          <p className="break-words font-medium leading-5">{item.logicPath}</p>
-          <div className="mt-2 flex items-center justify-between gap-3">
-            <DriftStatus status={item.status} />
-            <span className="font-semibold tabular-nums">
-              {formatUsdRange(
-                item.estimatedCostUsdMin,
-                item.estimatedCostUsdMax
-              )}
-            </span>
-          </div>
-        </div>
-      </div>
-      <div className="rounded-lg border border-border bg-[#fbfaf6] p-3 text-xs">
-        <KeyMove
-          currentKey={item.currentKey}
-          targetKey={item.targetKey}
-          status={item.status}
-        />
-      </div>
-      <dl className="grid grid-cols-3 gap-2 text-xs">
-        <div>
-          <dt className="text-muted-foreground">Size</dt>
-          <dd className="mt-1 font-medium">{formatBytes(item.size)}</dd>
-        </div>
-        <div>
-          <dt className="text-muted-foreground">Class</dt>
-          <dd className="mt-1 font-medium">{item.storageClass || '—'}</dd>
-        </div>
-        <div className="min-w-0">
-          <dt className="text-muted-foreground">Generation</dt>
-          <dd className="mt-1 truncate font-mono">{item.generation || '—'}</dd>
-        </div>
-      </dl>
-      {item.error && <p className="text-xs text-destructive">{item.error}</p>}
-    </article>
-  );
-}
-
-function KeyMove({
-  currentKey,
-  targetKey,
-  status,
-}: {
-  currentKey: string;
-  targetKey: string;
-  status: string;
-}) {
-  const aligned = status.toLowerCase() === 'aligned';
-  if (aligned) {
-    return (
-      <div className="grid min-w-0 gap-1">
-        <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-          Matches index
-        </span>
-        <span className="break-all font-medium text-foreground">
-          {targetKey || currentKey || '—'}
-        </span>
-      </div>
-    );
-  }
-  return (
-    <div className="grid min-w-0 gap-1 text-muted-foreground">
-      <span className="text-[10px] font-medium uppercase tracking-wide">
-        Current GCS key
-      </span>
-      <span className="break-all line-through decoration-border">
-        {currentKey || '—'}
-      </span>
-      <span className="flex items-start gap-1.5 font-medium text-foreground">
-        <ArrowRight className="mt-0.5 h-3 w-3 shrink-0 text-primary" />
-        <span className="min-w-0">
-          <span className="block text-[10px] uppercase tracking-wide text-muted-foreground">
-            Expected key
-          </span>
-          <span className="break-all">{targetKey || '—'}</span>
-        </span>
-      </span>
-    </div>
-  );
-}
-
-function DriftStatus({ status }: { status: string }) {
-  const normalized = status.toLowerCase();
-  return (
-    <Badge
-      variant="outline"
-      className={cn(
-        'whitespace-nowrap',
-        [
-          'drifted',
-          'misaligned',
-          'ready',
-          'key_mismatch',
-          'object_key_mismatch',
-          'size_mismatch',
-          'target_conflict',
-          'shared_object',
-        ].includes(normalized) && 'border-amber-300 bg-amber-50 text-amber-900',
-        normalized === 'aligned' &&
-          'border-emerald-300 bg-emerald-50 text-emerald-800',
-        ['missing', 'object_missing', 'failed', 'error'].includes(normalized) &&
-          'border-red-300 bg-red-50 text-red-800',
-        normalized === 'orphan_object' &&
-          'border-slate-300 bg-slate-50 text-slate-800',
-        ['moving', 'running'].includes(normalized) &&
-          'border-blue-300 bg-blue-50 text-blue-800'
-      )}
-    >
-      {driftStatusLabel(status)}
-    </Badge>
-  );
-}
-
-function ActionProgress({
-  action,
-  failedPaths,
-  canRetry,
-  retrying,
-  dismissing,
-  onRetry,
-  onDismiss,
-}: {
-  action: DriftAction;
-  failedPaths: string[];
-  canRetry: boolean;
-  retrying: boolean;
-  dismissing: boolean;
-  onRetry: () => void;
-  onDismiss: () => void;
-}) {
-  const terminal = isDriftActionTerminal(action.status);
-  const percent = driftActionPercent(action);
-  return (
-    <section
-      className="rounded-xl border border-primary/25 bg-white p-4 shadow-sm"
-      aria-live="polite"
-    >
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex items-start gap-3">
-          {terminal ? (
-            action.failed > 0 ? (
-              <AlertTriangle className="mt-0.5 h-5 w-5 text-amber-700" />
-            ) : (
-              <CheckCircle2 className="mt-0.5 h-5 w-5 text-emerald-700" />
-            )
-          ) : (
-            <LoaderCircle className="mt-0.5 h-5 w-5 animate-spin text-primary" />
-          )}
-          <div>
-            <p className="font-semibold">
-              Physical move {driftStatusLabel(action.status).toLowerCase()}
-            </p>
-            <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground">
-              {action.id || action.actionId}
-            </p>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {action.progress.toLocaleString()} of{' '}
-              {action.total.toLocaleString()} processed ·{' '}
-              {action.succeeded.toLocaleString()} succeeded ·{' '}
-              {action.failed.toLocaleString()} failed
-            </p>
-            {action.error && (
-              <p className="mt-1 text-sm text-destructive">{action.error}</p>
-            )}
-            {terminal && (
-              <p className="mt-1 text-xs text-muted-foreground">
-                The table still shows the cached snapshot. Use Manual rescan
-                when you are ready to refresh the full inventory.
-              </p>
-            )}
-          </div>
-        </div>
-        <div className="flex gap-2">
-          {failedPaths.length > 0 && (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={!canRetry || retrying}
-              onClick={onRetry}
-            >
-              <RotateCcw className="h-4 w-4" />
-              Retry {failedPaths.length} failed
-            </Button>
-          )}
-          {terminal && (
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={dismissing}
-              onClick={onDismiss}
-            >
-              {dismissing && <LoaderCircle className="h-4 w-4 animate-spin" />}
-              {dismissing ? 'Dismissing' : 'Dismiss'}
-            </Button>
-          )}
-        </div>
-      </div>
-      <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted">
-        <div
-          className="h-full rounded-full bg-primary transition-[width] duration-500"
-          style={{ width: `${percent}%` }}
-        />
-      </div>
-    </section>
-  );
-}
-
-function scanPhaseLabel(phase: DriftScan['phase']) {
-  switch (phase) {
-    case 'queued':
-      return 'Waiting to start';
-    case 'metadata':
-      return 'Scanning file metadata';
-    case 'objects':
-      return 'Listing storage objects';
-    case 'saving':
-      return 'Saving the new snapshot';
-    case 'completed':
-      return 'Snapshot refreshed';
-    case 'failed':
-      return 'Rescan failed';
-  }
-}
-
-function ScanProgress({
-  scan,
-  retrying,
-  onRetry,
-}: {
-  scan: DriftScan;
-  retrying: boolean;
-  onRetry: () => void;
-}) {
-  const running = scan.status === 'pending' || scan.status === 'running';
-  const completed = scan.status === 'completed';
-  return (
-    <section
-      className="rounded-xl border border-primary/25 bg-white p-4 shadow-sm"
-      aria-live="polite"
-    >
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex items-start gap-3">
-          {running ? (
-            <LoaderCircle className="mt-0.5 h-5 w-5 animate-spin text-primary" />
-          ) : completed ? (
-            <CheckCircle2 className="mt-0.5 h-5 w-5 text-emerald-700" />
-          ) : (
-            <AlertTriangle className="mt-0.5 h-5 w-5 text-amber-700" />
-          )}
-          <div>
-            <p className="font-semibold">Storage rescan {scan.status}</p>
-            <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground">
-              {scan.id}
-            </p>
-            <p className="mt-1 text-sm text-muted-foreground">
-              {scanPhaseLabel(scan.phase)} · started{' '}
-              {formatDate(scan.createdAt)}
-            </p>
-            {scan.error && (
-              <p className="mt-1 text-sm text-destructive">{scan.error}</p>
-            )}
-          </div>
-        </div>
-        {scan.status === 'failed' && (
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={retrying}
-            onClick={onRetry}
-          >
-            {retrying ? (
-              <LoaderCircle className="h-4 w-4 animate-spin" />
-            ) : (
-              <RotateCcw className="h-4 w-4" />
-            )}
-            Retry rescan
-          </Button>
-        )}
-      </div>
-      <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted">
-        <div
-          className={cn(
-            'h-full rounded-full transition-[width] duration-500',
-            completed
-              ? 'bg-primary'
-              : scan.status === 'failed'
-              ? 'bg-destructive'
-              : 'animate-pulse bg-primary'
-          )}
-          style={{
-            width: completed || scan.status === 'failed' ? '100%' : '65%',
-          }}
-        />
-      </div>
-    </section>
-  );
-}
-
 function PlanMetric({
   label,
   value,
@@ -1705,63 +974,6 @@ function PlanMetric({
       >
         {value}
       </p>
-    </div>
-  );
-}
-
-function LoadingRows() {
-  return (
-    <div className="grid gap-3 p-4">
-      {[0, 1, 2, 3].map((row) => (
-        <div key={row} className="h-14 animate-pulse rounded-lg bg-muted/70" />
-      ))}
-    </div>
-  );
-}
-
-function EmptyDriftState({
-  hasFilter,
-  hasSnapshot,
-  scanning,
-  onRescan,
-}: {
-  hasFilter: boolean;
-  hasSnapshot: boolean;
-  scanning: boolean;
-  onRescan: () => void;
-}) {
-  const needsSnapshot = !hasSnapshot && !hasFilter;
-  return (
-    <div className="grid min-h-64 place-items-center p-8 text-center">
-      <div>
-        <span className="mx-auto grid h-12 w-12 place-items-center rounded-full bg-secondary">
-          <CheckCircle2 className="h-6 w-6 text-primary" />
-        </span>
-        <h2 className="mt-4 font-semibold">
-          {hasFilter
-            ? 'No matching drift records'
-            : needsSnapshot
-            ? 'No drift snapshot yet'
-            : 'Storage keys are aligned'}
-        </h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {hasFilter
-            ? 'Adjust the search or status filter.'
-            : needsSnapshot
-            ? 'Run a manual full scan to build the first cached snapshot.'
-            : 'No physical object move is needed.'}
-        </p>
-        {needsSnapshot && (
-          <Button className="mt-4" disabled={scanning} onClick={onRescan}>
-            {scanning ? (
-              <LoaderCircle className="h-4 w-4 animate-spin" />
-            ) : (
-              <RefreshCcw className="h-4 w-4" />
-            )}
-            Run first full scan
-          </Button>
-        )}
-      </div>
     </div>
   );
 }
