@@ -34,6 +34,45 @@ const SCAN_ACTIVE_POLL_MS = 2000;
 const SCAN_BACKGROUND_SYNC_MS = 30000;
 const EMPTY_DRIFT_ITEMS: DriftItem[] = [];
 
+export function scheduleDriftSearchCommit(
+  query: string,
+  commit: (query: string) => void,
+  delay = SEARCH_DEBOUNCE_MS
+) {
+  const timeout = globalThis.setTimeout(() => commit(query.trim()), delay);
+  return () => globalThis.clearTimeout(timeout);
+}
+
+export function scheduleDriftPoll(poll: () => void, intervalMs: number) {
+  const interval = globalThis.setInterval(poll, intervalMs);
+  return () => globalThis.clearInterval(interval);
+}
+
+export function createDriftControllerRequestGuard() {
+  let active = true;
+  let generation = 0;
+
+  return {
+    activate() {
+      active = true;
+    },
+    dispose() {
+      active = false;
+      generation += 1;
+    },
+    isActive() {
+      return active;
+    },
+    beginRequest() {
+      generation += 1;
+      return generation;
+    },
+    isCurrent(requestGeneration: number) {
+      return active && requestGeneration === generation;
+    },
+  };
+}
+
 type LoadState = {
   data?: DriftResponse;
   loading: boolean;
@@ -64,8 +103,7 @@ export function useDriftController() {
   const [scan, setScan] = useState<DriftScan>();
   const [startingScan, setStartingScan] = useState(false);
   const [scanError, setScanError] = useState<string>();
-  const requestRef = useRef(0);
-  const disposedRef = useRef(false);
+  const controllerRequestGuardRef = useRef(createDriftControllerRequestGuard());
   const actionsRef = useRef<DriftAction[]>([]);
   const pollingActionsRef = useRef(false);
   const listingActionsRef = useRef(false);
@@ -76,8 +114,8 @@ export function useDriftController() {
 
   const loadDrift = useCallback(
     async (nextOffset = offset, refresh = false) => {
-      const requestId = requestRef.current + 1;
-      requestRef.current = requestId;
+      const requestGeneration =
+        controllerRequestGuardRef.current.beginRequest();
       setState((previous) => ({
         ...previous,
         loading: true,
@@ -91,10 +129,12 @@ export function useDriftController() {
           offset: nextOffset,
           refresh,
         });
-        if (requestRef.current !== requestId) return;
+        if (!controllerRequestGuardRef.current.isCurrent(requestGeneration))
+          return;
         setState({ data, loading: false });
       } catch (error) {
-        if (requestRef.current !== requestId) return;
+        if (!controllerRequestGuardRef.current.isCurrent(requestGeneration))
+          return;
         const message =
           error instanceof Error
             ? error.message
@@ -133,11 +173,10 @@ export function useDriftController() {
   );
 
   useEffect(() => {
-    const timeout = window.setTimeout(() => {
+    return scheduleDriftSearchCommit(query, (nextQuery) => {
       setOffset(0);
-      setDebouncedQuery(query.trim());
-    }, SEARCH_DEBOUNCE_MS);
-    return () => window.clearTimeout(timeout);
+      setDebouncedQuery(nextQuery);
+    });
   }, [query]);
 
   useEffect(() => {
@@ -149,9 +188,10 @@ export function useDriftController() {
   }, [debouncedQuery, offset, status]);
 
   useEffect(() => {
-    disposedRef.current = false;
+    const requestGuard = controllerRequestGuardRef.current;
+    requestGuard.activate();
     return () => {
-      disposedRef.current = true;
+      requestGuard.dispose();
     };
   }, []);
 
@@ -186,7 +226,7 @@ export function useDriftController() {
     try {
       const next = await getDriftActions();
       if (
-        disposedRef.current ||
+        !controllerRequestGuardRef.current.isActive() ||
         !actionListGuardRef.current.isCurrent(requestToken)
       ) {
         return;
@@ -195,7 +235,7 @@ export function useDriftController() {
       setActionsError(undefined);
     } catch (error) {
       if (
-        disposedRef.current ||
+        !controllerRequestGuardRef.current.isActive() ||
         !actionListGuardRef.current.isCurrent(requestToken)
       ) {
         return;
@@ -205,7 +245,9 @@ export function useDriftController() {
       );
     } finally {
       listingActionsRef.current = false;
-      if (!background && !disposedRef.current) setActionsLoading(false);
+      if (!background && controllerRequestGuardRef.current.isActive()) {
+        setActionsLoading(false);
+      }
     }
   }, []);
 
@@ -227,15 +269,19 @@ export function useDriftController() {
 
   useEffect(() => {
     if (!canAct) return;
-    const interval = window.setInterval(() => {
+    return scheduleDriftPoll(() => {
       void loadActions(true);
     }, ACTION_LIST_SYNC_MS);
-    return () => window.clearInterval(interval);
   }, [canAct, loadActions]);
 
   useEffect(() => {
     const pollActions = async () => {
-      if (disposedRef.current || pollingActionsRef.current) return;
+      if (
+        !controllerRequestGuardRef.current.isActive() ||
+        pollingActionsRef.current
+      ) {
+        return;
+      }
       const runningActions = actionsRef.current.filter(
         (action) => !isDriftActionTerminal(action.status)
       );
@@ -250,7 +296,7 @@ export function useDriftController() {
             return getDriftAction(id, driftActionPaths(action));
           })
         );
-        if (disposedRef.current) return;
+        if (!controllerRequestGuardRef.current.isActive()) return;
         const updates = results.flatMap((result) =>
           result.status === 'fulfilled' ? [result.value] : []
         );
@@ -279,10 +325,9 @@ export function useDriftController() {
       }
     };
 
-    const interval = window.setInterval(() => {
+    return scheduleDriftPoll(() => {
       void pollActions();
     }, ACTION_POLL_MS);
-    return () => window.clearInterval(interval);
   }, []);
 
   const loadScan = useCallback(async () => {
@@ -291,11 +336,21 @@ export function useDriftController() {
     const requestId = scanRequestRef.current;
     try {
       const next = await getCurrentDriftScan();
-      if (disposedRef.current || requestId !== scanRequestRef.current) return;
+      if (
+        !controllerRequestGuardRef.current.isActive() ||
+        requestId !== scanRequestRef.current
+      ) {
+        return;
+      }
       setScan(next);
       setScanError(undefined);
     } catch (error) {
-      if (disposedRef.current || requestId !== scanRequestRef.current) return;
+      if (
+        !controllerRequestGuardRef.current.isActive() ||
+        requestId !== scanRequestRef.current
+      ) {
+        return;
+      }
       setScanError(
         error instanceof Error ? error.message : 'Unable to load rescan status'
       );
@@ -311,26 +366,25 @@ export function useDriftController() {
     scanRequestRef.current += 1;
     try {
       const next = await startDriftScan();
-      if (disposedRef.current) return;
+      if (!controllerRequestGuardRef.current.isActive()) return;
       setScan(next);
     } catch (error) {
-      if (disposedRef.current) return;
+      if (!controllerRequestGuardRef.current.isActive()) return;
       setScanError(
         error instanceof Error ? error.message : 'Unable to start rescan'
       );
     } finally {
-      if (!disposedRef.current) setStartingScan(false);
+      if (controllerRequestGuardRef.current.isActive()) setStartingScan(false);
     }
   }, [scanRunning, startingScan]);
 
   useEffect(() => {
     if (!canScan) return;
     void loadScan();
-    const interval = window.setInterval(
+    return scheduleDriftPoll(
       () => void loadScan(),
       scanRunning ? SCAN_ACTIVE_POLL_MS : SCAN_BACKGROUND_SYNC_MS
     );
-    return () => window.clearInterval(interval);
   }, [canScan, loadScan, scanRunning]);
 
   useEffect(() => {
