@@ -2,7 +2,11 @@
   "name": "@vfs-link/source",
   "version": "0.0.0",
   "license": "MIT",
-  "scripts": {},
+  "scripts": {
+    "check:web": "pnpm --dir apps/web typecheck && pnpm --dir apps/web lint && pnpm --dir apps/web test && pnpm --dir apps/web build",
+    "check:go": "nx run file-server:vet && nx run file-server:test && nx run file-server:build",
+    "check": "pnpm run check:web && pnpm run check:go"
+  },
   "private": true,
   "dependencies": {
     "@primeuix/themes": "^1.2.5",

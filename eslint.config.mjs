@@ -7,6 +7,7 @@ export default [
   {
     ignores: [
       '**/dist',
+      'apps/file-server/internal/api/swaggerui/**',
       '**/vite.config.*.timestamp*',
       '**/vitest.config.*.timestamp*',
     ],

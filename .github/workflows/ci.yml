@@ -20,8 +20,8 @@ env:
   IMAGE_NAME: ghcr.io/twkevinzhang/vfs-link/file-server
 
 jobs:
-  test:
-    name: Test file server
+  go-quality:
+    name: Go quality
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -36,14 +36,46 @@ jobs:
           go-version-file: apps/file-server/go.mod
           cache-dependency-path: apps/file-server/go.sum
 
+      - name: Run Go vet
+        working-directory: apps/file-server
+        run: ./scripts/go.sh vet ./...
+
       - name: Run Go tests
         working-directory: apps/file-server
         run: ./scripts/go.sh test ./...
 
+      - name: Build Go targets
+        working-directory: apps/file-server
+        run: ./scripts/go.sh build ./...
+
+  web-quality:
+    name: Web quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install Web dependencies
+        run: pnpm install --frozen-lockfile --filter @vfs-link/web...
+
+      - name: Run Web checks
+        run: pnpm run check:web
+
   build-pr-image:
     name: Build pull request image
     if: github.event_name == 'pull_request'
-    needs: test
+    needs: [go-quality, web-quality]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -73,7 +105,7 @@ jobs:
       github.event_name == 'push' &&
       github.ref == 'refs/heads/main' &&
       github.repository == 'twkevinzhang/vfs-link'
-    needs: test
+    needs: [go-quality, web-quality]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

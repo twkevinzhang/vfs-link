@@ -4,9 +4,6 @@
   "files": [],
   "references": [
     {
-      "path": "./apps/file-server"
-    },
-    {
       "path": "./apps/web"
     }
   ]

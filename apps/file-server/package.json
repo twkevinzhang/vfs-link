@@ -5,6 +5,18 @@
   "nx": {
     "name": "file-server",
     "targets": {
+      "vet": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "cd apps/file-server && ./scripts/go.sh vet ./..."
+        }
+      },
+      "test": {
+        "executor": "nx:run-commands",
+        "options": {
+          "command": "cd apps/file-server && ./scripts/go.sh test ./..."
+        }
+      },
       "build": {
         "executor": "nx:run-commands",
         "options": {
