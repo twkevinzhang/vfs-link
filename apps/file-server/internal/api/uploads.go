@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -59,9 +58,7 @@ func (s *Server) handleCreateUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request createUploadRequest
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&request); err != nil {
+	if err := decodeBody(r, &request); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
@@ -89,9 +86,7 @@ func (s *Server) handlePreflightUploads(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var request preflightUploadRequest
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&request); err != nil {
+	if err := decodeBody(r, &request); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}

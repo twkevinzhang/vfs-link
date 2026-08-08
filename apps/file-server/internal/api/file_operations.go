@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	pathpkg "path"
@@ -42,11 +41,6 @@ type operationResponse struct {
 	UpdatedAt   string  `json:"updatedAt"`
 }
 
-func decodeBody(r *http.Request, target any) error {
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	return decoder.Decode(target)
-}
 func recordsToEntries(records []db.FileRecord) []Entry {
 	result := make([]Entry, 0, len(records))
 	for _, record := range records {

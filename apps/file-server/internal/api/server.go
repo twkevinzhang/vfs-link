@@ -378,7 +378,7 @@ func (s *Server) handleCreateShareDraft(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var request createShareDraftRequest
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+	if err := decodeBody(r, &request); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}

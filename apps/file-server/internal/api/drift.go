@@ -250,7 +250,7 @@ func (s *Server) handleDriftPlans(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Paths []string `json:"paths"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+	if err := decodeBody(r, &request); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
@@ -441,7 +441,7 @@ func (s *Server) handleDriftActions(w http.ResponseWriter, r *http.Request) {
 		PlanID         string `json:"planId"`
 		IdempotencyKey string `json:"idempotencyKey"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+	if err := decodeBody(r, &request); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
