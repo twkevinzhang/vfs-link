@@ -31,10 +31,11 @@ func validateMetadataKey(key string) error {
 // keys mirror the logical hierarchy. Exceptionally long path segments use a
 // stable hash; the complete logical path remains in the node and parent index.
 type TreeStore struct {
-	mu      sync.Mutex
-	objects treeBackend
-	prefix  string
-	v4      *treeV4Namespace
+	mu        sync.Mutex
+	objects   treeBackend
+	prefix    string
+	v4        *treeV4Namespace
+	namespace treeNamespace
 }
 
 var _ Store = (*TreeStore)(nil)
@@ -142,11 +143,14 @@ func newTreeStoreV4(backend treeBackend, prefix string, options TreeV4Options) (
 		return nil, err
 	}
 	store.v4 = namespace
+	store.namespace = namespace
 	return store, nil
 }
 func newTreeStore(b treeBackend, prefix string) *TreeStore {
 	prefix = cleanTreePrefix(prefix)
-	return &TreeStore{objects: b, prefix: prefix}
+	store := &TreeStore{objects: b, prefix: prefix}
+	store.namespace = &treeV3Namespace{store: store}
+	return store
 }
 func (s *TreeStore) Close() {
 	if s.v4 != nil {
@@ -155,9 +159,9 @@ func (s *TreeStore) Close() {
 	_ = s.objects.Close()
 }
 func (s *TreeStore) EnsureSchema(ctx context.Context) error {
-	if s.v4 != nil {
-		return s.v4.ensureSchema(ctx)
-	}
+	return s.namespace.ensureSchema(ctx)
+}
+func (s *TreeStore) ensureSchemaV3(ctx context.Context) error {
 	_, ok, err := s.objects.Get(ctx, s.statsKey())
 	if err != nil {
 		return err
@@ -606,9 +610,9 @@ func removeIndexRecord(records []FileRecord, path string) []FileRecord {
 }
 
 func (s *TreeStore) Find(ctx context.Context, path string) (FileRecord, bool, error) {
-	if s.v4 != nil {
-		return s.v4.find(ctx, path)
-	}
+	return s.namespace.find(ctx, path)
+}
+func (s *TreeStore) findV3(ctx context.Context, path string) (FileRecord, bool, error) {
 	var err error
 	path, err = parseLogicPath(path)
 	if err != nil {
@@ -632,9 +636,9 @@ func (s *TreeStore) Find(ctx context.Context, path string) (FileRecord, bool, er
 	return FileRecord{}, false, nil
 }
 func (s *TreeStore) ListDirectChildren(ctx context.Context, dir string, o DirectChildrenOptions) (DirectChildrenPage, error) {
-	if s.v4 != nil {
-		return s.v4.listDirectChildren(ctx, dir, o)
-	}
+	return s.namespace.listDirectChildren(ctx, dir, o)
+}
+func (s *TreeStore) listDirectChildrenV3(ctx context.Context, dir string, o DirectChildrenOptions) (DirectChildrenPage, error) {
 	var err error
 	dir, err = parseLogicPath(dir)
 	if err != nil {
@@ -760,15 +764,12 @@ func (s *TreeStore) listActive(ctx context.Context, prefix string) ([]FileRecord
 	return out, nil
 }
 func (s *TreeStore) ListAll(ctx context.Context) ([]FileRecord, error) {
-	if s.v4 != nil {
-		return s.v4.listPrefix(ctx, "")
-	}
-	return s.listActive(ctx, "")
+	return s.namespace.listPrefix(ctx, "")
 }
 func (s *TreeStore) ListPrefix(ctx context.Context, prefix string) ([]FileRecord, error) {
-	if s.v4 != nil {
-		return s.v4.listPrefix(ctx, prefix)
-	}
+	return s.namespace.listPrefix(ctx, prefix)
+}
+func (s *TreeStore) listPrefixV3(ctx context.Context, prefix string) ([]FileRecord, error) {
 	var err error
 	prefix, err = parseLogicPrefix(prefix)
 	if err != nil {
@@ -810,9 +811,9 @@ func (s *TreeStore) ReplaceFile(ctx context.Context, path, hash string, size int
 	return old, e
 }
 func (s *TreeStore) ReplaceFileConditional(ctx context.Context, path, hash string, size int64, expected *string, absent bool) (string, bool, error) {
-	if s.v4 != nil {
-		return s.v4.replaceFileConditional(ctx, path, hash, size, expected, absent)
-	}
+	return s.namespace.replaceFileConditional(ctx, path, hash, size, expected, absent)
+}
+func (s *TreeStore) replaceFileConditionalV3(ctx context.Context, path, hash string, size int64, expected *string, absent bool) (string, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	release, _, e := s.acquireTreeMutationLease(ctx)
@@ -873,9 +874,9 @@ func (s *TreeStore) ReplaceFileConditional(ctx context.Context, path, hash strin
 	return oldHash, true, nil
 }
 func (s *TreeStore) UpsertDirectory(ctx context.Context, path string) error {
-	if s.v4 != nil {
-		return s.v4.upsertDirectory(ctx, path)
-	}
+	return s.namespace.upsertDirectory(ctx, path)
+}
+func (s *TreeStore) upsertDirectoryV3(ctx context.Context, path string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	release, _, e := s.acquireTreeMutationLease(ctx)
@@ -920,9 +921,9 @@ func (s *TreeStore) UpsertDirectory(ctx context.Context, path string) error {
 	return e
 }
 func (s *TreeStore) DeletePath(ctx context.Context, path string) error {
-	if s.v4 != nil {
-		return s.v4.deletePath(ctx, path)
-	}
+	return s.namespace.deletePath(ctx, path)
+}
+func (s *TreeStore) deletePathV3(ctx context.Context, path string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	release, _, e := s.acquireTreeMutationLease(ctx)

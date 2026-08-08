@@ -264,9 +264,9 @@ func (s *TreeStore) listOperations(ctx context.Context) ([]OperationRecord, erro
 	return out, nil
 }
 func (s *TreeStore) RunOperation(ctx context.Context, id string) (op OperationRecord, err error) {
-	if s.v4 != nil {
-		return s.v4.runOperation(ctx, id)
-	}
+	return s.namespace.runOperation(ctx, id)
+}
+func (s *TreeStore) runOperationV3(ctx context.Context, id string) (op OperationRecord, err error) {
 	op, g, ok, e := s.loadOperation(ctx, id)
 	if e != nil {
 		return op, e
@@ -466,9 +466,9 @@ func (s *TreeStore) checkpointOperation(ctx context.Context, op *OperationRecord
 }
 
 func (s *TreeStore) BatchMove(ctx context.Context, paths []string, destination string) ([]FileRecord, error) {
-	if s.v4 != nil {
-		return s.v4.movePaths(ctx, paths, destination)
-	}
+	return s.namespace.movePaths(ctx, paths, destination)
+}
+func (s *TreeStore) movePathsV3(ctx context.Context, paths []string, destination string) ([]FileRecord, error) {
 	op, e := s.CreateMoveOperation(ctx, paths, destination)
 	if e != nil {
 		return nil, e
@@ -695,9 +695,9 @@ func (s *TreeStore) collectSubtree(ctx context.Context, root FileRecord) ([]File
 	return out, e
 }
 func (s *TreeStore) RenamePath(ctx context.Context, from, to string) error {
-	if s.v4 != nil {
-		return s.v4.renamePath(ctx, from, to)
-	}
+	return s.namespace.renamePath(ctx, from, to)
+}
+func (s *TreeStore) renamePathV3(ctx context.Context, from, to string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	release, _, e := s.acquireTreeMutationLease(ctx)
@@ -858,9 +858,9 @@ func directoryPaths(records []FileRecord) []string {
 
 func (s *TreeStore) trashManifestKey(id string) string { return s.trashPrefix(id) + "manifest.json" }
 func (s *TreeStore) TrashPaths(ctx context.Context, items []TrashPath) ([]FileRecord, error) {
-	if s.v4 != nil {
-		return s.v4.trashPaths(ctx, items)
-	}
+	return s.namespace.trashPaths(ctx, items)
+}
+func (s *TreeStore) trashPathsV3(ctx context.Context, items []TrashPath) ([]FileRecord, error) {
 	return s.trashPathsInternal(ctx, items, nil, true)
 }
 func (s *TreeStore) trashPathsInternal(ctx context.Context, items []TrashPath, checkpoint func() error, applyStats bool) ([]FileRecord, error) {
@@ -1060,9 +1060,9 @@ func (s *TreeStore) listTrashManifests(ctx context.Context) ([]trashManifest, er
 	return out, nil
 }
 func (s *TreeStore) ListTrash(ctx context.Context) ([]FileRecord, error) {
-	if s.v4 != nil {
-		return s.v4.listTrash(ctx)
-	}
+	return s.namespace.listTrash(ctx)
+}
+func (s *TreeStore) listTrashV3(ctx context.Context) ([]FileRecord, error) {
 	ms, e := s.listTrashManifests(ctx)
 	if e != nil {
 		return nil, e
@@ -1075,9 +1075,9 @@ func (s *TreeStore) ListTrash(ctx context.Context) ([]FileRecord, error) {
 	return out, nil
 }
 func (s *TreeStore) ListTrashRecords(ctx context.Context, ids []string) ([]FileRecord, error) {
-	if s.v4 != nil {
-		return s.v4.listTrashRecords(ctx, ids)
-	}
+	return s.namespace.listTrashRecords(ctx, ids)
+}
+func (s *TreeStore) listTrashRecordsV3(ctx context.Context, ids []string) ([]FileRecord, error) {
 	wanted := map[string]bool{}
 	for _, id := range ids {
 		wanted[id] = true
@@ -1124,9 +1124,9 @@ func cleanTrashIDs(ids []string) map[string]bool {
 	return m
 }
 func (s *TreeStore) RestoreTrash(ctx context.Context, ids []string) ([]FileRecord, error) {
-	if s.v4 != nil {
-		return s.v4.restoreTrash(ctx, ids)
-	}
+	return s.namespace.restoreTrash(ctx, ids)
+}
+func (s *TreeStore) restoreTrashV3(ctx context.Context, ids []string) ([]FileRecord, error) {
 	return s.restoreTrashInternal(ctx, ids, nil, true)
 }
 func (s *TreeStore) restoreTrashInternal(ctx context.Context, ids []string, checkpoint func() error, applyStats bool) ([]FileRecord, error) {
@@ -1267,9 +1267,9 @@ func (s *TreeStore) restoreTrashInternal(ctx context.Context, ids []string, chec
 	return restored, nil
 }
 func (s *TreeStore) ClaimTrash(ctx context.Context, ids []string) ([]FileRecord, error) {
-	if s.v4 != nil {
-		return s.v4.claimTrash(ctx, ids)
-	}
+	return s.namespace.claimTrash(ctx, ids)
+}
+func (s *TreeStore) claimTrashV3(ctx context.Context, ids []string) ([]FileRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ms, e := s.listTrashManifests(ctx)
@@ -1305,9 +1305,9 @@ func (s *TreeStore) ClaimTrash(ctx context.Context, ids []string) ([]FileRecord,
 	return records, e
 }
 func (s *TreeStore) DeleteTrash(ctx context.Context, ids []string) (int64, error) {
-	if s.v4 != nil {
-		return s.v4.deleteTrash(ctx, ids)
-	}
+	return s.namespace.deleteTrash(ctx, ids)
+}
+func (s *TreeStore) deleteTrashV3(ctx context.Context, ids []string) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	wanted := cleanTrashIDs(ids)
