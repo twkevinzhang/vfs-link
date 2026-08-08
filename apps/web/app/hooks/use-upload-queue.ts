@@ -48,7 +48,6 @@ import type {
   UploadQueueState,
 } from '../lib/upload-queue-model';
 import {
-  restoreUploadQueueItem,
   summarizeUploadQueue,
   toPersistedUploadItem,
   uploadErrorMessage,
@@ -66,6 +65,10 @@ import {
   resumeUploadQueueItem,
 } from '../lib/upload-queue-transitions';
 import type { UploadSession } from '../types/upload';
+import {
+  createUploadQueueLeadershipHandler,
+  hydrateUploadQueueLifecycle,
+} from './upload-queue-lifecycle';
 
 export type {
   UploadQueueItem,
@@ -1030,30 +1033,21 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
 
   useEffect(() => {
     mountedRef.current = true;
-    void loadUploadQueue()
-      .then(async ({ items: storedItems, globallyPaused: storedPaused }) => {
-        const restored = await Promise.all(
-          storedItems.map((stored) =>
-            restoreUploadQueueItem(stored, storedPaused)
-          )
-        );
-        if (!mountedRef.current) return;
+    void hydrateUploadQueueLifecycle({
+      isMounted: () => mountedRef.current,
+      apply: (restored, storedPaused) => {
         itemsRef.current = restored;
         globallyPausedRef.current = storedPaused;
         setItems(restored);
         setGloballyPaused(storedPaused);
+      },
+      markHydrated: () => {
         hydratedRef.current = true;
         setHydrated(true);
-        persist(restored, storedPaused);
-        const checkingKeys = restored
-          .filter((item) => item.state === 'checking')
-          .map((item) => item.key);
-        if (checkingKeys.length > 0) void runPreflight(checkingKeys);
-      })
-      .catch(() => {
-        hydratedRef.current = true;
-        setHydrated(true);
-      });
+      },
+      persist,
+      preflight: (keys) => void runPreflight(keys),
+    });
     return () => {
       mountedRef.current = false;
     };
@@ -1061,33 +1055,22 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
 
   useEffect(() => {
     const controller = new AbortController();
-    let waitingSince = 0;
+    const onState = createUploadQueueLeadershipHandler({
+      isMounted: () => mountedRef.current,
+      isHydrated: () => hydratedRef.current,
+      items: () => itemsRef.current,
+      setLeader: (isLeader) => {
+        isUploadLeaderRef.current = isLeader;
+      },
+      setState: setLeadershipState,
+      reload: () => window.location.reload(),
+      schedule: () => scheduleRef.current?.(),
+      preflight: (keys) => void preflightRef.current?.(keys),
+    });
     void holdUploadQueueLeadership({
       locks: navigator.locks,
       signal: controller.signal,
-      onState: (state) => {
-        if (state === 'waiting') waitingSince = Date.now();
-        const becameLeader = state === 'leader';
-        isUploadLeaderRef.current = becameLeader;
-        if (mountedRef.current) setLeadershipState(state);
-        if (becameLeader) {
-          if (
-            waitingSince > 0 &&
-            Date.now() - waitingSince > 1_000 &&
-            hydratedRef.current
-          ) {
-            window.location.reload();
-            return;
-          }
-          scheduleRef.current?.();
-          const checkingKeys = itemsRef.current
-            .filter((item) => item.state === 'checking')
-            .map((item) => item.key);
-          if (checkingKeys.length > 0) {
-            void preflightRef.current?.(checkingKeys);
-          }
-        }
-      },
+      onState,
     }).catch(() => {
       isUploadLeaderRef.current = false;
       if (mountedRef.current) setLeadershipState('stopped');
