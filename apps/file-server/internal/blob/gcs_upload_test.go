@@ -134,26 +134,49 @@ func TestCancelResumableUploadDeletesSessionURLOnly(t *testing.T) {
 	}
 }
 
-func TestResumableUploadHeaders(t *testing.T) {
-	tests := []struct {
-		name        string
-		contentType string
-		size        int64
-		wantRange   string
-	}{
-		{name: "regular file", contentType: "video/mp4", size: 56_600_000, wantRange: "bytes 0-56599999/56600000"},
-		{name: "empty file", size: 0, wantRange: "bytes */0"},
+func TestResumableUploadHeadersLeaveContentRangeToEachChunk(t *testing.T) {
+	headers := resumableUploadHeaders("video/mp4", 56_600_000)
+	if got := headers["Content-Range"]; got != "" {
+		t.Fatalf("Content-Range = %q, want client-generated chunk range", got)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			headers := resumableUploadHeaders(tt.contentType, tt.size)
-			if got := headers["Content-Range"]; got != tt.wantRange {
-				t.Fatalf("Content-Range = %q, want %q", got, tt.wantRange)
-			}
-			if tt.contentType != "" && headers["Content-Type"] != tt.contentType {
-				t.Fatalf("Content-Type = %q, want %q", headers["Content-Type"], tt.contentType)
-			}
-		})
+	if headers["Content-Type"] != "video/mp4" {
+		t.Fatalf("Content-Type = %q", headers["Content-Type"])
+	}
+}
+
+func TestQueryResumableUploadParsesCommittedRangeAndCompletion(t *testing.T) {
+	var responseStatus = 308
+	var responseRange = "bytes=0-524287"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.Header.Get("Content-Range") != "bytes */1048576" || r.ContentLength != 0 {
+			t.Errorf("query request = %s range=%q length=%d", r.Method, r.Header.Get("Content-Range"), r.ContentLength)
+		}
+		if responseRange != "" {
+			w.Header().Set("Range", responseRange)
+		}
+		w.WriteHeader(responseStatus)
+	}))
+	defer server.Close()
+
+	uploaded, complete, err := queryResumableUpload(context.Background(), server.Client(), server.URL, 1_048_576)
+	if err != nil || complete || uploaded != 524_288 {
+		t.Fatalf("partial query = %d, complete=%t, err=%v", uploaded, complete, err)
+	}
+	responseStatus, responseRange = http.StatusOK, ""
+	uploaded, complete, err = queryResumableUpload(context.Background(), server.Client(), server.URL, 1_048_576)
+	if err != nil || !complete || uploaded != 1_048_576 {
+		t.Fatalf("complete query = %d, complete=%t, err=%v", uploaded, complete, err)
+	}
+}
+
+func TestParseCommittedRangeRejectsInvalidOrOversizedRanges(t *testing.T) {
+	for _, value := range []string{"bytes=1-2", "bytes=0-nope", "bytes=0-10"} {
+		if _, err := parseCommittedRange(value, 10); err == nil {
+			t.Fatalf("parseCommittedRange(%q) error = nil", value)
+		}
+	}
+	if uploaded, err := parseCommittedRange("", 10); err != nil || uploaded != 0 {
+		t.Fatalf("empty Range = %d, %v", uploaded, err)
 	}
 }
 

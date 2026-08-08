@@ -146,6 +146,17 @@ func TestLocalUploadRejectsMoreThanDeclaredSize(t *testing.T) {
 	if _, err := service.Write(ctx, session.ID, strings.NewReader("data plus ignored tail")); err == nil || !strings.Contains(err.Error(), "does not match") {
 		t.Fatalf("Write() error = %v", err)
 	}
+	status, err := service.Find(ctx, session.ID)
+	if err != nil || status.UploadedSize != 0 || status.Status == StatusUploaded {
+		t.Fatalf("status after oversized body = %#v, %v", status, err)
+	}
+	if _, err := service.Complete(ctx, session.ID); !errors.Is(err, ErrInvalidSession) {
+		t.Fatalf("Complete() error = %v, want ErrInvalidSession", err)
+	}
+	if reader, err := objects.NewReader(ctx, "short.txt"); err == nil {
+		_ = reader.Close()
+		t.Fatal("oversized upload published final object")
+	}
 	listed, err := objects.List(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -189,6 +200,13 @@ func TestLocalOversizedOverwritePreservesExistingFinalObject(t *testing.T) {
 	if _, err := service.Write(ctx, overwrite.ID, strings.NewReader("unsafe extra bytes")); err == nil {
 		t.Fatal("oversized overwrite error = nil")
 	}
+	status, err := service.Find(ctx, overwrite.ID)
+	if err != nil || status.UploadedSize != 0 || status.Status == StatusUploaded {
+		t.Fatalf("overwrite status after oversized body = %#v, %v", status, err)
+	}
+	if _, err := service.Complete(ctx, overwrite.ID); !errors.Is(err, ErrInvalidSession) {
+		t.Fatalf("Complete() error = %v, want ErrInvalidSession", err)
+	}
 	reader, err := objects.NewReader(ctx, "report.txt")
 	if err != nil {
 		t.Fatal(err)
@@ -200,6 +218,130 @@ func TestLocalOversizedOverwritePreservesExistingFinalObject(t *testing.T) {
 	}
 	if string(content) != "safe" {
 		t.Fatalf("final content = %q, want original", content)
+	}
+}
+
+func TestOversizedResumedChunkRollsBackOnlyCurrentChunk(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store, err := db.NewTreeLocal(filepath.Join(root, "metadata"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	objects, err := blob.NewLocal(filepath.Join(root, "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewWithBlob(store, objects)
+	session, err := service.Create(ctx, CreateInput{LogicPath: "resume-oversized.bin", Size: 6})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.WriteChunk(ctx, session.ID, 0, 2, 6, strings.NewReader("abc")); err != nil {
+		t.Fatal(err)
+	}
+	failed, err := service.WriteChunk(ctx, session.ID, 3, 5, 6, strings.NewReader("def-extra"))
+	if err == nil || failed.UploadedSize != 3 {
+		t.Fatalf("oversized resumed chunk = %#v, %v", failed, err)
+	}
+	status, err := service.Find(ctx, session.ID)
+	if err != nil || status.UploadedSize != 3 || status.Status == StatusUploaded {
+		t.Fatalf("status after rollback = %#v, %v", status, err)
+	}
+	if _, err := service.Complete(ctx, session.ID); !errors.Is(err, ErrInvalidSession) {
+		t.Fatalf("Complete() error = %v, want ErrInvalidSession", err)
+	}
+	resumed, err := service.WriteChunk(ctx, session.ID, 3, 5, 6, strings.NewReader("def"))
+	if err != nil || resumed.Status != StatusUploaded {
+		t.Fatalf("resume after rollback = %#v, %v", resumed, err)
+	}
+}
+
+func TestExpiredSessionReportsStatusAndRejectsWriteOrComplete(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store, err := db.NewTreeLocal(filepath.Join(root, "_vfs-link"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	objects, err := blob.NewLocal(filepath.Join(root, "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewWithBlob(store, objects, WithTTL(time.Minute))
+	createdAt := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return createdAt }
+	session, err := service.Create(ctx, CreateInput{LogicPath: "expired.txt", Size: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.now = func() time.Time { return createdAt.Add(2 * time.Minute) }
+
+	expired, err := service.Find(ctx, session.ID)
+	if err != nil || expired.Status != StatusExpired || expired.Error != ErrExpired.Error() {
+		t.Fatalf("expired session = %#v, %v", expired, err)
+	}
+	if _, err := service.WriteChunk(ctx, session.ID, 0, 3, 4, strings.NewReader("data")); !errors.Is(err, ErrExpired) {
+		t.Fatalf("WriteChunk() error = %v, want ErrExpired", err)
+	}
+	if _, err := service.Complete(ctx, session.ID); !errors.Is(err, ErrExpired) {
+		t.Fatalf("Complete() error = %v, want ErrExpired", err)
+	}
+}
+
+type chunkReadError struct {
+	content string
+	read    bool
+}
+
+func (r *chunkReadError) Read(destination []byte) (int, error) {
+	if r.read {
+		return 0, errors.New("connection interrupted")
+	}
+	r.read = true
+	return copy(destination, r.content), nil
+}
+
+func TestInterruptedLocalChunkKeepsCommittedOffsetForResume(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store, err := db.NewTreeLocal(filepath.Join(root, "metadata"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	objects, err := blob.NewLocal(filepath.Join(root, "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewWithBlob(store, objects)
+	session, err := service.Create(ctx, CreateInput{LogicPath: "resume.bin", Size: 6})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	partial, err := service.WriteChunk(ctx, session.ID, 0, 5, 6, &chunkReadError{content: "ab"})
+	if err == nil || partial.UploadedSize != 2 {
+		t.Fatalf("interrupted chunk = %#v, %v", partial, err)
+	}
+	status, err := service.Find(ctx, session.ID)
+	if err != nil || status.UploadedSize != 2 {
+		t.Fatalf("status after interruption = %#v, %v", status, err)
+	}
+	resumed, err := service.WriteChunk(ctx, session.ID, 2, 5, 6, strings.NewReader("cdef"))
+	if err != nil || resumed.Status != StatusUploaded || resumed.UploadedSize != 6 {
+		t.Fatalf("resumed chunk = %#v, %v", resumed, err)
 	}
 }
 
@@ -245,12 +387,20 @@ func (s *completeStorage) Delete(context.Context, string) error {
 	return nil
 }
 func (*completeStorage) Cancel(context.Context, Session) error { panic("unused") }
+func (*completeStorage) WriteChunk(context.Context, Session, int64, io.Reader) (int64, error) {
+	panic("unused")
+}
+func (*completeStorage) RollbackChunk(context.Context, Session, int64) error { panic("unused") }
+func (*completeStorage) Offset(_ context.Context, session Session) (int64, bool, error) {
+	return session.UploadedSize, session.UploadedSize == session.Size, nil
+}
+func (*completeStorage) Finalize(context.Context, Session) (int64, error) { return 4, nil }
 
 func TestAlignedOverwriteCompleteRetriesMetadataWithoutDeletingFinalObject(t *testing.T) {
 	key := "docs/report.txt"
 	repository := &singleSessionRepository{session: Session{
 		ID: "upload", LogicPath: "docs/report.txt", PhysicalHash: key, Size: 4,
-		Status: StatusPending, ExpectedPhysicalHash: &key, ExpiresAt: time.Now().Add(time.Hour),
+		Status: StatusUploaded, UploadedSize: 4, ExpectedPhysicalHash: &key, ExpiresAt: time.Now().Add(time.Hour),
 	}}
 	publisher := &retryPublisher{}
 	storage := &completeStorage{}

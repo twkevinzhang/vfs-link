@@ -600,7 +600,8 @@ func withCORS(next http.Handler, allowed map[string]struct{}) http.Handler {
 				w.Header().Add("Vary", "Origin")
 			}
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Authorization")
+			w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Range, Authorization")
+			w.Header().Set("Access-Control-Expose-Headers", "Range")
 		}
 		if r.Method == http.MethodOptions && origin != "" && (wildcard || explicit) {
 			w.WriteHeader(http.StatusNoContent)

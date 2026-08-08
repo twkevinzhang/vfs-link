@@ -3,7 +3,15 @@ export type UploadSession = {
   logicPath: string;
   size: number;
   contentType: string;
-  status: 'pending' | 'uploading' | 'uploaded' | 'complete' | 'failed';
+  status:
+    | 'pending'
+    | 'uploading'
+    | 'uploaded'
+    | 'complete'
+    | 'failed'
+    | 'expired';
+  /** Bytes durably committed by the storage backend. */
+  uploadedSize: number;
   error?: string;
   method: 'PUT';
   uploadUrl: string;

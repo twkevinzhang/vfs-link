@@ -1,5 +1,7 @@
 export type UploadCandidate = {
   file: File;
+  /** A durable Chromium file handle, when the selection API exposes one. */
+  fileHandle?: FileSystemFileHandle;
   relativePath: string;
   selectionRoot: string;
   selectionRootKind: 'file' | 'directory';
@@ -30,6 +32,74 @@ export function filesToUploadCandidates(
       selectionRootKind: directorySelection ? 'directory' : 'file',
     };
   });
+}
+
+type ModernDataTransferItem = DataTransferItem & {
+  getAsFileSystemHandle?: () => Promise<FileSystemHandle | null>;
+};
+
+type ModernWindow = Window & {
+  showOpenFilePicker?: (options?: {
+    multiple?: boolean;
+  }) => Promise<FileSystemFileHandle[]>;
+  showDirectoryPicker?: () => Promise<FileSystemDirectoryHandle>;
+};
+
+async function walkHandle(
+  handle: FileSystemHandle,
+  parentPath: string,
+  selectionRoot: string
+): Promise<UploadCandidate[]> {
+  if (handle.kind === 'file') {
+    const fileHandle = handle as FileSystemFileHandle;
+    const file = await fileHandle.getFile();
+    return [
+      {
+        file,
+        fileHandle,
+        relativePath: cleanRelativePath(`${parentPath}/${file.name}`),
+        selectionRoot,
+        selectionRootKind: parentPath ? 'directory' : 'file',
+      },
+    ];
+  }
+
+  const directory = handle as FileSystemDirectoryHandle & {
+    values: () => AsyncIterableIterator<FileSystemHandle>;
+  };
+  const directoryPath = cleanRelativePath(`${parentPath}/${directory.name}`);
+  const nested: UploadCandidate[][] = [];
+  for await (const child of directory.values()) {
+    nested.push(await walkHandle(child, directoryPath, selectionRoot));
+  }
+  return nested.flat();
+}
+
+/** Uses durable handles in Chromium, and lets callers fall back to file inputs. */
+export async function chooseFilesWithHandles() {
+  const picker = (window as ModernWindow).showOpenFilePicker;
+  if (!picker) return undefined;
+  const handles = await picker({ multiple: true });
+  return Promise.all(
+    handles.map(async (fileHandle) => {
+      const file = await fileHandle.getFile();
+      return {
+        file,
+        fileHandle,
+        relativePath: cleanRelativePath(file.name),
+        selectionRoot: file.name,
+        selectionRootKind: 'file' as const,
+      };
+    })
+  );
+}
+
+/** Uses a durable directory tree handle when the browser supports it. */
+export async function chooseDirectoryWithHandles() {
+  const picker = (window as ModernWindow).showDirectoryPicker;
+  if (!picker) return undefined;
+  const handle = await picker();
+  return walkHandle(handle, '', handle.name);
 }
 
 function readFileEntry(entry: FileSystemFileEntry) {
@@ -83,6 +153,21 @@ async function walkEntry(
 export async function collectDroppedFiles(
   dataTransfer: DataTransfer
 ): Promise<UploadCandidate[]> {
+  const modernHandles = await Promise.all(
+    Array.from(dataTransfer.items).map((item) =>
+      (item as ModernDataTransferItem).getAsFileSystemHandle?.()
+    )
+  );
+  const availableHandles = modernHandles.filter(
+    (handle): handle is FileSystemHandle => Boolean(handle)
+  );
+  if (availableHandles.length > 0) {
+    const nested = await Promise.all(
+      availableHandles.map((handle) => walkHandle(handle, '', handle.name))
+    );
+    return nested.flat();
+  }
+
   const entries = Array.from(dataTransfer.items)
     .map((item) => item.webkitGetAsEntry?.())
     .filter((entry): entry is FileSystemEntry => Boolean(entry));

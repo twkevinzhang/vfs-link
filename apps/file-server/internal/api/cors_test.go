@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -16,6 +17,12 @@ func TestWithCORSRestrictsOrigins(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusNoContent || response.Header().Get("Access-Control-Allow-Origin") != "https://files.example" {
 		t.Fatalf("allowed origin response = %d, %q", response.Code, response.Header().Get("Access-Control-Allow-Origin"))
+	}
+	if got := response.Header().Get("Access-Control-Allow-Headers"); !strings.Contains(got, "Content-Range") {
+		t.Fatalf("allowed headers = %q", got)
+	}
+	if got := response.Header().Get("Access-Control-Expose-Headers"); got != "Range" {
+		t.Fatalf("exposed headers = %q", got)
 	}
 
 	request = httptest.NewRequest(http.MethodGet, "http://api.example/api/files", nil)

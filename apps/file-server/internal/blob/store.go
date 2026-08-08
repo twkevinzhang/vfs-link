@@ -48,8 +48,21 @@ type GCSObjectCopier interface {
 type DirectUploadStore interface {
 	Store
 	StartResumableUpload(ctx context.Context, objectName, contentType, origin string, size, ifGenerationMatch int64) (string, map[string]string, error)
+	QueryResumableUpload(ctx context.Context, sessionURL string, size int64) (uploadedSize int64, complete bool, err error)
 	CancelResumableUpload(ctx context.Context, sessionURL string) error
 	StatObject(ctx context.Context, objectName string) (ObjectInfo, error)
+}
+
+// LocalResumableUploadStore keeps browser chunks in a session-specific staging
+// file. CompleteUpload atomically publishes that staging file to the final
+// object name; CancelUpload only removes the staging file.
+type LocalResumableUploadStore interface {
+	Store
+	WriteUploadChunk(ctx context.Context, uploadID string, offset int64, source io.Reader) (uploadedSize int64, err error)
+	TruncateUpload(ctx context.Context, uploadID string, offset int64) error
+	UploadOffset(ctx context.Context, uploadID string) (uploadedSize int64, exists bool, err error)
+	CompleteUpload(ctx context.Context, uploadID, objectName string, size int64, existingPhysicalHash *string) error
+	CancelUpload(ctx context.Context, uploadID string) error
 }
 
 // GenerationMatchWriterStore supports a streaming write that is committed
@@ -69,6 +82,7 @@ type AbortableWriter interface {
 }
 
 var ErrObjectCollision = errors.New("physical object key already exists")
+var ErrUploadOffsetConflict = errors.New("upload offset does not match committed size")
 
 // NewUploadWriter opens a final-key writer with collision/overwrite safety.
 // GCS uses a generation precondition. The local backend performs an existence

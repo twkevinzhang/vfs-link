@@ -8,6 +8,7 @@
     "build": "tsc --noEmit && (react-router build || node scripts/generate-spa-fallback.mjs)",
     "typecheck": "tsc --noEmit",
     "lint": "eslint \"app/**/*.{ts,tsx}\" --max-warnings=0",
+    "test": "vitest run app",
     "format": "prettier --write \"app/**/*.{ts,tsx,css,json,md}\" \"*.{json,md,js,cjs,ts}\""
   },
   "nx": {

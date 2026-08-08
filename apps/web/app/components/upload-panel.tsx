@@ -19,6 +19,8 @@ import {
 import { buildArchivePlans, type ArchiveOptions } from '../lib/archive-plan';
 import { firstDecodableThumbnail } from '../lib/archive-thumbnail';
 import {
+  chooseDirectoryWithHandles,
+  chooseFilesWithHandles,
   collectDroppedFiles,
   filesToUploadCandidates,
   type UploadCandidate,
@@ -227,7 +229,22 @@ export function UploadDialog({
                 'grid w-full place-items-center gap-2 rounded-lg border border-dashed border-border bg-muted/25 px-4 py-6 text-center transition-colors',
                 dragging && 'border-accent bg-accent/10'
               )}
-              onClick={() => inputRef.current?.click()}
+              onClick={() => {
+                void chooseFilesWithHandles()
+                  .then((selected) => {
+                    if (selected) addCandidates(selected);
+                    else inputRef.current?.click();
+                  })
+                  .catch((error: unknown) => {
+                    if ((error as { name?: string }).name !== 'AbortError') {
+                      setSelectionError(
+                        error instanceof Error
+                          ? error.message
+                          : '無法讀取檔案。'
+                      );
+                    }
+                  });
+              }}
               onDragEnter={(event) => {
                 event.preventDefault();
                 setDragging(true);
@@ -284,7 +301,22 @@ export function UploadDialog({
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={() => folderInputRef.current?.click()}
+                onClick={() => {
+                  void chooseDirectoryWithHandles()
+                    .then((selected) => {
+                      if (selected) addCandidates(selected);
+                      else folderInputRef.current?.click();
+                    })
+                    .catch((error: unknown) => {
+                      if ((error as { name?: string }).name !== 'AbortError') {
+                        setSelectionError(
+                          error instanceof Error
+                            ? error.message
+                            : '無法讀取資料夾。'
+                        );
+                      }
+                    });
+                }}
               >
                 <FolderOpen className="h-4 w-4" /> 選擇資料夾
               </Button>

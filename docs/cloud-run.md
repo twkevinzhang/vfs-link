@@ -53,9 +53,12 @@ instances can remain zero, so the service still scales to zero; while an
 instance exists, instance-based CPU and memory billing applies.
 
 Configure the primary bucket CORS policy to allow `PUT` from the exact Cloud Run
-origin. Do not use `*` in production. GCS-to-GCS shares use Cloud Storage's
-server-side copy operation. If Telegram credentials are absent, the copy can
-complete but notification status becomes `notification_failed`.
+origin, allow the `Content-Type` and `Content-Range` request headers, and expose
+the `Range` response header. Resumable clients need `Range` to reconcile the
+storage-confirmed offset after a pause or ambiguous response. Do not use `*` in
+production. GCS-to-GCS shares use Cloud Storage's server-side copy operation. If
+Telegram credentials are absent, the copy can complete but notification status
+becomes `notification_failed`.
 
 For a v4 cutover, migrate and validate `_vfs-link-v4` first, then deploy with
 `METADATA_PREFIX=_vfs-link-v4` and `METADATA_MUTATION_MODE=scoped`. Do not

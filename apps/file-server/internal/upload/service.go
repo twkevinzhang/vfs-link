@@ -20,6 +20,7 @@ const (
 	StatusUploaded  = "uploaded"
 	StatusComplete  = "complete"
 	StatusFailed    = "failed"
+	StatusExpired   = "expired"
 	defaultTTL      = 24 * time.Hour
 	DefaultMaxBytes = int64(50) * 1024 * 1024 * 1024
 )
@@ -30,6 +31,8 @@ var (
 	ErrConflict                = errors.New("file changed while upload was in progress")
 	ErrInvalidSession          = errors.New("upload session is not ready")
 	ErrCancellationUnavailable = errors.New("upload session cannot be safely cancelled")
+	ErrOffsetConflict          = errors.New("upload offset does not match committed size")
+	ErrExpired                 = errors.New("upload session expired")
 )
 
 type Session struct {
@@ -94,6 +97,14 @@ type Storage interface {
 	Stat(context.Context, string) (int64, error)
 	Delete(context.Context, string) error
 	Cancel(context.Context, Session) error
+}
+
+type resumableStorage interface {
+	Storage
+	WriteChunk(context.Context, Session, int64, io.Reader) (int64, error)
+	RollbackChunk(context.Context, Session, int64) error
+	Offset(context.Context, Session) (uploadedSize int64, complete bool, err error)
+	Finalize(context.Context, Session) (int64, error)
 }
 
 type Service struct {
@@ -201,6 +212,33 @@ func (s *Service) Find(ctx context.Context, id string) (Session, error) {
 	if !found {
 		return Session{}, ErrNotFound
 	}
+	if session.Status != StatusComplete && session.Status != StatusExpired && s.now().After(session.ExpiresAt) {
+		session.Status = StatusExpired
+		session.Error = ErrExpired.Error()
+		session.UpdatedAt = s.now().UTC()
+		if err := s.repository.UpdateUpload(ctx, session); err != nil {
+			return Session{}, err
+		}
+		return session, nil
+	}
+	if storage, ok := s.storage.(resumableStorage); ok && session.Status != StatusUploaded && session.Status != StatusComplete && session.Status != StatusExpired {
+		uploadedSize, complete, err := storage.Offset(ctx, session)
+		if err != nil {
+			return Session{}, fmt.Errorf("query upload offset: %w", err)
+		}
+		if uploadedSize != session.UploadedSize || complete || (uploadedSize == session.Size && session.Status != StatusUploaded) {
+			session.UploadedSize = uploadedSize
+			if complete {
+				session.Status = StatusUploaded
+			} else if uploadedSize > 0 {
+				session.Status = StatusUploading
+			}
+			session.UpdatedAt = s.now().UTC()
+			if err := s.repository.UpdateUpload(ctx, session); err != nil {
+				return Session{}, err
+			}
+		}
+	}
 	return session, nil
 }
 
@@ -209,11 +247,26 @@ func (s *Service) Write(ctx context.Context, id string, body io.Reader) (Session
 	if err != nil {
 		return Session{}, err
 	}
-	if session.Status != StatusPending && session.Status != StatusFailed {
+	end := session.Size - 1
+	return s.WriteChunk(ctx, id, 0, end, session.Size, body)
+}
+
+func (s *Service) WriteChunk(ctx context.Context, id string, start, end, total int64, body io.Reader) (Session, error) {
+	session, err := s.Find(ctx, id)
+	if err != nil {
+		return Session{}, err
+	}
+	if session.Status == StatusExpired {
+		return session, ErrExpired
+	}
+	if session.Status != StatusPending && session.Status != StatusUploading && session.Status != StatusFailed {
 		return Session{}, ErrInvalidSession
 	}
-	if s.now().After(session.ExpiresAt) {
-		return Session{}, errors.New("upload session expired")
+	if total != session.Size || start < 0 || (total == 0 && (start != 0 || end != -1)) || (total > 0 && (end < start || end >= total)) {
+		return session, errors.New("invalid Content-Range for upload session")
+	}
+	if start != session.UploadedSize {
+		return session, fmt.Errorf("%w: got %d, want %d", ErrOffsetConflict, start, session.UploadedSize)
 	}
 	session.Status = StatusUploading
 	session.Error = ""
@@ -221,19 +274,37 @@ func (s *Service) Write(ctx context.Context, id string, body io.Reader) (Session
 	if err := s.repository.UpdateUpload(ctx, session); err != nil {
 		return Session{}, err
 	}
-	// Read at most one byte beyond the declared size. This detects oversized
-	// local uploads without allowing an unbounded request body to fill storage.
-	written, writeErr := s.storage.Write(ctx, session, io.LimitReader(body, session.Size+1))
-	session.UploadedSize = written
+	storage, ok := s.storage.(resumableStorage)
+	if !ok {
+		return Session{}, errors.New("storage does not support resumable uploads")
+	}
+	expectedBytes := end - start + 1
+	committed, writeErr := storage.WriteChunk(ctx, session, start, io.LimitReader(body, expectedBytes))
+	if writeErr == nil && committed == end+1 {
+		var extra [1]byte
+		if count, readErr := body.Read(extra[:]); count > 0 {
+			writeErr = errors.New("request body size does not match Content-Range")
+			if rollbackErr := storage.RollbackChunk(ctx, session, start); rollbackErr != nil {
+				writeErr = errors.Join(writeErr, fmt.Errorf("rollback oversized chunk: %w", rollbackErr))
+			} else {
+				committed = start
+			}
+		} else if readErr != nil && !errors.Is(readErr, io.EOF) {
+			writeErr = readErr
+		}
+	}
+	session.UploadedSize = committed
 	if writeErr != nil {
-		session.Status = StatusFailed
+		session.Status = StatusUploading
 		session.Error = writeErr.Error()
-	} else if written != session.Size {
-		writeErr = fmt.Errorf("uploaded size %d does not match declared size %d", written, session.Size)
-		session.Status = StatusFailed
+	} else if committed != end+1 {
+		writeErr = fmt.Errorf("committed size %d does not match chunk end %d", committed, end)
+		session.Status = StatusUploading
 		session.Error = writeErr.Error()
-	} else {
+	} else if committed == session.Size {
 		session.Status = StatusUploaded
+	} else {
+		session.Status = StatusUploading
 	}
 	session.UpdatedAt = s.now().UTC()
 	if err := s.repository.UpdateUpload(ctx, session); err != nil && writeErr == nil {
@@ -250,10 +321,17 @@ func (s *Service) Complete(ctx context.Context, id string) (Session, error) {
 	if session.Status == StatusComplete {
 		return session, nil
 	}
-	if session.Status != StatusPending && session.Status != StatusUploaded {
+	if session.Status == StatusExpired {
+		return session, ErrExpired
+	}
+	if session.Status != StatusUploaded || session.UploadedSize != session.Size {
 		return Session{}, ErrInvalidSession
 	}
-	size, err := s.storage.Stat(ctx, session.PhysicalHash)
+	storage, ok := s.storage.(resumableStorage)
+	if !ok {
+		return Session{}, errors.New("storage does not support resumable uploads")
+	}
+	size, err := storage.Finalize(ctx, session)
 	if err != nil {
 		return Session{}, fmt.Errorf("verify upload: %w", err)
 	}

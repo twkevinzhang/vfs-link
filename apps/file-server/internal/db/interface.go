@@ -120,9 +120,9 @@ type TrashPath struct {
 }
 
 // UploadRecord persists an upload session independently of a Cloud Run
-// instance. UploadURL is an opaque GCS resumable-session capability and must
-// only be returned by the create-session response, never by status responses
-// or logs.
+// instance. UploadURL is an opaque GCS resumable-session capability. It may be
+// returned by the authenticated upload status endpoint so a same-origin client
+// can resume after reload, but it must never be logged.
 type UploadRecord struct {
 	ID                   string    `json:"id"`
 	LogicPath            string    `json:"logicPath"`

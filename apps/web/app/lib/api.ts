@@ -25,6 +25,13 @@ const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(
   ''
 );
 
+export class UploadHttpError extends Error {
+  constructor(message: string, public readonly status?: number) {
+    super(message);
+    this.name = 'UploadHttpError';
+  }
+}
+
 async function requestJson<T>(path: string): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     headers: { Accept: 'application/json' },
@@ -44,7 +51,7 @@ async function requestJson<T>(path: string): Promise<T> {
     } catch {
       message = fallback;
     }
-    throw new Error(message);
+    throw new UploadHttpError(message, response.status);
   }
 
   return response.json() as Promise<T>;
@@ -74,7 +81,7 @@ async function postJson<T>(
     } catch {
       message = fallback;
     }
-    throw new Error(message);
+    throw new UploadHttpError(message, response.status);
   }
 
   return response.json() as Promise<T>;
@@ -265,6 +272,23 @@ export function startShare(id: string) {
 
 export function createUpload(input: CreateUploadInput) {
   return postJson<UploadSession>('/api/uploads', input);
+}
+
+export async function getUploadSession(
+  session: Pick<UploadSession, 'statusUrl'>,
+  signal?: AbortSignal
+) {
+  const response = await fetch(apiUrl(session.statusUrl), {
+    headers: { Accept: 'application/json' },
+    signal,
+  });
+  if (!response.ok) {
+    throw new UploadHttpError(
+      `Upload status failed: ${response.status} ${response.statusText}`,
+      response.status
+    );
+  }
+  return response.json() as Promise<UploadSession>;
 }
 
 export function completeUpload(session: UploadSession, signal?: AbortSignal) {
@@ -561,25 +585,38 @@ export function startDriftScan() {
   return postJson<DriftScan>('/api/drift/scans', {});
 }
 
-// Passing the File directly to XMLHttpRequest keeps large files out of JS
-// memory while still exposing native upload progress events.
-export function putUpload(
+export type UploadChunkResult = {
+  uploadedSize: number;
+  status: number;
+};
+
+export function committedOffsetFromRange(value: string | null) {
+  if (!value) return undefined;
+  const match = /bytes\s*=\s*0-(\d+)/i.exec(value);
+  return match ? Number(match[1]) + 1 : undefined;
+}
+
+// Passing an 8 MiB Blob slice directly to XMLHttpRequest keeps memory bounded
+// while preserving native upload progress events and GCS 308 Range headers.
+export function putUploadChunk(
   session: UploadSession,
-  file: File,
+  chunk: Blob,
+  start: number,
+  total: number,
   onProgress: (uploaded: number, total: number) => void,
   signal?: AbortSignal
 ) {
-  return new Promise<void>((resolve, reject) => {
+  return new Promise<UploadChunkResult>((resolve, reject) => {
     const request = new XMLHttpRequest();
     let settled = false;
 
     const abortRequest = () => request.abort();
     const cleanup = () => signal?.removeEventListener('abort', abortRequest);
-    const succeed = () => {
+    const succeed = (result: UploadChunkResult) => {
       if (settled) return;
       settled = true;
       cleanup();
-      resolve();
+      resolve(result);
     };
     const fail = (error: Error) => {
       if (settled) return;
@@ -588,7 +625,7 @@ export function putUpload(
       reject(error);
     };
     if (signal?.aborted) {
-      fail(new Error('Upload cancelled'));
+      fail(new UploadHttpError('Upload paused'));
       return;
     }
 
@@ -596,34 +633,52 @@ export function putUpload(
     for (const [name, value] of Object.entries(session.headers)) {
       request.setRequestHeader(name, value);
     }
-    if (!session.headers['Content-Type'] && file.type) {
-      request.setRequestHeader('Content-Type', file.type);
+    if (!session.headers['Content-Type'] && chunk.type) {
+      request.setRequestHeader('Content-Type', chunk.type);
     }
+    const end = start + chunk.size - 1;
+    request.setRequestHeader(
+      'Content-Range',
+      total === 0 ? 'bytes */0' : `bytes ${start}-${end}/${total}`
+    );
     request.upload.addEventListener('progress', (event) => {
       if (event.lengthComputable) {
-        onProgress(event.loaded, event.total);
+        onProgress(start + event.loaded, total);
       } else {
-        onProgress(event.loaded, file.size);
+        onProgress(start + event.loaded, total);
       }
     });
     request.addEventListener('load', () => {
-      if (request.status >= 200 && request.status < 300) {
-        succeed();
+      if (
+        (request.status >= 200 && request.status < 300) ||
+        request.status === 308
+      ) {
+        const uploadedSize =
+          committedOffsetFromRange(request.getResponseHeader('Range')) ??
+          (total === 0 ? 0 : start + chunk.size);
+        succeed({ uploadedSize, status: request.status });
         return;
       }
-      fail(new Error(`Upload failed: ${request.status} ${request.statusText}`));
+      fail(
+        new UploadHttpError(
+          `Upload failed: ${request.status} ${request.statusText}`,
+          request.status
+        )
+      );
     });
     request.addEventListener('error', () =>
-      fail(new Error('Upload connection failed'))
+      fail(new UploadHttpError('Upload connection failed'))
     );
     request.addEventListener('abort', () =>
-      fail(new Error('Upload cancelled'))
+      fail(new UploadHttpError('Upload paused'))
     );
     signal?.addEventListener('abort', abortRequest, { once: true });
     try {
-      request.send(file);
+      request.send(chunk);
     } catch (error) {
-      fail(error instanceof Error ? error : new Error('Upload failed'));
+      fail(
+        error instanceof Error ? error : new UploadHttpError('Upload failed')
+      );
     }
   });
 }

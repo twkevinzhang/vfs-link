@@ -2,6 +2,7 @@ package blob
 
 import (
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -56,6 +57,58 @@ func TestLocalStoreNewRangeReader(t *testing.T) {
 
 	if _, err := store.NewRangeReader(context.Background(), "alphabet.txt", -1, 1); err == nil || !strings.Contains(err.Error(), "offset") {
 		t.Fatalf("negative offset error = %v, want validation error", err)
+	}
+}
+
+func TestLocalResumableUploadChunksOffsetCompleteAndCancel(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	committed, err := store.WriteUploadChunk(ctx, "resume-session", 0, strings.NewReader("abc"))
+	if err != nil || committed != 3 {
+		t.Fatalf("first chunk = %d, %v", committed, err)
+	}
+	offset, exists, err := store.UploadOffset(ctx, "resume-session")
+	if err != nil || !exists || offset != 3 {
+		t.Fatalf("offset = %d, exists=%t, err=%v", offset, exists, err)
+	}
+	committed, err = store.WriteUploadChunk(ctx, "resume-session", 2, strings.NewReader("wrong"))
+	if !errors.Is(err, ErrUploadOffsetConflict) || committed != 3 {
+		t.Fatalf("conflicting chunk = %d, %v", committed, err)
+	}
+	committed, err = store.WriteUploadChunk(ctx, "resume-session", 3, strings.NewReader("def"))
+	if err != nil || committed != 6 {
+		t.Fatalf("resumed chunk = %d, %v", committed, err)
+	}
+	if err := store.CompleteUpload(ctx, "resume-session", "docs/result.txt", 6, nil); err != nil {
+		t.Fatal(err)
+	}
+	// A retry after the atomic rename must be idempotent.
+	if err := store.CompleteUpload(ctx, "resume-session", "docs/result.txt", 6, nil); err != nil {
+		t.Fatalf("idempotent complete: %v", err)
+	}
+	reader, err := store.NewReader(ctx, "docs/result.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := io.ReadAll(reader)
+	_ = reader.Close()
+	if err != nil || string(content) != "abcdef" {
+		t.Fatalf("final content = %q, %v", content, err)
+	}
+
+	if _, err := store.WriteUploadChunk(ctx, "cancel-session", 0, strings.NewReader("partial")); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CancelUpload(ctx, "cancel-session"); err != nil {
+		t.Fatal(err)
+	}
+	offset, exists, err = store.UploadOffset(ctx, "cancel-session")
+	if err != nil || exists || offset != 0 {
+		t.Fatalf("offset after cancel = %d, exists=%t, err=%v", offset, exists, err)
 	}
 }
 

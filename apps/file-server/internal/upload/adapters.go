@@ -134,6 +134,42 @@ func (s blobStorage) Write(ctx context.Context, session Session, source io.Reade
 	return written, nil
 }
 
+func (s blobStorage) WriteChunk(ctx context.Context, session Session, offset int64, source io.Reader) (int64, error) {
+	resumable, ok := s.objects.(blob.LocalResumableUploadStore)
+	if !ok {
+		return 0, errors.New("local object store does not support resumable uploads")
+	}
+	return resumable.WriteUploadChunk(ctx, session.ID, offset, source)
+}
+
+func (s blobStorage) RollbackChunk(ctx context.Context, session Session, offset int64) error {
+	resumable, ok := s.objects.(blob.LocalResumableUploadStore)
+	if !ok {
+		return errors.New("local object store does not support resumable uploads")
+	}
+	return resumable.TruncateUpload(ctx, session.ID, offset)
+}
+
+func (s blobStorage) Offset(ctx context.Context, session Session) (int64, bool, error) {
+	resumable, ok := s.objects.(blob.LocalResumableUploadStore)
+	if !ok {
+		return 0, false, errors.New("local object store does not support resumable uploads")
+	}
+	offset, exists, err := resumable.UploadOffset(ctx, session.ID)
+	return offset, exists && offset == session.Size, err
+}
+
+func (s blobStorage) Finalize(ctx context.Context, session Session) (int64, error) {
+	resumable, ok := s.objects.(blob.LocalResumableUploadStore)
+	if !ok {
+		return 0, errors.New("local object store does not support resumable uploads")
+	}
+	if err := resumable.CompleteUpload(ctx, session.ID, session.PhysicalHash, session.Size, session.ExpectedPhysicalHash); err != nil {
+		return 0, err
+	}
+	return session.Size, nil
+}
+
 func (s blobStorage) Stat(ctx context.Context, physicalHash string) (int64, error) {
 	objects, err := s.objects.List(ctx)
 	if err != nil {
@@ -152,12 +188,8 @@ func (s blobStorage) Delete(ctx context.Context, physicalHash string) error {
 }
 
 func (s blobStorage) Cancel(ctx context.Context, session Session) error {
-	// A local successful write has already atomically renamed into place. A new
-	// object can be removed safely; an overwrite cannot be rolled back without
-	// retaining the previous bytes, so never delete it as a cancellation side
-	// effect.
-	if session.Status == StatusUploaded && session.RequireAbsent {
-		return s.objects.Delete(ctx, session.PhysicalHash)
+	if resumable, ok := s.objects.(blob.LocalResumableUploadStore); ok {
+		return resumable.CancelUpload(ctx, session.ID)
 	}
 	return nil
 }
@@ -188,6 +220,25 @@ func (s gcsDirectStorage) Prepare(ctx context.Context, session Session) (Prepare
 
 func (s gcsDirectStorage) Write(context.Context, Session, io.Reader) (int64, error) {
 	return 0, errors.New("GCS direct uploads must use the resumable upload URL")
+}
+
+func (s gcsDirectStorage) WriteChunk(context.Context, Session, int64, io.Reader) (int64, error) {
+	return 0, errors.New("GCS direct uploads must use the resumable upload URL")
+}
+
+func (s gcsDirectStorage) RollbackChunk(context.Context, Session, int64) error {
+	return errors.New("GCS direct uploads must use the resumable upload URL")
+}
+
+func (s gcsDirectStorage) Offset(ctx context.Context, session Session) (int64, bool, error) {
+	if strings.TrimSpace(session.UploadURL) == "" {
+		return 0, false, ErrInvalidSession
+	}
+	return s.objects.QueryResumableUpload(ctx, session.UploadURL, session.Size)
+}
+
+func (s gcsDirectStorage) Finalize(ctx context.Context, session Session) (int64, error) {
+	return s.Stat(ctx, session.PhysicalHash)
 }
 
 func (s gcsDirectStorage) Stat(ctx context.Context, physicalHash string) (int64, error) {

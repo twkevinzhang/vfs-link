@@ -12,6 +12,7 @@ import {
   Grid2X2,
   List,
   LoaderCircle,
+  Pause,
   Pencil,
   Play,
   RefreshCcw,
@@ -1125,9 +1126,16 @@ export default function FileBrowserRoute() {
               Cancel all uploads?
             </AlertDialogTitle>
             <AlertDialogDescription className="text-sm text-muted-foreground">
-              {uploadQueue.summary.queued + uploadQueue.summary.uploading}{' '}
-              queued or uploading file
-              {uploadQueue.summary.queued + uploadQueue.summary.uploading === 1
+              {uploadQueue.summary.queued +
+                uploadQueue.summary.uploading +
+                uploadQueue.summary.retrying +
+                uploadQueue.summary.paused}{' '}
+              active or paused file
+              {uploadQueue.summary.queued +
+                uploadQueue.summary.uploading +
+                uploadQueue.summary.retrying +
+                uploadQueue.summary.paused ===
+              1
                 ? ''
                 : 's'}{' '}
               will be stopped and removed from this process list.
@@ -1160,7 +1168,18 @@ function UploadActivity({
 }: {
   queue: Pick<
     ReturnType<typeof useBackgroundUploadQueue>,
-    'items' | 'summary' | 'retry' | 'dismiss' | 'cancel'
+    | 'items'
+    | 'summary'
+    | 'retry'
+    | 'retryAll'
+    | 'dismiss'
+    | 'cancel'
+    | 'pause'
+    | 'resume'
+    | 'pauseAll'
+    | 'resumeAll'
+    | 'reconnect'
+    | 'globallyPaused'
   >;
   expanded: boolean;
   onExpandedChange: (expanded: boolean) => void;
@@ -1168,7 +1187,10 @@ function UploadActivity({
 }) {
   const { items, summary } = queue;
   const roundedProgress = Math.round(summary.progress);
-  const pendingCount = summary.queued + summary.uploading;
+  const pendingCount = summary.queued + summary.uploading + summary.retrying;
+  const retryableCount = items.filter(
+    (item) => item.state === 'failed' && item.retryEligible
+  ).length;
   const queueListId = 'background-upload-queue';
   const headline =
     summary.uploading > 0
@@ -1177,21 +1199,25 @@ function UploadActivity({
         }`
       : summary.queued > 0
       ? 'Preparing uploads'
+      : summary.paused > 0
+      ? 'Uploads paused'
       : summary.failed > 0
       ? 'Uploads need attention'
+      : summary.localMissing > 0
+      ? 'Local source needs attention'
       : 'Uploads complete';
 
   return (
     <section className="grid gap-3 p-3" aria-labelledby="upload-activity-title">
       <div className="grid gap-1.5">
-        <div className="flex min-w-0 items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <div className="flex min-w-0 items-center gap-2">
             {pendingCount > 0 ? (
               <LoaderCircle
                 aria-hidden="true"
                 className="h-4 w-4 shrink-0 animate-spin text-accent"
               />
-            ) : summary.failed > 0 ? (
+            ) : summary.failed > 0 || summary.localMissing > 0 ? (
               <AlertCircle
                 aria-hidden="true"
                 className="h-4 w-4 shrink-0 text-destructive"
@@ -1209,7 +1235,7 @@ function UploadActivity({
               {headline}
             </p>
           </div>
-          <div className="ml-auto flex shrink-0 items-center gap-1">
+          <div className="ml-auto flex flex-wrap items-center justify-end gap-1">
             <p className="text-right text-xs text-muted-foreground">
               <span className="sm:hidden">
                 {formatBytes(summary.uploadedBytes)} · {roundedProgress}%
@@ -1219,7 +1245,7 @@ function UploadActivity({
                 {formatBytes(summary.totalBytes)} · {roundedProgress}%
               </span>
             </p>
-            {pendingCount > 0 && (
+            {pendingCount + summary.paused > 0 && (
               <Button
                 variant="ghost"
                 size="sm"
@@ -1229,6 +1255,33 @@ function UploadActivity({
                 Cancel all
               </Button>
             )}
+            {(pendingCount > 0 || summary.paused > 0) && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 px-2"
+                onClick={
+                  queue.globallyPaused ? queue.resumeAll : queue.pauseAll
+                }
+              >
+                {queue.globallyPaused ? (
+                  <Play className="h-3.5 w-3.5" aria-hidden="true" />
+                ) : (
+                  <Pause className="h-3.5 w-3.5" aria-hidden="true" />
+                )}
+                {queue.globallyPaused ? 'Resume all' : 'Pause all'}
+              </Button>
+            )}
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 px-2"
+              disabled={retryableCount === 0}
+              onClick={queue.retryAll}
+            >
+              <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+              Retry all
+            </Button>
             <Button
               variant="ghost"
               size="icon"
@@ -1252,7 +1305,12 @@ function UploadActivity({
         {expanded && (
           <p className="text-xs text-muted-foreground" aria-live="polite">
             {summary.complete} complete · {summary.queued} queued
+            {summary.paused > 0 ? ` · ${summary.paused} paused` : ''}
+            {summary.retrying > 0 ? ` · ${summary.retrying} retrying` : ''}
             {summary.failed > 0 ? ` · ${summary.failed} failed` : ''}
+            {summary.localMissing > 0
+              ? ` · ${summary.localMissing} local source missing`
+              : ''}
           </p>
         )}
       </div>
@@ -1265,6 +1323,11 @@ function UploadActivity({
               item={item}
               onCancel={() => queue.cancel(item.key)}
               onRetry={() => queue.retry(item.key)}
+              onPause={() => queue.pause(item.key)}
+              onResume={() => queue.resume(item.key)}
+              onReconnect={(file, handle) =>
+                queue.reconnect(item.key, file, handle)
+              }
               onDismiss={() => queue.dismiss(item.key)}
             />
           ))}
@@ -1278,11 +1341,20 @@ function UploadActivityItem({
   item,
   onCancel,
   onRetry,
+  onPause,
+  onResume,
+  onReconnect,
   onDismiss,
 }: {
   item: UploadQueueItem;
   onCancel: () => void;
   onRetry: () => void;
+  onPause: () => void;
+  onResume: () => void;
+  onReconnect: (
+    file: File,
+    handle?: FileSystemFileHandle
+  ) => string | undefined;
   onDismiss: () => void;
 }) {
   const roundedProgress = Math.round(item.progress);
@@ -1291,24 +1363,30 @@ function UploadActivityItem({
       ? 'Queued'
       : item.state === 'uploading'
       ? `${roundedProgress}%`
+      : item.state === 'retrying'
+      ? `Retrying · attempt ${item.retryCount + 1}/6`
+      : item.state === 'paused'
+      ? 'Paused'
       : item.state === 'complete'
       ? 'Complete'
+      : item.state === 'local-missing'
+      ? '已從本機移除'
       : 'Failed';
 
   return (
     <li className="grid gap-1.5 rounded-lg border border-border bg-muted/20 p-2.5">
-      <div className="flex min-w-0 items-center gap-2">
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
         {item.state === 'complete' ? (
           <Check
             aria-hidden="true"
             className="h-4 w-4 shrink-0 text-[#11615a]"
           />
-        ) : item.state === 'failed' ? (
+        ) : item.state === 'failed' || item.state === 'local-missing' ? (
           <AlertCircle
             aria-hidden="true"
             className="h-4 w-4 shrink-0 text-destructive"
           />
-        ) : item.state === 'uploading' ? (
+        ) : item.state === 'uploading' || item.state === 'retrying' ? (
           <LoaderCircle
             aria-hidden="true"
             className="h-4 w-4 shrink-0 animate-spin text-accent"
@@ -1324,13 +1402,30 @@ function UploadActivityItem({
             className="truncate text-xs text-muted-foreground"
             title={`Destination: ${item.destinationPath}`}
           >
-            {formatBytes(item.file.size)} · to {item.destinationPath}
+            {formatBytes(item.fingerprint.size)} · to {item.destinationPath}
           </p>
         </div>
         <span className="shrink-0 text-xs text-muted-foreground">
           {statusLabel}
         </span>
-        {(item.state === 'queued' || item.state === 'uploading') && (
+        {(item.state === 'queued' ||
+          item.state === 'uploading' ||
+          item.state === 'retrying') && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 shrink-0 px-2"
+            onClick={onPause}
+            aria-label={`Pause upload ${item.relativePath}`}
+          >
+            <Pause className="h-3.5 w-3.5" aria-hidden="true" />
+            Pause
+          </Button>
+        )}
+        {(item.state === 'queued' ||
+          item.state === 'uploading' ||
+          item.state === 'retrying' ||
+          item.state === 'paused') && (
           <Button
             variant="ghost"
             size="sm"
@@ -1341,9 +1436,20 @@ function UploadActivityItem({
             Cancel
           </Button>
         )}
+        {item.state === 'paused' && (item.file || item.fileHandle) && (
+          <Button variant="outline" size="sm" onClick={onResume}>
+            <Play className="h-3.5 w-3.5" aria-hidden="true" />
+            Resume
+          </Button>
+        )}
         {item.state === 'failed' && (
           <div className="flex shrink-0 items-center gap-1">
-            <Button variant="outline" size="sm" onClick={onRetry}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onRetry}
+              disabled={!item.retryEligible}
+            >
               <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
               Retry
             </Button>
@@ -1357,6 +1463,24 @@ function UploadActivityItem({
               <X className="h-4 w-4" aria-hidden="true" />
             </Button>
           </div>
+        )}
+        {(item.state === 'local-missing' ||
+          (item.state === 'paused' && !item.file && !item.fileHandle)) && (
+          <ReconnectSourceButton
+            relativePath={item.relativePath}
+            onReconnect={onReconnect}
+          />
+        )}
+        {(item.state === 'complete' || item.state === 'local-missing') && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
+            onClick={onDismiss}
+            aria-label={`Dismiss ${item.relativePath}`}
+          >
+            <X className="h-4 w-4" aria-hidden="true" />
+          </Button>
         )}
       </div>
       <UploadProgress value={roundedProgress} label={item.relativePath} />
@@ -1383,6 +1507,83 @@ function UploadProgress({ value, label }: { value: number; label: string }) {
         className="h-full bg-accent transition-[width]"
         style={{ width: `${value}%` }}
       />
+    </div>
+  );
+}
+
+function ReconnectSourceButton({
+  relativePath,
+  onReconnect,
+}: {
+  relativePath: string;
+  onReconnect: (
+    file: File,
+    handle?: FileSystemFileHandle
+  ) => string | undefined;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [error, setError] = useState<string>();
+
+  const acceptFile = useCallback(
+    (file: File, handle?: FileSystemFileHandle) => {
+      setError(onReconnect(file, handle));
+    },
+    [onReconnect]
+  );
+
+  return (
+    <div className="flex shrink-0 items-center gap-1">
+      <input
+        ref={inputRef}
+        type="file"
+        className="sr-only"
+        aria-label={`重新選擇 ${relativePath}`}
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          if (file) acceptFile(file);
+          event.target.value = '';
+        }}
+      />
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => {
+          const picker = (
+            window as Window & {
+              showOpenFilePicker?: (options?: {
+                multiple?: boolean;
+              }) => Promise<FileSystemFileHandle[]>;
+            }
+          ).showOpenFilePicker;
+          if (!picker) {
+            inputRef.current?.click();
+            return;
+          }
+          void picker({ multiple: false })
+            .then(async ([handle]) => {
+              if (handle) acceptFile(await handle.getFile(), handle);
+            })
+            .catch((pickerError: unknown) => {
+              if ((pickerError as { name?: string }).name !== 'AbortError') {
+                setError(
+                  pickerError instanceof Error
+                    ? pickerError.message
+                    : '無法讀取來源檔案。'
+                );
+              }
+            });
+        }}
+      >
+        選擇來源檔案
+      </Button>
+      {error && (
+        <span
+          className="max-w-44 truncate text-xs text-destructive"
+          title={error}
+        >
+          {error}
+        </span>
+      )}
     </div>
   );
 }

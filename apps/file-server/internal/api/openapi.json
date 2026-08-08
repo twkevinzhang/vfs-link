@@ -359,7 +359,7 @@
       "post": {
         "tags": ["Uploads"],
         "summary": "Create an upload session",
-        "description": "For local storage, uploadUrl points to this API's content endpoint. For GCS it can be an absolute signed URL and headers contains the headers that must accompany the upload.",
+        "description": "For local storage, uploadUrl points to this API's content endpoint. For GCS it is an opaque resumable session URI. Send each chunk with a client-generated Content-Range in addition to the fixed headers in the response.",
         "operationId": "createUpload",
         "requestBody": {
           "required": true,
@@ -393,7 +393,7 @@
       "get": {
         "tags": ["Uploads"],
         "summary": "Get an upload session",
-        "description": "The upload capability headers are not repeated when reading an existing session.",
+        "description": "Returns the storage-confirmed uploadedSize and repeats the protected upload capability for active sessions so an authenticated same-origin client can resume after reload. Expired sessions have status=expired and empty capability fields.",
         "operationId": "getUpload",
         "responses": {
           "200": {
@@ -431,10 +431,16 @@
       "put": {
         "tags": ["Uploads"],
         "summary": "Upload content through the file server",
-        "description": "Used by non-GCS upload sessions. GCS sessions normally upload directly to the signed uploadUrl returned when the session is created.",
+        "description": "Used by local upload sessions. Send Content-Range: bytes start-end/total. start must equal uploadedSize from the latest status response. Incomplete chunks return 308 with a Range header describing committed bytes; the final chunk returns 200. GCS sessions use the same headers directly against their opaque uploadUrl.",
         "operationId": "putUploadContent",
         "parameters": [
-          { "$ref": "#/components/parameters/UploadId" }
+          { "$ref": "#/components/parameters/UploadId" },
+          {
+            "name": "Content-Range",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string", "examples": ["bytes 0-8388607/16777216"] }
+          }
         ],
         "requestBody": {
           "required": true,
@@ -446,7 +452,21 @@
         },
         "responses": {
           "200": {
-            "description": "Content accepted by the upload session",
+            "description": "Final chunk accepted by the upload session",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UploadResponse" }
+              }
+            }
+          },
+          "308": {
+            "description": "Chunk committed; send the next chunk after the byte identified by Range",
+            "headers": {
+              "Range": {
+                "description": "Contiguous committed byte range, omitted when uploadedSize is zero",
+                "schema": { "type": "string", "examples": ["bytes=0-8388607"] }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/UploadResponse" }
@@ -457,6 +477,7 @@
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "404": { "$ref": "#/components/responses/NotFound" },
           "409": { "$ref": "#/components/responses/Conflict" },
+          "410": { "$ref": "#/components/responses/Gone" },
           "503": { "$ref": "#/components/responses/ServiceUnavailable" }
         }
       }
@@ -483,6 +504,7 @@
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "404": { "$ref": "#/components/responses/NotFound" },
           "409": { "$ref": "#/components/responses/Conflict" },
+          "410": { "$ref": "#/components/responses/Gone" },
           "503": { "$ref": "#/components/responses/ServiceUnavailable" }
         }
       }
@@ -917,6 +939,10 @@
         "description": "Request conflicts with the current resource or session state",
         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
       },
+      "Gone": {
+        "description": "Upload session expired",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+      },
       "UnsupportedMediaType": {
         "description": "Only WebP thumbnails are accepted",
         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
@@ -1201,17 +1227,18 @@
       "UploadResponse": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "logicPath", "size", "contentType", "status", "method", "uploadUrl", "headers", "completeUrl", "statusUrl", "expiresAt"],
+        "required": ["id", "logicPath", "size", "uploadedSize", "contentType", "status", "method", "uploadUrl", "headers", "completeUrl", "statusUrl", "expiresAt"],
         "properties": {
           "id": { "type": "string" },
           "logicPath": { "$ref": "#/components/schemas/LogicalPath" },
           "size": { "type": "integer", "format": "int64", "minimum": 0 },
+          "uploadedSize": { "type": "integer", "format": "int64", "minimum": 0, "description": "Contiguous byte count confirmed by local staging or the GCS resumable session." },
           "contentType": { "type": "string" },
-          "status": { "type": "string", "enum": ["pending", "uploading", "uploaded", "complete", "failed"] },
+          "status": { "type": "string", "enum": ["pending", "uploading", "uploaded", "complete", "failed", "expired"] },
           "error": { "type": "string" },
           "method": { "type": "string", "const": "PUT" },
-          "uploadUrl": { "type": "string", "description": "Relative local API URL or absolute GCS signed URL." },
-          "headers": { "type": "object", "additionalProperties": { "type": "string" } },
+          "uploadUrl": { "type": "string", "description": "Relative local API URL or absolute opaque GCS session URI. Empty for complete or expired sessions." },
+          "headers": { "type": "object", "description": "Fixed headers such as Content-Type. The client adds Content-Range for every chunk.", "additionalProperties": { "type": "string" } },
           "completeUrl": { "type": "string" },
           "statusUrl": { "type": "string" },
           "expiresAt": { "$ref": "#/components/schemas/Timestamp" }

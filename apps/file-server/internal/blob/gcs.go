@@ -56,6 +56,10 @@ func (s *GCSStore) StartResumableUpload(ctx context.Context, objectName, content
 	return location, resumableUploadHeaders(contentType, size), nil
 }
 
+func (s *GCSStore) QueryResumableUpload(ctx context.Context, sessionURL string, size int64) (int64, bool, error) {
+	return queryResumableUpload(ctx, s.httpClient, sessionURL, size)
+}
+
 // CancelResumableUpload invalidates an unfinished upload session. It never
 // deletes the destination object: cancellation is addressed solely by the
 // opaque session URI returned by Cloud Storage.
@@ -68,12 +72,53 @@ func resumableUploadHeaders(contentType string, size int64) map[string]string {
 	if strings.TrimSpace(contentType) != "" {
 		headers["Content-Type"] = contentType
 	}
-	if size == 0 {
-		headers["Content-Range"] = "bytes */0"
-	} else {
-		headers["Content-Range"] = fmt.Sprintf("bytes 0-%d/%d", size-1, size)
-	}
 	return headers
+}
+
+func queryResumableUpload(ctx context.Context, client *http.Client, sessionURL string, size int64) (int64, bool, error) {
+	if client == nil {
+		return 0, false, errors.New("authenticated HTTP client is required")
+	}
+	if strings.TrimSpace(sessionURL) == "" {
+		return 0, false, errors.New("resumable upload session URL is required")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPut, sessionURL, nil)
+	if err != nil {
+		return 0, false, err
+	}
+	request.Header.Set("Content-Length", "0")
+	request.Header.Set("Content-Range", fmt.Sprintf("bytes */%d", size))
+	response, err := client.Do(request)
+	if err != nil {
+		return 0, false, fmt.Errorf("query GCS resumable upload: %w", err)
+	}
+	defer response.Body.Close()
+	switch response.StatusCode {
+	case http.StatusOK, http.StatusCreated:
+		return size, true, nil
+	case 308:
+		uploadedSize, err := parseCommittedRange(response.Header.Get("Range"), size)
+		return uploadedSize, false, err
+	default:
+		payload, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		return 0, false, fmt.Errorf("query GCS resumable upload: %s: %s", response.Status, strings.TrimSpace(string(payload)))
+	}
+}
+
+func parseCommittedRange(value string, size int64) (int64, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, nil
+	}
+	const prefix = "bytes=0-"
+	if !strings.HasPrefix(value, prefix) {
+		return 0, fmt.Errorf("invalid resumable Range %q", value)
+	}
+	last, err := strconv.ParseInt(strings.TrimPrefix(value, prefix), 10, 64)
+	if err != nil || last < 0 || last >= size {
+		return 0, fmt.Errorf("invalid resumable Range %q", value)
+	}
+	return last + 1, nil
 }
 
 func (s *GCSStore) StatObject(ctx context.Context, objectName string) (ObjectInfo, error) {
@@ -252,3 +297,4 @@ func cleanObjectName(physicalHash string) string {
 
 var _ GenerationMatchWriterStore = (*GCSStore)(nil)
 var _ AbortableWriter = (*storage.Writer)(nil)
+var _ DirectUploadStore = (*GCSStore)(nil)

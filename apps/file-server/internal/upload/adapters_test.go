@@ -11,12 +11,14 @@ import (
 )
 
 type directStoreStub struct {
-	statObject    blob.ObjectInfo
-	statCalls     int
-	startedObject string
-	startedMatch  int64
-	cancelledURL  string
-	deletedObject string
+	statObject     blob.ObjectInfo
+	statCalls      int
+	startedObject  string
+	startedMatch   int64
+	cancelledURL   string
+	deletedObject  string
+	uploadedSize   int64
+	uploadComplete bool
 }
 
 func (*directStoreStub) Close() error                                             { return nil }
@@ -39,6 +41,9 @@ func (s *directStoreStub) StartResumableUpload(_ context.Context, object, _, _ s
 func (s *directStoreStub) CancelResumableUpload(_ context.Context, sessionURL string) error {
 	s.cancelledURL = sessionURL
 	return nil
+}
+func (s *directStoreStub) QueryResumableUpload(context.Context, string, int64) (int64, bool, error) {
+	return s.uploadedSize, s.uploadComplete, nil
 }
 func (s *directStoreStub) StatObject(context.Context, string) (blob.ObjectInfo, error) {
 	s.statCalls++
@@ -131,5 +136,32 @@ func TestGCSServiceCancelUsesPersistedSessionURL(t *testing.T) {
 	}
 	if _, err := service.Find(ctx, session.ID); err != ErrNotFound {
 		t.Fatalf("Find() after cancel error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestGCSServiceStatusRefreshesRemoteCommittedOffset(t *testing.T) {
+	ctx := context.Background()
+	metadata, err := db.NewTreeLocal(filepath.Join(t.TempDir(), "metadata"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(metadata.Close)
+	if err := metadata.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	objects := &directStoreStub{uploadedSize: 3}
+	service := NewWithBlob(metadata, objects)
+	session, err := service.Create(ctx, CreateInput{LogicPath: "docs/report.txt", Size: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := service.Find(ctx, session.ID)
+	if err != nil || status.UploadedSize != 3 || status.Status != StatusUploading {
+		t.Fatalf("partial status = %#v, %v", status, err)
+	}
+	objects.uploadedSize, objects.uploadComplete = 4, true
+	status, err = service.Find(ctx, session.ID)
+	if err != nil || status.UploadedSize != 4 || status.Status != StatusUploaded {
+		t.Fatalf("complete status = %#v, %v", status, err)
 	}
 }

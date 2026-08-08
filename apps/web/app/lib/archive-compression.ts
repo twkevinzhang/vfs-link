@@ -31,6 +31,7 @@ export type BuiltArchive = {
 type OutputTarget = {
   writable: WritableStream;
   getBlob: () => Promise<Blob>;
+  fileHandle?: FileSystemFileHandle;
   temporaryName?: string;
 };
 
@@ -55,6 +56,7 @@ async function createOutputTarget(): Promise<OutputTarget> {
   const writable = await handle.createWritable();
   return {
     writable,
+    fileHandle: handle,
     temporaryName,
     getBlob: () => handle.getFile(),
   };
@@ -163,6 +165,7 @@ async function buildOneArchive(
           type: ZIP_MIME,
           lastModified: Date.now(),
         }),
+        fileHandle: targets[index].fileHandle,
         relativePath: names[index],
         selectionRoot: names[index],
         selectionRootKind: 'file',
