@@ -60,6 +60,11 @@ import {
   type PermissionAwareFileHandle,
 } from '../lib/upload-queue-source';
 import { loadUploadQueue, saveUploadQueue } from '../lib/upload-queue-storage';
+import {
+  cancelUploadQueueItems,
+  pauseUploadQueueItem,
+  resumeUploadQueueItem,
+} from '../lib/upload-queue-transitions';
 import type { UploadSession } from '../types/upload';
 
 export type {
@@ -240,20 +245,10 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
   const pause = useCallback(
     (key: string) => {
       const item = itemsRef.current.find((candidate) => candidate.key === key);
-      if (!item || !['queued', 'uploading', 'retrying'].includes(item.state))
-        return;
+      if (!item || pauseUploadQueueItem(item) === item) return;
       pauseRequestedKeysRef.current.add(key);
       abortControllersRef.current.get(key)?.abort();
-      updateItem(key, (current) => ({
-        ...current,
-        state: 'paused',
-        retryAt: undefined,
-        error: undefined,
-        progress: uploadProgress(
-          current.uploadedBytes,
-          current.fingerprint.size
-        ),
-      }));
+      updateItem(key, pauseUploadQueueItem);
     },
     [updateItem]
   );
@@ -261,19 +256,14 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
   const resume = useCallback(
     (key: string) => {
       const item = itemsRef.current.find((candidate) => candidate.key === key);
-      if (!item || item.state !== 'paused' || (!item.file && !item.fileHandle))
-        return;
+      if (!item || resumeUploadQueueItem(item) === item) return;
       if (globallyPausedRef.current) {
         globallyPausedRef.current = false;
         setGloballyPaused(false);
         persist(itemsRef.current, false);
       }
       pauseRequestedKeysRef.current.delete(key);
-      updateItem(key, (current) => ({
-        ...current,
-        state: 'queued',
-        error: undefined,
-      }));
+      updateItem(key, resumeUploadQueueItem);
       scheduleRef.current?.();
     },
     [persist, updateItem]
@@ -283,27 +273,12 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
     globallyPausedRef.current = true;
     setGloballyPaused(true);
     for (const item of itemsRef.current) {
-      if (['queued', 'uploading', 'retrying'].includes(item.state)) {
+      if (pauseUploadQueueItem(item) !== item) {
         pauseRequestedKeysRef.current.add(item.key);
         abortControllersRef.current.get(item.key)?.abort();
       }
     }
-    updateItems((current) =>
-      current.map((item) =>
-        ['queued', 'uploading', 'retrying'].includes(item.state)
-          ? {
-              ...item,
-              state: 'paused',
-              retryAt: undefined,
-              error: undefined,
-              progress: uploadProgress(
-                item.uploadedBytes,
-                item.fingerprint.size
-              ),
-            }
-          : item
-      )
-    );
+    updateItems((current) => current.map(pauseUploadQueueItem));
     persist(itemsRef.current, true);
   }, [persist, updateItems]);
 
@@ -311,13 +286,7 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
     globallyPausedRef.current = false;
     setGloballyPaused(false);
     pauseRequestedKeysRef.current.clear();
-    updateItems((current) =>
-      current.map((item) =>
-        item.state === 'paused' && (item.file || item.fileHandle)
-          ? { ...item, state: 'queued', error: undefined }
-          : item
-      )
-    );
+    updateItems((current) => current.map(resumeUploadQueueItem));
     persist(itemsRef.current, false);
     scheduleRef.current?.();
   }, [persist, updateItems]);
@@ -345,9 +314,7 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
       abortControllersRef.current.get(key)?.abort();
       if (item.session) cleanupUploadSession(item.session.id);
       pendingProgressRef.current.delete(key);
-      updateItems((current) =>
-        current.filter((candidate) => candidate.key !== key)
-      );
+      updateItems((current) => cancelUploadQueueItems(current, new Set([key])));
       if (!runningKeysRef.current.has(key)) {
         cancelledKeysRef.current.delete(key);
       }
@@ -377,7 +344,7 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
       if (item.session) cleanupUploadSession(item.session.id);
       pendingProgressRef.current.delete(item.key);
     }
-    updateItems((current) => current.filter((item) => !keys.has(item.key)));
+    updateItems((current) => cancelUploadQueueItems(current, keys));
     for (const key of keys) {
       if (!runningKeysRef.current.has(key))
         cancelledKeysRef.current.delete(key);
