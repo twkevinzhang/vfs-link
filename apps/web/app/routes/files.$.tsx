@@ -1179,6 +1179,7 @@ function UploadActivity({
     | 'pauseAll'
     | 'resumeAll'
     | 'reconnect'
+    | 'authorizeSource'
     | 'globallyPaused'
   >;
   expanded: boolean;
@@ -1328,6 +1329,7 @@ function UploadActivity({
               onReconnect={(file, handle) =>
                 queue.reconnect(item.key, file, handle)
               }
+              onAuthorize={() => void queue.authorizeSource(item.key)}
               onDismiss={() => queue.dismiss(item.key)}
             />
           ))}
@@ -1344,6 +1346,7 @@ function UploadActivityItem({
   onPause,
   onResume,
   onReconnect,
+  onAuthorize,
   onDismiss,
 }: {
   item: UploadQueueItem;
@@ -1355,6 +1358,7 @@ function UploadActivityItem({
     file: File,
     handle?: FileSystemFileHandle
   ) => string | undefined;
+  onAuthorize: () => void;
   onDismiss: () => void;
 }) {
   const roundedProgress = Math.round(item.progress);
@@ -1436,10 +1440,16 @@ function UploadActivityItem({
             Cancel
           </Button>
         )}
-        {item.state === 'paused' && (item.file || item.fileHandle) && (
+        {item.state === 'paused' && item.file && (
           <Button variant="outline" size="sm" onClick={onResume}>
             <Play className="h-3.5 w-3.5" aria-hidden="true" />
             Resume
+          </Button>
+        )}
+        {item.state === 'paused' && !item.file && item.fileHandle && (
+          <Button variant="outline" size="sm" onClick={onAuthorize}>
+            <Play className="h-3.5 w-3.5" aria-hidden="true" />
+            Allow access &amp; resume
           </Button>
         )}
         {item.state === 'failed' && (

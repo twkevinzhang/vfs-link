@@ -64,6 +64,7 @@
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "eslint": "^9.8.0",
+    "fake-indexeddb": "^6.2.5",
     "prettier": "^2.6.2",
     "tailwindcss": "^4.1.14",
     "typescript": "~5.8.2",

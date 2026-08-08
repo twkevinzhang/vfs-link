@@ -36,6 +36,7 @@ import {
   saveUploadQueue,
   type PersistedUploadItem,
   type PersistedUploadState,
+  type UploadSourceSnapshot,
 } from '../lib/upload-queue-storage';
 import type { UploadSession } from '../types/upload';
 
@@ -89,7 +90,15 @@ type UseUploadQueueOptions = {
 
 type PermissionAwareFileHandle = FileSystemFileHandle & {
   queryPermission?: (descriptor: { mode: 'read' }) => Promise<PermissionState>;
+  requestPermission?: (descriptor: {
+    mode: 'read';
+  }) => Promise<PermissionState>;
 };
+
+type HandleFileResult =
+  | { status: 'available'; file: File }
+  | { status: 'permission-required' }
+  | { status: 'missing' };
 
 function makeQueueKey(candidate: UploadCandidate) {
   const randomId =
@@ -157,13 +166,31 @@ function waitForRetry(delay: number, signal: AbortSignal) {
   });
 }
 
-async function readHandleFile(handle: FileSystemFileHandle) {
+async function inspectHandleFile(
+  handle: FileSystemFileHandle
+): Promise<HandleFileResult> {
   const permissionHandle = handle as PermissionAwareFileHandle;
   if (permissionHandle.queryPermission) {
-    const permission = await permissionHandle.queryPermission({ mode: 'read' });
-    if (permission !== 'granted') return undefined;
+    try {
+      const permission = await permissionHandle.queryPermission({
+        mode: 'read',
+      });
+      if (permission === 'denied') return { status: 'missing' };
+      if (permission !== 'granted') return { status: 'permission-required' };
+    } catch (error) {
+      if ((error as { name?: string }).name === 'NotAllowedError') {
+        return { status: 'permission-required' };
+      }
+      return { status: 'missing' };
+    }
   }
-  return handle.getFile();
+  try {
+    return { status: 'available', file: await handle.getFile() };
+  } catch (error) {
+    return (error as { name?: string }).name === 'NotAllowedError'
+      ? { status: 'permission-required' }
+      : { status: 'missing' };
+  }
 }
 
 /**
@@ -196,9 +223,15 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
     (nextItems = itemsRef.current, nextPaused = globallyPausedRef.current) => {
       if (!hydratedRef.current) return;
       const snapshot = nextItems.map(toPersisted);
+      const sources: UploadSourceSnapshot[] = nextItems.map((item) => ({
+        key: item.key,
+        file: item.file,
+        fileHandle: item.fileHandle,
+        retainFile: !['complete', 'local-missing'].includes(item.state),
+      }));
       persistenceRef.current = persistenceRef.current
         .catch(() => undefined)
-        .then(() => saveUploadQueue(snapshot, nextPaused));
+        .then(() => saveUploadQueue(snapshot, nextPaused, sources));
     },
     []
   );
@@ -501,6 +534,53 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
     [updateItem]
   );
 
+  const authorizeSource = useCallback(
+    async (key: string) => {
+      const item = itemsRef.current.find((candidate) => candidate.key === key);
+      if (!item?.fileHandle) return;
+      const handle = item.fileHandle as PermissionAwareFileHandle;
+      try {
+        const permission = handle.requestPermission
+          ? await handle.requestPermission({ mode: 'read' })
+          : 'granted';
+        if (permission !== 'granted') {
+          updateItem(key, (current) => ({
+            ...current,
+            state: 'paused',
+            error: '需要來源檔案的讀取權限才能繼續上傳。',
+          }));
+          return;
+        }
+        const file = await item.fileHandle.getFile();
+        if (!matchesFingerprint(file, item.fingerprint)) {
+          markLocalMissing(key);
+          return;
+        }
+        pauseRequestedKeysRef.current.delete(key);
+        updateItem(key, (current) => ({
+          ...current,
+          file,
+          state: globallyPausedRef.current ? 'paused' : 'queued',
+          missingFromState: undefined,
+          retryEligible: true,
+          error: undefined,
+        }));
+        scheduleRef.current?.();
+      } catch (error) {
+        if ((error as { name?: string }).name === 'NotFoundError') {
+          markLocalMissing(key);
+          return;
+        }
+        updateItem(key, (current) => ({
+          ...current,
+          state: 'paused',
+          error: '無法取得來源檔案權限，請重新允許或選擇原始檔案。',
+        }));
+      }
+    },
+    [markLocalMissing, updateItem]
+  );
+
   const uploadOnce = useCallback(
     async (key: string, controller: AbortController) => {
       let item = itemsRef.current.find((candidate) => candidate.key === key);
@@ -508,13 +588,15 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
 
       let file = item.file;
       if (item.fileHandle) {
-        try {
-          file = await item.fileHandle.getFile();
-        } catch {
+        const handleResult = await inspectHandleFile(item.fileHandle);
+        if (handleResult.status === 'missing') {
           markLocalMissing(key);
           return;
         }
-        if (!matchesFingerprint(file, item.fingerprint)) {
+        if (handleResult.status === 'available') {
+          file = handleResult.file;
+        }
+        if (file && !matchesFingerprint(file, item.fingerprint)) {
           markLocalMissing(key);
           return;
         }
@@ -798,6 +880,7 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
         };
       });
       if (additions.length === 0) return;
+      void navigator.storage?.persist?.().catch(() => undefined);
       updateItems((current) => [...current, ...additions]);
     },
     [updateItems]
@@ -811,8 +894,12 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
     await Promise.all(
       candidates.map(async (item) => {
         try {
-          const file = await readHandleFile(item.fileHandle);
-          if (!file || !matchesFingerprint(file, item.fingerprint)) {
+          const result = await inspectHandleFile(item.fileHandle);
+          if (
+            result.status === 'missing' ||
+            (result.status === 'available' &&
+              !matchesFingerprint(result.file, item.fingerprint))
+          ) {
             markLocalMissing(item.key);
           }
         } catch {
@@ -864,21 +951,35 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
       .then(async ({ items: storedItems, globallyPaused: storedPaused }) => {
         const restored = await Promise.all(
           storedItems.map(async (stored): Promise<UploadQueueItem> => {
-            let file: File | undefined;
+            const { sourceFile, ...persisted } = stored;
+            let file =
+              sourceFile && matchesFingerprint(sourceFile, stored.fingerprint)
+                ? sourceFile
+                : undefined;
+            let sourceMissing = false;
+            let permissionRequired = false;
             if (stored.fileHandle) {
               try {
-                file = await readHandleFile(stored.fileHandle);
-                if (file && !matchesFingerprint(file, stored.fingerprint)) {
-                  file = undefined;
+                const result = await inspectHandleFile(stored.fileHandle);
+                if (result.status === 'available') {
+                  if (matchesFingerprint(result.file, stored.fingerprint)) {
+                    file = result.file;
+                  } else {
+                    sourceMissing = true;
+                  }
+                } else if (result.status === 'missing') {
+                  sourceMissing = true;
+                } else {
+                  permissionRequired = true;
                 }
               } catch {
-                file = undefined;
+                sourceMissing = true;
               }
             }
             let state: UploadQueueState = stored.state;
             let error = stored.error;
             let missingFromState = stored.missingFromState;
-            if (stored.fileHandle && !file) {
+            if (sourceMissing) {
               missingFromState =
                 stored.state === 'local-missing'
                   ? stored.missingFromState
@@ -893,12 +994,19 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
               state = 'paused';
               error = '請重新選擇原始檔案以繼續上傳。';
             } else if (
+              !file &&
+              permissionRequired &&
+              !['complete', 'local-missing'].includes(stored.state)
+            ) {
+              state = 'paused';
+              error = '請允許讀取原始檔案以繼續上傳。';
+            } else if (
               ['queued', 'uploading', 'retrying'].includes(stored.state)
             ) {
               state = storedPaused ? 'paused' : 'queued';
             }
             return {
-              ...stored,
+              ...persisted,
               file,
               state,
               error,
@@ -979,6 +1087,7 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
     pauseAll,
     resumeAll,
     reconnect,
+    authorizeSource,
     globallyPaused,
     hydrated,
     hasPendingUploads,
