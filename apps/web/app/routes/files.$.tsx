@@ -1295,9 +1295,9 @@ function UploadActivity({
               }
             >
               {expanded ? (
-                <ChevronUp aria-hidden="true" className="h-4 w-4" />
-              ) : (
                 <ChevronDown aria-hidden="true" className="h-4 w-4" />
+              ) : (
+                <ChevronUp aria-hidden="true" className="h-4 w-4" />
               )}
             </Button>
           </div>
