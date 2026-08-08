@@ -89,6 +89,7 @@ const ACTION_POLL_MS = 1500;
 const ACTION_LIST_SYNC_MS = 30000;
 const SCAN_ACTIVE_POLL_MS = 2000;
 const SCAN_BACKGROUND_SYNC_MS = 30000;
+const EMPTY_DRIFT_ITEMS: DriftItem[] = [];
 
 type LoadState = {
   data?: DriftResponse;
@@ -214,7 +215,7 @@ export default function DriftRoute() {
 
   const data = state.data;
   const driftCapabilityKnown = Boolean(data);
-  const items = data?.items ?? [];
+  const items = data?.items ?? EMPTY_DRIFT_ITEMS;
   const pagination = data?.pagination;
   const storageIsGcs =
     !data?.storageDriver || data.storageDriver.toLowerCase() === 'gcs';

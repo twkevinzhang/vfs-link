@@ -3,7 +3,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 export function useFileSelection(paths: string[]) {
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const anchorRef = useRef<string | undefined>(undefined);
-  const pathKey = paths.join('\n');
 
   useEffect(() => {
     const visible = new Set(paths);
@@ -12,7 +11,7 @@ export function useFileSelection(paths: string[]) {
     );
     if (anchorRef.current && !visible.has(anchorRef.current))
       anchorRef.current = undefined;
-  }, [pathKey]);
+  }, [paths]);
 
   const clear = useCallback(() => {
     anchorRef.current = undefined;

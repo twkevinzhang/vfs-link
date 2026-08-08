@@ -128,6 +128,7 @@ const FILE_PAGE_SIZE = 100;
 const SEARCH_DEBOUNCE_MS = 250;
 const UPLOAD_REFRESH_DEBOUNCE_MS = 300;
 const TEXT_PREVIEW_LIMIT = 200_000;
+const EMPTY_FILE_ENTRIES: FileEntry[] = [];
 
 type TextPreviewState =
   | { status: 'idle' | 'loading' }
@@ -398,7 +399,7 @@ export default function FileBrowserRoute() {
     void loadFiles(currentPath, fileQuery, pageOffset);
   }, [currentPath, fileQuery, pageOffset, loadFiles]);
 
-  const visibleEntries = state.files?.entries ?? [];
+  const visibleEntries = state.files?.entries ?? EMPTY_FILE_ENTRIES;
   const currentEntries: FileEntry[] =
     view === 'trash' ? trashEntries : visibleEntries;
   const entryKey = useCallback(
@@ -406,7 +407,12 @@ export default function FileBrowserRoute() {
       view === 'trash' ? entry.trashId ?? entry.path : entry.path,
     [view]
   );
-  const selection = useFileSelection(currentEntries.map(entryKey));
+  const selectionPaths = useMemo(
+    () => currentEntries.map(entryKey),
+    [currentEntries, entryKey]
+  );
+  const selection = useFileSelection(selectionPaths);
+  const clearSelection = selection.clear;
   const selectedEntries = currentEntries.filter((entry) =>
     selection.selected.has(entryKey(entry))
   );
@@ -460,10 +466,10 @@ export default function FileBrowserRoute() {
   );
 
   useEffect(() => {
-    selection.clear();
+    clearSelection();
     setSelectedFile(undefined);
     if (view === 'trash') void loadTrash();
-  }, [currentPath, view]);
+  }, [clearSelection, currentPath, loadTrash, view]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
