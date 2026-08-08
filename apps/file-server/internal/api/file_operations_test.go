@@ -26,6 +26,28 @@ func TestWriteFileOperationErrorMapsMetadataRateLimitTo429(t *testing.T) {
 	}
 }
 
+func TestOperationToResponsePreservesStringWireValues(t *testing.T) {
+	tests := []struct {
+		name       string
+		typeName   db.OperationType
+		status     db.OperationStatus
+		wantType   string
+		wantStatus string
+	}{
+		{name: "known values", typeName: db.OperationTypeMove, status: db.OperationStatusRunning, wantType: "move", wantStatus: "running"},
+		{name: "unknown legacy values", typeName: db.OperationType("future-copy"), status: db.OperationStatus("paused"), wantType: "future-copy", wantStatus: "paused"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response := operationToResponse(db.OperationRecord{Type: test.typeName, Status: test.status})
+			if response.Type != test.wantType || response.Status != test.wantStatus {
+				t.Fatalf("wire type/status = %q/%q, want %q/%q", response.Type, response.Status, test.wantType, test.wantStatus)
+			}
+		})
+	}
+}
+
 func TestWriteUploadErrorMapsRetryableMetadataErrors(t *testing.T) {
 	tests := []struct {
 		err  error

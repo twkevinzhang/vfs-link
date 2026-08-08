@@ -13,23 +13,23 @@ import (
 )
 
 type OperationRecord struct {
-	ID          string        `json:"id"`
-	Type        string        `json:"type"`
-	Status      string        `json:"status"`
-	Paths       []string      `json:"paths"`
-	Destination string        `json:"destination,omitempty"`
-	Progress    int           `json:"progress"`
-	Total       int           `json:"total"`
-	Error       string        `json:"error,omitempty"`
-	CreatedAt   time.Time     `json:"createdAt"`
-	UpdatedAt   time.Time     `json:"updatedAt"`
-	Result      []FileRecord  `json:"result,omitempty"`
-	TrashItems  []TrashPath   `json:"trashItems,omitempty"`
-	TrashIDs    []string      `json:"trashIds,omitempty"`
-	Deleted     int64         `json:"deleted,omitempty"`
-	LeaseOwner  string        `json:"leaseOwner,omitempty"`
-	LeaseUntil  *time.Time    `json:"leaseUntil,omitempty"`
-	StatsDelta  MetadataStats `json:"statsDelta,omitempty"`
+	ID          string          `json:"id"`
+	Type        OperationType   `json:"type"`
+	Status      OperationStatus `json:"status"`
+	Paths       []string        `json:"paths"`
+	Destination string          `json:"destination,omitempty"`
+	Progress    int             `json:"progress"`
+	Total       int             `json:"total"`
+	Error       string          `json:"error,omitempty"`
+	CreatedAt   time.Time       `json:"createdAt"`
+	UpdatedAt   time.Time       `json:"updatedAt"`
+	Result      []FileRecord    `json:"result,omitempty"`
+	TrashItems  []TrashPath     `json:"trashItems,omitempty"`
+	TrashIDs    []string        `json:"trashIds,omitempty"`
+	Deleted     int64           `json:"deleted,omitempty"`
+	LeaseOwner  string          `json:"leaseOwner,omitempty"`
+	LeaseUntil  *time.Time      `json:"leaseUntil,omitempty"`
+	StatsDelta  MetadataStats   `json:"statsDelta,omitempty"`
 }
 
 type TreeOperationStore interface {
@@ -54,18 +54,18 @@ func (s *TreeStore) RunDeleteTrashOperation(ctx context.Context, id string, exec
 	if !ok {
 		return op, ErrNotFound
 	}
-	if op.Type != "delete-trash" {
+	if op.Type != OperationTypeDeleteTrash {
 		return op, fmt.Errorf("operation is not delete-trash")
 	}
-	if op.Status == "completed" {
+	if op.Status == OperationStatusCompleted {
 		return op, nil
 	}
-	if op.Status == "running" && op.LeaseUntil != nil && op.LeaseUntil.After(time.Now()) {
+	if op.HasActiveLease(time.Now()) {
 		return op, fmt.Errorf("operation is already running")
 	}
 	owner := uuid.NewString()
 	until := time.Now().UTC().Add(5 * time.Minute)
-	op.Status = "running"
+	op.Status = OperationStatusRunning
 	op.LeaseOwner = owner
 	op.LeaseUntil = &until
 	if g, e = s.saveOperationCAS(ctx, op, g); e != nil {
@@ -131,10 +131,10 @@ func (s *TreeStore) RunDeleteTrashOperation(ctx context.Context, id string, exec
 	current.LeaseOwner = ""
 	current.LeaseUntil = nil
 	if runErr != nil {
-		current.Status = "pending"
+		current.Status = OperationStatusPending
 		current.Error = runErr.Error()
 	} else {
-		current.Status = "completed"
+		current.Status = OperationStatusCompleted
 		current.Error = ""
 		current.Progress = current.Total
 	}
@@ -147,7 +147,7 @@ func (s *TreeStore) RunDeleteTrashOperation(ctx context.Context, id string, exec
 
 func (s *TreeStore) createOperation(ctx context.Context, op OperationRecord) (OperationRecord, error) {
 	op.ID = uuid.NewString()
-	op.Status = "pending"
+	op.Status = OperationStatusPending
 	op.CreatedAt = time.Now().UTC()
 	e := s.saveOperation(ctx, op)
 	return op, e
@@ -191,7 +191,7 @@ func (s *TreeStore) CreateMoveOperation(ctx context.Context, paths []string, des
 	if strings.HasPrefix(strings.TrimSpace(destination), "/") {
 		return OperationRecord{}, fmt.Errorf("logical path must not start with a slash")
 	}
-	op := OperationRecord{ID: uuid.NewString(), Type: "move", Status: "pending", Paths: roots, Destination: cleanLogicPath(destination), CreatedAt: time.Now().UTC()}
+	op := OperationRecord{ID: uuid.NewString(), Type: OperationTypeMove, Status: OperationStatusPending, Paths: roots, Destination: cleanLogicPath(destination), CreatedAt: time.Now().UTC()}
 	e = s.saveOperation(ctx, op)
 	return op, e
 }
@@ -200,22 +200,22 @@ func (s *TreeStore) CreateRenameOperation(ctx context.Context, logicPath, name s
 	if e != nil {
 		return OperationRecord{}, e
 	}
-	return s.createOperation(ctx, OperationRecord{Type: "rename", Paths: []string{from}, Destination: to})
+	return s.createOperation(ctx, OperationRecord{Type: OperationTypeRename, Paths: []string{from}, Destination: to})
 }
 func (s *TreeStore) CreateTrashOperation(ctx context.Context, items []TrashPath) (OperationRecord, error) {
 	if len(items) == 0 {
 		return OperationRecord{}, fmt.Errorf("at least one trash path is required")
 	}
-	return s.createOperation(ctx, OperationRecord{Type: "trash", TrashItems: items})
+	return s.createOperation(ctx, OperationRecord{Type: OperationTypeTrash, TrashItems: items})
 }
 func (s *TreeStore) CreateRestoreOperation(ctx context.Context, ids []string) (OperationRecord, error) {
 	if len(cleanTrashIDs(ids)) == 0 {
 		return OperationRecord{}, fmt.Errorf("at least one trash id is required")
 	}
-	return s.createOperation(ctx, OperationRecord{Type: "restore", TrashIDs: ids})
+	return s.createOperation(ctx, OperationRecord{Type: OperationTypeRestore, TrashIDs: ids})
 }
 func (s *TreeStore) CreateDeleteTrashOperation(ctx context.Context, ids []string) (OperationRecord, error) {
-	return s.createOperation(ctx, OperationRecord{Type: "delete-trash", TrashIDs: ids})
+	return s.createOperation(ctx, OperationRecord{Type: OperationTypeDeleteTrash, TrashIDs: ids})
 }
 func (s *TreeStore) GetOperation(ctx context.Context, id string) (OperationRecord, bool, error) {
 	o, ok, e := s.objects.Get(ctx, s.operationKey(id))
@@ -233,7 +233,7 @@ func (s *TreeStore) ListRunnableOperations(ctx context.Context) ([]OperationReco
 	}
 	var out []OperationRecord
 	for _, op := range all {
-		if op.Status == "pending" || op.Status == "running" {
+		if op.Status.Runnable() {
 			out = append(out, op)
 		}
 	}
@@ -274,15 +274,15 @@ func (s *TreeStore) RunOperation(ctx context.Context, id string) (op OperationRe
 	if !ok {
 		return op, ErrNotFound
 	}
-	if op.Status == "completed" {
+	if op.Status == OperationStatusCompleted {
 		return op, nil
 	}
-	if op.Status == "running" && op.LeaseUntil != nil && op.LeaseUntil.After(time.Now()) {
+	if op.HasActiveLease(time.Now()) {
 		return op, fmt.Errorf("operation is already running")
 	}
 	owner := uuid.NewString()
 	until := time.Now().UTC().Add(2 * time.Minute)
-	op.Status = "running"
+	op.Status = OperationStatusRunning
 	op.LeaseOwner = owner
 	op.LeaseUntil = &until
 	if g, e = s.saveOperationCAS(ctx, op, g); e != nil {
@@ -292,7 +292,7 @@ func (s *TreeStore) RunOperation(ctx context.Context, id string) (op OperationRe
 		if err != nil {
 			current, cg, found, loadErr := s.loadOperation(context.Background(), op.ID)
 			if loadErr == nil && found && current.LeaseOwner == owner {
-				current.Status = "pending"
+				current.Status = OperationStatusPending
 				current.Error = err.Error()
 				current.LeaseOwner = ""
 				current.LeaseUntil = nil
@@ -303,14 +303,14 @@ func (s *TreeStore) RunOperation(ctx context.Context, id string) (op OperationRe
 	var records []FileRecord
 	summary := append([]FileRecord(nil), op.Result...)
 	switch op.Type {
-	case "move":
+	case OperationTypeMove:
 		records, e = s.runMove(ctx, op.Paths, op.Destination, &op)
-	case "rename":
+	case OperationTypeRename:
 		if len(op.Paths) != 1 || op.Destination == "" {
 			return op, fmt.Errorf("invalid rename operation")
 		}
 		records, e = s.runRename(ctx, op.Paths[0], op.Destination, &op)
-	case "trash":
+	case OperationTypeTrash:
 		if op.Total == 0 {
 			for _, item := range op.TrashItems {
 				root, ok, countErr := s.Find(ctx, item.Path)
@@ -362,7 +362,7 @@ func (s *TreeStore) RunOperation(ctx context.Context, id string) (op OperationRe
 				}
 			}
 		}
-	case "restore":
+	case OperationTypeRestore:
 		if len(summary) == 0 {
 			for _, id := range op.TrashIDs {
 				if m, ok, _ := s.GetTrashManifest(ctx, id); ok {
@@ -398,7 +398,7 @@ func (s *TreeStore) RunOperation(ctx context.Context, id string) (op OperationRe
 			}
 			return nil
 		}, false)
-	case "delete-trash":
+	case OperationTypeDeleteTrash:
 		return op, fmt.Errorf("delete-trash operation requires physical object executor")
 	default:
 		return op, fmt.Errorf("unknown operation type %q", op.Type)
@@ -406,7 +406,7 @@ func (s *TreeStore) RunOperation(ctx context.Context, id string) (op OperationRe
 	if e != nil {
 		return op, e
 	}
-	if op.Type == "trash" || op.Type == "restore" {
+	if op.Type == OperationTypeTrash || op.Type == OperationTypeRestore {
 		if e = s.mutateStatsOnce(ctx, op.ID, op.StatsDelta); e != nil {
 			return op, e
 		}
@@ -414,7 +414,7 @@ func (s *TreeStore) RunOperation(ctx context.Context, id string) (op OperationRe
 	}
 	op.Result = records
 	op.Progress = op.Total
-	op.Status = "completed"
+	op.Status = OperationStatusCompleted
 	op.Error = ""
 	op.LeaseOwner = ""
 	op.LeaseUntil = nil
@@ -438,7 +438,7 @@ func (s *TreeStore) RunOperation(ctx context.Context, id string) (op OperationRe
 	current.LeaseUntil = nil
 	_, e = s.saveOperationCAS(ctx, current, cg)
 	op = current
-	if e == nil && (op.Type == "trash" || op.Type == "restore") {
+	if e == nil && (op.Type == OperationTypeTrash || op.Type == OperationTypeRestore) {
 		_ = s.removeStatsToken(ctx, op.ID)
 	}
 	return op, e

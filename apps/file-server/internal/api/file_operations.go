@@ -130,8 +130,8 @@ func (s *Server) handleOperation(w http.ResponseWriter, r *http.Request) {
 func operationToResponse(operation db.OperationRecord) operationResponse {
 	return operationResponse{
 		OperationID: operation.ID,
-		Type:        operation.Type,
-		Status:      operation.Status,
+		Type:        string(operation.Type),
+		Status:      string(operation.Status),
 		Progress:    operation.Progress,
 		Total:       operation.Total,
 		Deleted:     operation.Deleted,

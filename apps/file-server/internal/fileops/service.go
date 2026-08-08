@@ -181,8 +181,7 @@ func (s *Service) Operation(ctx context.Context, id string) (db.OperationRecord,
 	}
 	operation, found, err := operations.GetOperation(ctx, strings.TrimSpace(id))
 	if err == nil && found {
-		leaseExpired := operation.LeaseUntil == nil || !operation.LeaseUntil.After(time.Now())
-		if operation.Status == "pending" || (operation.Status == "running" && leaseExpired) {
+		if operation.NeedsKick(time.Now()) {
 			s.kickOperation(operation.ID)
 		}
 	}
@@ -247,7 +246,7 @@ func (s *Service) kickOperation(id string) {
 		if err != nil || !found {
 			return
 		}
-		if operation.Type == "delete-trash" {
+		if operation.Type == db.OperationTypeDeleteTrash {
 			runner, ok := s.store.(deleteTrashOperationRunner)
 			if !ok {
 				return

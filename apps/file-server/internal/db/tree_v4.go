@@ -1901,16 +1901,19 @@ func (n *treeV4Namespace) runOperation(ctx context.Context, id string) (Operatio
 		}
 		return operation, err
 	}
-	if operation.Status == "completed" || operation.Status == "failed" {
+	if operation.Status.Terminal() {
 		return operation, nil
 	}
-	if operation.Status == "running" && operation.LeaseUntil != nil && operation.LeaseUntil.After(n.now()) {
+	if operation.HasActiveLease(n.now()) {
 		return operation, fmt.Errorf("operation is already running")
 	}
-	if operation.Type != "move" && operation.Type != "rename" && operation.Type != "trash" && operation.Type != "restore" {
+	if !operation.Type.SupportedByTreeV4() {
 		return operation, ErrV4Unsupported
 	}
-	operation.Status = "running"
+	if !operation.Status.CanTransitionTo(OperationStatusRunning) {
+		return operation, fmt.Errorf("operation cannot transition from %q to running", operation.Status)
+	}
+	operation.Status = OperationStatusRunning
 	operation.LeaseOwner = uuid.NewString()
 	owner := operation.LeaseOwner
 	leaseUntil := n.now().Add(2 * time.Minute)
@@ -1919,11 +1922,11 @@ func (n *treeV4Namespace) runOperation(ctx context.Context, id string) (Operatio
 		return operation, err
 	}
 	var records []FileRecord
-	if operation.Type == "move" {
+	if operation.Type == OperationTypeMove {
 		records, err = n.movePaths(ctx, operation.Paths, operation.Destination)
-	} else if operation.Type == "rename" && len(operation.Paths) != 1 {
+	} else if operation.Type == OperationTypeRename && len(operation.Paths) != 1 {
 		err = fmt.Errorf("invalid rename operation")
-	} else if operation.Type == "rename" {
+	} else if operation.Type == OperationTypeRename {
 		err = n.renamePath(ctx, operation.Paths[0], operation.Destination)
 		if err == nil {
 			if record, found, findErr := n.find(ctx, operation.Destination); findErr != nil {
@@ -1932,7 +1935,7 @@ func (n *treeV4Namespace) runOperation(ctx context.Context, id string) (Operatio
 				records = []FileRecord{record}
 			}
 		}
-	} else if operation.Type == "trash" {
+	} else if operation.Type == OperationTypeTrash {
 		records, err = n.trashPaths(ctx, operation.TrashItems)
 	} else {
 		records, err = n.restoreTrash(ctx, operation.TrashIDs)
@@ -1941,7 +1944,7 @@ func (n *treeV4Namespace) runOperation(ctx context.Context, id string) (Operatio
 	if loadErr != nil || !currentFound {
 		return operation, loadErr
 	}
-	if current.Status == "completed" {
+	if current.Status == OperationStatusCompleted {
 		return current, nil
 	}
 	if current.LeaseOwner != owner {
@@ -1950,13 +1953,13 @@ func (n *treeV4Namespace) runOperation(ctx context.Context, id string) (Operatio
 	current.LeaseOwner = ""
 	current.LeaseUntil = nil
 	if err != nil {
-		current.Status = "pending"
+		current.Status = OperationStatusPending
 		if treeV4OperationErrorIsTerminal(err) {
-			current.Status = "failed"
+			current.Status = OperationStatusFailed
 		}
 		current.Error = err.Error()
 	} else {
-		current.Status = "completed"
+		current.Status = OperationStatusCompleted
 		current.Result = records
 		current.Progress = len(records)
 		current.Total = len(records)
