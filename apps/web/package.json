@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "react-router dev --host 0.0.0.0",
-    "build": "tsc --noEmit && (react-router build || node scripts/generate-spa-fallback.mjs)",
-    "typecheck": "tsc --noEmit",
+    "build": "react-router typegen && tsc --noEmit && react-router build",
+    "typecheck": "react-router typegen && tsc --noEmit",
     "lint": "eslint \"app/**/*.{ts,tsx}\" --max-warnings=0",
     "test": "vitest run app",
     "format": "prettier --write \"app/**/*.{ts,tsx,css,json,md}\" \"*.{json,md,js,cjs,ts}\""
