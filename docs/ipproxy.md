@@ -54,9 +54,9 @@ FTP_PASV_URL=<public-ftp-hostname>
 FTP_PASV_MIN=30000
 FTP_PASV_MAX=30100
 HTTP_PORT=18080
-WEB_BASE_PATH=/vfs-link/viewer
-VITE_BASE_PATH=/vfs-link/viewer
-VITE_API_BASE_URL=/vfs-link
+WEB_BASE_PATH=/
+VITE_BASE_PATH=/
+VITE_API_BASE_URL=
 
 HTTP_BASIC_AUTH_ENABLED=true
 HTTP_BASIC_AUTH_USER=<http-user>
@@ -81,16 +81,15 @@ shared server/protocol implementation and does not read the GCP v4 prefix.
 
 `VFS_LINK_IMAGE` is deliberately required and must be a content-addressed
 registry digest or a verified local image ID. It is not safe to use a mutable
-tag such as `latest`. The direct ipproxy build uses
-`VITE_BASE_PATH=/vfs-link/viewer` and `VITE_API_BASE_URL=/vfs-link`, then records
-the resulting local image ID in this file. The first value gives the Viewer its
-public route; the second makes browser requests such as `/api/files` use the
-Nginx API prefix and become `/vfs-link/api/files`. These build-time values are
-specific to ipproxy. GCP serves the Viewer and API without this basename or API
-prefix. `HTTP_PORT` is the host-facing port in this profile; the application
-always listens on container port `8080`. The ipproxy host publishes that port
-as `18080`; the base infrastructure Nginx owns the user-facing ZeroTier port
-`80` and routes `/vfs-link` traffic to it.
+tag such as `latest`. The direct ipproxy build uses `VITE_BASE_PATH=/` and an
+empty `VITE_API_BASE_URL`, then records the resulting local image ID in this
+file. The Viewer and API are served from the `vfs-link` hostname without a
+service path prefix, so browser requests such as `/api/files` remain
+same-origin. These build-time values now match the GCP root-path build.
+`HTTP_PORT` is the host-facing port in this profile; the application always
+listens on container port `8080`. The ipproxy host publishes that port as
+`18080`; the base infrastructure Nginx owns user-facing port `80` and routes
+Host `vfs-link` to it.
 For an HTTPS reverse proxy that terminates TLS for WebDAV, set
 `WEBDAV_ENABLED=true`, configure `WEBDAV_USER` and `WEBDAV_PASS`, and set
 `WEBDAV_TRUST_FORWARDED_HEADERS=true` only when that proxy overwrites
@@ -115,8 +114,8 @@ image_tag=vfs-link/file-server:ipproxy-$release_sha
 vite_base_path=$(sed -n 's/^VITE_BASE_PATH=//p' "$runtime_env")
 vite_api_base_url=$(sed -n 's/^VITE_API_BASE_URL=//p' "$runtime_env")
 
-test "$vite_base_path" = /vfs-link/viewer
-test "$vite_api_base_url" = /vfs-link
+test "$vite_base_path" = /
+test -z "$vite_api_base_url"
 
 docker build \
   --build-arg VITE_BASE_PATH="$vite_base_path" \
@@ -143,13 +142,16 @@ trap 'docker rm -f "$container_id" >/dev/null 2>&1 || true; rm -rf "$artifact_di
 docker cp "$container_id:/app/web/." "$artifact_dir/"
 docker rm "$container_id"
 
-rg --fixed-strings '/vfs-link/viewer/' "$artifact_dir/index.html"
-rg --glob 'api-*.js' --fixed-strings '"/vfs-link"' "$artifact_dir/assets"
+rg --fixed-strings 'src="/assets/' "$artifact_dir/index.html"
+if rg --fixed-strings '/vfs-link' "$artifact_dir"; then
+  echo 'legacy /vfs-link prefix remains in the ipproxy web artifact' >&2
+  exit 1
+fi
 ```
 
-The static check confirms the requested build inputs reached the bundle. The
+The static check confirms the root-path build reached the bundle. The
 deployment acceptance check must still confirm in browser developer tools that
-loading `/vfs-link/viewer/` requests `/vfs-link/api/files`, not `/api/files`.
+loading `http://vfs-link/` requests `/api/files` on the same hostname.
 
 ## Deploy
 

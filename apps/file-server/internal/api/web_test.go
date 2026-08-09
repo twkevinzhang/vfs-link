@@ -11,20 +11,20 @@ func TestWebAssetNameStripsBasePath(t *testing.T) {
 	}{
 		{
 			name:        "base path root",
-			requestPath: "/vfs-link/index",
-			basePath:    "/vfs-link/index",
+			requestPath: "/example-prefix/index",
+			basePath:    "/example-prefix/index",
 			want:        "index.html",
 		},
 		{
 			name:        "asset under base path",
-			requestPath: "/vfs-link/index/assets/app.js",
-			basePath:    "/vfs-link/index",
+			requestPath: "/example-prefix/index/assets/app.js",
+			basePath:    "/example-prefix/index",
 			want:        "assets/app.js",
 		},
 		{
 			name:        "spa route under base path",
-			requestPath: "/vfs-link/index/share/abc",
-			basePath:    "/vfs-link/index",
+			requestPath: "/example-prefix/index/share/abc",
+			basePath:    "/example-prefix/index",
 			want:        "share/abc",
 		},
 		{

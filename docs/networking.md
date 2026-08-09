@@ -33,7 +33,7 @@ API uses either a different origin or a path prefix on the same origin.
 | Deployment | `VITE_BASE_PATH` | `VITE_API_BASE_URL` | Files request |
 | --- | --- | --- | --- |
 | GCP | `/` | empty | `/api/files` |
-| ipproxy | `/vfs-link/viewer` | `/vfs-link` | `/vfs-link/api/files` |
+| ipproxy (`http://vfs-link/`) | `/` | empty | `/api/files` |
 
 These are build-time values embedded in the web assets, not runtime container
 environment overrides. Test browser refreshes, API requests, and download URLs

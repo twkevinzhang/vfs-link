@@ -110,8 +110,8 @@ jobs:
           file: apps/file-server/Dockerfile
           push: false
           build-args: |
-            VITE_BASE_PATH=/vfs-link/index
-            VITE_API_BASE_URL=/vfs-link
+            VITE_BASE_PATH=/
+            VITE_API_BASE_URL=
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -155,8 +155,8 @@ jobs:
           push: true
           tags: ${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
           build-args: |
-            VITE_BASE_PATH=/vfs-link/index
-            VITE_API_BASE_URL=/vfs-link
+            VITE_BASE_PATH=/
+            VITE_API_BASE_URL=
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}

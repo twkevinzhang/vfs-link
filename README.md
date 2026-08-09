@@ -229,7 +229,7 @@ An offline Swagger UI is available at `GET /swagger/` for browsing the
 description and trying requests against the current deployment. The UI bundles
 its assets with the file-server binary and does not load scripts or styles from
 a CDN. When the API is published below a reverse-proxy prefix, keep the same
-suffix (for example, `/vfs-link/swagger/`).
+suffix (for example, `/example-prefix/swagger/`).
 
 > [!CAUTION]
 > Swagger UI enables **Try it out** for every documented HTTP method. Requests
