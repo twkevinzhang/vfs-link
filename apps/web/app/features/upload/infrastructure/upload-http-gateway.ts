@@ -1,8 +1,8 @@
 import type {
-  CreateUploadInput,
   UploadPreflightItemInput,
   UploadPreflightResponse,
   UploadSession,
+  UploadCancellation,
 } from '../application/upload-contracts';
 import type {
   UploadChunkResult,
@@ -14,11 +14,29 @@ import {
   deleteResource,
   postJson,
 } from '../../../shared/infrastructure/http/http-client';
+import type { BrowserUploadSourceRegistry } from './browser-upload-source-registry';
 
 export { HttpError as UploadHttpError };
 
-export function createUpload(input: CreateUploadInput) {
-  return postJson<UploadSession>('/api/uploads', input);
+type UploadSessionDto = UploadSession & {
+  logicPath: string;
+  size: number;
+  contentType: string;
+  method: 'PUT';
+  uploadUrl: string;
+  headers: Record<string, string>;
+  completeUrl: string;
+  statusUrl: string;
+};
+
+function toUploadSession(dto: UploadSessionDto): UploadSession {
+  return {
+    id: dto.id,
+    status: dto.status,
+    uploadedSize: dto.uploadedSize,
+    error: dto.error,
+    expiresAt: dto.expiresAt,
+  };
 }
 
 export async function preflightUploads(items: UploadPreflightItemInput[]) {
@@ -33,29 +51,69 @@ export async function preflightUploads(items: UploadPreflightItemInput[]) {
   return { items: results };
 }
 
-export async function getUploadSession(
-  session: Pick<UploadSession, 'statusUrl'>,
-  signal?: AbortSignal
+function createUploadSessionTransport() {
+  const sessions = new Map<string, UploadSessionDto>();
+
+  const getTransport = (id: string) => {
+    const session = sessions.get(id);
+    if (!session) throw new Error(`Upload transport not found: ${id}`);
+    return session;
+  };
+
+  const remember = (dto: UploadSessionDto) => {
+    sessions.set(dto.id, dto);
+    return toUploadSession(dto);
+  };
+
+  return {
+    getTransport,
+    remember,
+    delete: (id: string) => sessions.delete(id),
+  };
+}
+
+async function fetchUploadSession(
+  sessionId: string,
+  transport: ReturnType<typeof createUploadSessionTransport>,
+  cancellation?: UploadCancellation
 ) {
-  const response = await fetch(apiUrl(session.statusUrl), {
-    headers: { Accept: 'application/json' },
-    signal,
-  });
+  const session = transport.getTransport(sessionId);
+  const controller = new AbortController();
+  if (cancellation?.aborted) controller.abort();
+  const removeAbort = cancellation?.onAbort(() => controller.abort());
+  let response: Response;
+  try {
+    response = await fetch(apiUrl(session.statusUrl), {
+      headers: { Accept: 'application/json' },
+      signal: controller.signal,
+    });
+  } finally {
+    removeAbort?.();
+  }
   if (!response.ok) {
     throw new HttpError(
       `Upload status failed: ${response.status} ${response.statusText}`,
       response.status
     );
   }
-  return response.json() as Promise<UploadSession>;
+  return transport.remember((await response.json()) as UploadSessionDto);
 }
 
-export function completeUpload(session: UploadSession, signal?: AbortSignal) {
-  return postJson<UploadSession>(session.completeUrl, {}, { signal });
-}
-
-export function cancelUpload(id: string) {
-  return deleteResource(`/api/uploads/${encodeURIComponent(id)}`);
+async function completeUploadSession(
+  sessionId: string,
+  transport: ReturnType<typeof createUploadSessionTransport>,
+  cancellation?: UploadCancellation
+) {
+  const session = transport.getTransport(sessionId);
+  const controller = new AbortController();
+  if (cancellation?.aborted) controller.abort();
+  const removeAbort = cancellation?.onAbort(() => controller.abort());
+  const dto = await postJson<UploadSessionDto>(
+    session.completeUrl,
+    {},
+    { signal: controller.signal }
+  ).finally(() => removeAbort?.());
+  return transport.remember(dto);
 }
 
 export function committedOffsetFromRange(value: string | null) {
@@ -64,19 +122,26 @@ export function committedOffsetFromRange(value: string | null) {
   return match ? Number(match[1]) + 1 : undefined;
 }
 
-export function putUploadChunk(
+function putUploadChunk(
+  sourceRegistry: BrowserUploadSourceRegistry,
+  transport: ReturnType<typeof createUploadSessionTransport>,
   session: UploadSession,
-  chunk: Blob,
+  sourceId: string,
   start: number,
+  endExclusive: number,
   total: number,
   onProgress: (uploaded: number, total: number) => void,
-  signal?: AbortSignal
+  cancellation?: UploadCancellation
 ) {
+  const sessionDto = transport.getTransport(session.id);
+  const source = sourceRegistry.get(sourceId);
+  const chunk = source.slice(start, endExclusive, source.type);
   return new Promise<UploadChunkResult>((resolve, reject) => {
     const request = new XMLHttpRequest();
     let settled = false;
     const abortRequest = () => request.abort();
-    const cleanup = () => signal?.removeEventListener('abort', abortRequest);
+    const removeAbort = cancellation?.onAbort(abortRequest);
+    const cleanup = () => removeAbort?.();
     const succeed = (result: UploadChunkResult) => {
       if (settled) return;
       settled = true;
@@ -89,15 +154,15 @@ export function putUploadChunk(
       cleanup();
       reject(error);
     };
-    if (signal?.aborted) {
+    if (cancellation?.aborted) {
       fail(new HttpError('Upload paused'));
       return;
     }
-    request.open(session.method, apiUrl(session.uploadUrl));
-    for (const [name, value] of Object.entries(session.headers)) {
+    request.open(sessionDto.method, apiUrl(sessionDto.uploadUrl));
+    for (const [name, value] of Object.entries(sessionDto.headers)) {
       request.setRequestHeader(name, value);
     }
-    if (!session.headers['Content-Type'] && chunk.type) {
+    if (!sessionDto.headers['Content-Type'] && chunk.type) {
       request.setRequestHeader('Content-Type', chunk.type);
     }
     const end = start + chunk.size - 1;
@@ -132,7 +197,6 @@ export function putUploadChunk(
     request.addEventListener('abort', () =>
       fail(new HttpError('Upload paused'))
     );
-    signal?.addEventListener('abort', abortRequest, { once: true });
     try {
       request.send(chunk);
     } catch (error) {
@@ -141,11 +205,50 @@ export function putUploadChunk(
   });
 }
 
-export const uploadHttpGateway = {
-  cancelUpload,
-  completeUpload,
-  createUpload,
-  getUploadSession,
-  preflightUploads,
-  putUploadChunk,
-} satisfies UploadGateway;
+export function createUploadHttpGateway(
+  sourceRegistry: BrowserUploadSourceRegistry
+) {
+  const transport = createUploadSessionTransport();
+  return {
+    cancelUpload: async (id) => {
+      try {
+        await deleteResource(`/api/uploads/${encodeURIComponent(id)}`);
+      } finally {
+        transport.delete(id);
+      }
+    },
+    completeUpload: (
+      session: UploadSession,
+      cancellation?: UploadCancellation
+    ) => completeUploadSession(session.id, transport, cancellation),
+    createUpload: async (input) =>
+      transport.remember(
+        await postJson<UploadSessionDto>('/api/uploads', input)
+      ),
+    getUploadSession: (
+      session: Pick<UploadSession, 'id'>,
+      cancellation?: UploadCancellation
+    ) => fetchUploadSession(session.id, transport, cancellation),
+    preflightUploads,
+    putUploadChunk: (
+      session,
+      sourceId,
+      start,
+      endExclusive,
+      total,
+      onProgress,
+      currentCancellation
+    ) =>
+      putUploadChunk(
+        sourceRegistry,
+        transport,
+        session,
+        sourceId,
+        start,
+        endExclusive,
+        total,
+        onProgress,
+        currentCancellation
+      ),
+  } satisfies UploadGateway;
+}

@@ -24,12 +24,9 @@ async function errorDetails(response: Response) {
     const body = (await response.json()) as {
       error?: string;
       code?: string;
-      snapshotStatus?: string;
     };
     return {
-      message:
-        body.error ||
-        (body.snapshotStatus === 'missing' ? 'no drift snapshot' : fallback),
+      message: body.error || fallback,
       code: body.code,
     };
   } catch {

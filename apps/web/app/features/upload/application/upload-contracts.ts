@@ -1,26 +1,13 @@
-import type { ArchiveTemporaryManifest } from '../domain/archive-manifest';
+import type {
+  UploadPreflightExisting,
+  UploadPreflightStatus,
+} from '../domain/upload-queue';
 
-export type UploadSession = {
-  id: string;
-  logicPath: string;
-  size: number;
-  contentType: string;
-  status:
-    | 'pending'
-    | 'uploading'
-    | 'uploaded'
-    | 'complete'
-    | 'failed'
-    | 'expired';
-  uploadedSize: number;
-  error?: string;
-  method: 'PUT';
-  uploadUrl: string;
-  headers: Record<string, string>;
-  completeUrl: string;
-  statusUrl: string;
-  expiresAt: string;
-};
+export type {
+  UploadPreflightExisting,
+  UploadPreflightStatus,
+  UploadSession,
+} from '../domain/upload-queue';
 
 export type CreateUploadInput = {
   path: string;
@@ -30,13 +17,7 @@ export type CreateUploadInput = {
   targetVersion?: string;
 };
 
-export type UploadPreflightStatus = 'available' | 'conflict' | 'directory';
 export type UploadPreflightItemInput = { clientId: string; path: string };
-export type UploadPreflightExisting = {
-  kind: 'file' | 'directory';
-  size: number;
-  updatedAt: string;
-};
 export type UploadPreflightItem = UploadPreflightItemInput & {
   status: UploadPreflightStatus;
   existing?: UploadPreflightExisting;
@@ -44,29 +25,17 @@ export type UploadPreflightItem = UploadPreflightItemInput & {
 };
 export type UploadPreflightResponse = { items: UploadPreflightItem[] };
 
-/**
- * Transitional browser source contract. File and FileSystemHandle stay in the
- * application edge and are deliberately excluded from upload domain models.
- */
-export type UploadCandidate = {
-  file: File;
-  fileHandle?: FileSystemFileHandle;
-  sourceHandlePersistence?: 'durable' | 'non-durable';
-  relativePath: string;
-  selectionRoot: string;
-  selectionRootKind: 'file' | 'directory';
-  archiveGroupId?: string;
-  archiveTemporaryManifest?: ArchiveTemporaryManifest;
+/** Primitive-only description registered by the browser source adapter. */
+export type UploadSourceDescriptor = {
+  sourceId: string;
+  name: string;
+  size: number;
+  lastModified: number;
+  contentType: string;
 };
 
-export type PreparedArchiveBatch = {
-  id: string;
-  candidates: UploadCandidate[];
-  thumbnail?: { blob: Blob; width: number; height: number };
-  temporaryNames: string[];
-  temporaryManifest?: ArchiveTemporaryManifest;
-};
-
-export type UploadDialogDependencies = {
-  removeArchiveTemporaryFiles(names: string[]): Promise<void>;
+export type UploadCancellation = {
+  readonly aborted: boolean;
+  onAbort(listener: () => void): () => void;
+  throwIfAborted(): void;
 };

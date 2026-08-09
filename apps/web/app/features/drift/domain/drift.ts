@@ -10,7 +10,7 @@ export type DriftItem = {
   generation: string | number;
   estimatedCostUsdMin: number;
   estimatedCostUsdMax: number;
-  actionable?: boolean;
+  actionable: boolean;
   scope?: string;
   method?: string;
   error?: string;
@@ -44,11 +44,11 @@ export type DriftSummary = {
   warnings: string[];
 };
 export type DriftResponse = {
-  available?: boolean;
-  enabled?: boolean;
-  readOnly?: boolean;
+  available: boolean;
+  enabled: boolean;
+  readOnly: boolean;
   reason?: string;
-  storageDriver?: string;
+  storageDriver: string;
   summary: DriftSummary;
   items: DriftItem[];
   pagination: Pagination;
@@ -78,19 +78,17 @@ export type DriftActionResult = {
 };
 export type DriftAction = {
   id: string;
-  actionId?: string;
-  idempotencyKey?: string;
+  idempotencyKey: string;
   planId: string;
   status: string;
   progress: number;
   total: number;
   succeeded: number;
   failed: number;
-  failedPaths?: string[];
-  results?: DriftActionResult[];
+  results: DriftActionResult[];
   error?: string;
-  createdAt?: string;
-  updatedAt?: string;
+  createdAt: string;
+  updatedAt: string;
 };
 export type DriftActionsResponse = { actions: DriftAction[] };
 export type DriftScan = {

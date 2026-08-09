@@ -18,10 +18,9 @@ export type DriftGateway = {
   createDriftPlan(paths: string[]): Promise<DriftPlan>;
   createDriftAction(
     planId: string,
-    paths: string[],
     existingIdempotencyKey?: string
   ): Promise<DriftAction>;
-  getDriftAction(id: string, paths: string[]): Promise<DriftAction>;
+  getDriftAction(id: string): Promise<DriftAction>;
   getDriftActions(): Promise<DriftAction[]>;
   dismissDriftAction(id: string): Promise<void>;
   getCurrentDriftScan(): Promise<DriftScan | undefined>;

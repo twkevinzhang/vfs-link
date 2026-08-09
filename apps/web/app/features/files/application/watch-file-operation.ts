@@ -1,4 +1,4 @@
-import type { FileOperationResponse } from '../domain/files';
+import type { FileOperationResult } from './files-results';
 
 const DEFAULT_INTERVAL_MS = 1_500;
 const DEFAULT_DEADLINE_MS = 15 * 60 * 1_000;
@@ -12,37 +12,41 @@ export class FileOperationPollingTimeoutError extends Error {
 
 type WatchFileOperationOptions = {
   id: string;
-  fetchOperation: (
-    id: string,
-    signal: AbortSignal
-  ) => Promise<FileOperationResponse>;
-  onUpdate?: (operation: FileOperationResponse) => void;
-  signal?: AbortSignal;
+  fetchOperation: (id: string) => Promise<FileOperationResult>;
+  onUpdate?: (operation: FileOperationResult) => void;
+  cancellation?: FileOperationCancellation;
   intervalMs?: number;
   deadlineMs?: number;
 };
 
-function abortError(signal: AbortSignal) {
-  return signal.reason instanceof Error
-    ? signal.reason
-    : new DOMException('Aborted', 'AbortError');
+export type FileOperationCancellation = {
+  readonly cancelled: boolean;
+};
+
+export class FileOperationCancelledError extends Error {
+  constructor() {
+    super('Background operation monitoring was cancelled');
+    this.name = 'FileOperationCancelledError';
+  }
 }
 
-function wait(ms: number, signal: AbortSignal) {
-  return new Promise<void>((resolve, reject) => {
-    const timer = globalThis.setTimeout(() => {
-      signal.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    const onAbort = () => {
-      globalThis.clearTimeout(timer);
-      reject(abortError(signal));
-    };
-    if (signal.aborted) {
-      onAbort();
-      return;
-    }
-    signal.addEventListener('abort', onAbort, { once: true });
+function wait(ms: number) {
+  return new Promise<void>((resolve) => {
+    globalThis.setTimeout(resolve, ms);
+  });
+}
+
+function enforceDeadline<T>(
+  work: Promise<T>,
+  remainingMs: number,
+  deadlineMs: number
+) {
+  return new Promise<T>((resolve, reject) => {
+    const deadline = globalThis.setTimeout(
+      () => reject(new FileOperationPollingTimeoutError(deadlineMs)),
+      remainingMs
+    );
+    work.then(resolve, reject).finally(() => globalThis.clearTimeout(deadline));
   });
 }
 
@@ -50,58 +54,35 @@ export async function watchFileOperation({
   id,
   fetchOperation,
   onUpdate,
-  signal,
+  cancellation,
   intervalMs = DEFAULT_INTERVAL_MS,
   deadlineMs = DEFAULT_DEADLINE_MS,
-}: WatchFileOperationOptions): Promise<FileOperationResponse> {
-  const controller = new AbortController();
-  let deadlineReached = false;
-  const onExternalAbort = () => controller.abort(signal?.reason);
-  if (signal?.aborted) {
-    onExternalAbort();
-  } else {
-    signal?.addEventListener('abort', onExternalAbort, { once: true });
-  }
-  const deadline = globalThis.setTimeout(() => {
-    deadlineReached = true;
-    controller.abort();
-  }, deadlineMs);
+}: WatchFileOperationOptions): Promise<FileOperationResult> {
+  const startedAt = Date.now();
 
-  try {
-    for (;;) {
-      let operation: FileOperationResponse;
-      try {
-        operation = await fetchOperation(id, controller.signal);
-      } catch (error) {
-        if (deadlineReached) {
-          throw new FileOperationPollingTimeoutError(deadlineMs);
-        }
-        if (controller.signal.aborted) {
-          throw abortError(controller.signal);
-        }
-        throw error;
-      }
-      if (deadlineReached) {
-        throw new FileOperationPollingTimeoutError(deadlineMs);
-      }
-      if (controller.signal.aborted) {
-        throw abortError(controller.signal);
-      }
-      onUpdate?.(operation);
-      if (operation.status === 'completed' || operation.status === 'failed') {
-        return operation;
-      }
-      try {
-        await wait(intervalMs, controller.signal);
-      } catch (error) {
-        if (deadlineReached) {
-          throw new FileOperationPollingTimeoutError(deadlineMs);
-        }
-        throw error;
-      }
+  for (;;) {
+    if (cancellation?.cancelled) {
+      throw new FileOperationCancelledError();
     }
-  } finally {
-    globalThis.clearTimeout(deadline);
-    signal?.removeEventListener('abort', onExternalAbort);
+    if (Date.now() - startedAt >= deadlineMs) {
+      throw new FileOperationPollingTimeoutError(deadlineMs);
+    }
+    const remainingMs = deadlineMs - (Date.now() - startedAt);
+    const operation = await enforceDeadline(
+      fetchOperation(id),
+      remainingMs,
+      deadlineMs
+    );
+    if (cancellation?.cancelled) {
+      throw new FileOperationCancelledError();
+    }
+    if (Date.now() - startedAt >= deadlineMs) {
+      throw new FileOperationPollingTimeoutError(deadlineMs);
+    }
+    onUpdate?.(operation);
+    if (operation.status === 'completed' || operation.status === 'failed') {
+      return operation;
+    }
+    await wait(Math.min(intervalMs, deadlineMs - (Date.now() - startedAt)));
   }
 }

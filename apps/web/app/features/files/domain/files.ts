@@ -1,5 +1,3 @@
-import type { Pagination } from '../../../shared/kernel/pagination';
-
 export type EntryKind = 'directory' | 'file';
 
 export type FolderSummary = {
@@ -22,11 +20,7 @@ export type FileEntry = {
 };
 
 export type TrashEntry = FileEntry & { trashId: string; trashedAt: string };
-export type TrashResponse = { entries: TrashEntry[]; generatedAt: string };
-export type FileMutationResponse = { entries: FileEntry[] };
-export type DeleteResponse = { deleted: number };
-
-export type FileOperationResponse = {
+export type FileOperation = {
   operationId: string;
   type: string;
   status: 'pending' | 'running' | 'completed' | 'failed';
@@ -43,17 +37,6 @@ export type TreeNode = FileEntry & {
   hasChildren?: boolean;
 };
 
-export type FilesResponse = {
-  path: string;
-  breadcrumbs: FileEntry[];
-  entries: FileEntry[];
-  pagination: Pagination;
-  folderSummary: FolderSummary;
-  visibleBytes: number;
-  stats?: Stats;
-  generatedAt: string;
-};
-
 export type Stats = {
   fileCount: number;
   directoryCount: number;
@@ -61,12 +44,3 @@ export type Stats = {
   objectCount: number;
   objectBytes: number;
 };
-
-export type StatusResponse = {
-  storageDriver: string;
-  storageRoot: string;
-  stats: Stats;
-  generatedAt: string;
-};
-
-export type { Pagination } from '../../../shared/kernel/pagination';

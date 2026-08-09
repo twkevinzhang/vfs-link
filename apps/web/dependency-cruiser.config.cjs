@@ -1,119 +1,178 @@
+const { existsSync, readdirSync } = require('node:fs');
+const { join } = require('node:path');
+
+const FEATURE_LAYERS =
+  '(?:domain|application|infrastructure|presentation|composition)';
+const APP_ROOT_PATTERN = '(?:app|[.]architecture-fixtures/[^/]+/app)';
+const contextsIn = (root) =>
+  existsSync(root)
+    ? readdirSync(root, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+    : [];
+const fixtureRoot = join(__dirname, '.architecture-fixtures');
+const fixtureFeatureRoots = existsSync(fixtureRoot)
+  ? readdirSync(fixtureRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => join(fixtureRoot, entry.name, 'app/features'))
+  : [];
+const featureContexts = [
+  ...new Set([
+    ...contextsIn(join(__dirname, 'app/features')),
+    ...fixtureFeatureRoots.flatMap(contextsIn),
+  ]),
+];
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 /** @type {import('dependency-cruiser').IConfiguration} */
 module.exports = {
   forbidden: [
     {
       name: 'no-production-cycles',
       severity: 'error',
-      comment: 'Production modules must remain acyclic.',
       from: {
-        path: '^app/',
+        path: `^${APP_ROOT_PATTERN}/`,
         pathNot: '[.](?:test|spec)[.](?:ts|tsx)$',
       },
-      to: {
-        circular: true,
-        pathNot: '[.](?:test|spec)[.](?:ts|tsx)$',
-      },
+      to: { circular: true, pathNot: '[.](?:test|spec)[.](?:ts|tsx)$' },
     },
     {
       name: 'no-unresolved-local-imports',
       severity: 'error',
-      from: { path: '^app/' },
-      to: { couldNotResolve: true, path: '^app/' },
+      from: { path: `^${APP_ROOT_PATTERN}/` },
+      to: { couldNotResolve: true, path: `^${APP_ROOT_PATTERN}/` },
     },
-    {
-      name: 'application-does-not-import-presentation',
+    ...featureContexts.map((context) => ({
+      name: `${context}-bounded-context-isolated`,
       severity: 'error',
-      comment:
-        'Application contracts own workflow inputs; presentation modules consume them.',
-      from: { path: '^app/features/[^/]+/application/' },
-      to: { path: '^app/features/[^/]+/presentation/' },
-    },
-    {
-      name: 'application-does-not-import-infrastructure',
-      severity: 'error',
-      comment:
-        'Application owns ports and use cases; infrastructure implements those ports.',
-      from: { path: '^app/features/[^/]+/application/' },
-      to: {
-        path: [
-          '^app/features/[^/]+/infrastructure/',
-          '^app/shared/infrastructure/',
-          '^app/(?:components|hooks|routes|lib/api)',
-        ],
-      },
-    },
-    {
-      name: 'domain-does-not-import-outer-layers',
-      severity: 'error',
-      comment:
-        'Domain modules may only depend on their domain peers and the shared kernel.',
-      from: { path: '^app/features/[^/]+/domain/' },
-      to: {
-        path: [
-          '^app/features/[^/]+/(?:application|infrastructure|presentation)/',
-          '^app/(?:components|hooks|routes|lib/api|shared/infrastructure)',
-        ],
-      },
-    },
-    {
-      name: 'infrastructure-does-not-import-presentation',
-      severity: 'error',
-      from: { path: '^app/features/[^/]+/infrastructure/' },
-      to: {
-        path: [
-          '^app/features/[^/]+/presentation/',
-          '^app/(?:components|hooks|routes)',
-        ],
-      },
-    },
-    {
-      name: 'presentation-and-hooks-use-injected-infrastructure',
-      severity: 'error',
-      comment:
-        'React adapters receive application-owned dependencies from a route/root composition root.',
       from: {
-        path: '^app/(?:components/|hooks/|features/[^/]+/presentation/)',
+        path: `^${APP_ROOT_PATTERN}/features/${escapeRegExp(context)}/`,
       },
       to: {
-        path: [
-          '^app/features/[^/]+/infrastructure/',
-          '^app/lib/archive-temporary-storage[.]ts$',
+        path: `^${APP_ROOT_PATTERN}/features/(?!${escapeRegExp(
+          context
+        )}/)[^/]+/`,
+      },
+    })),
+    {
+      name: 'feature-production-files-belong-to-a-layer',
+      severity: 'error',
+      comment:
+        'Every feature production module must live in one of the five layers.',
+      from: {
+        path: `^${APP_ROOT_PATTERN}/features/[^/]+/(?!${FEATURE_LAYERS}/)`,
+      },
+      to: {},
+    },
+    {
+      name: 'domain-allowlist',
+      severity: 'error',
+      comment: 'Domain may depend only on its domain and shared kernel.',
+      from: { path: `^${APP_ROOT_PATTERN}/features/[^/]+/domain/` },
+      to: {
+        path: `^${APP_ROOT_PATTERN}/`,
+        pathNot: [
+          `^${APP_ROOT_PATTERN}/features/[^/]+/domain/`,
+          `^${APP_ROOT_PATTERN}/shared/kernel/`,
         ],
       },
     },
     {
-      name: 'upload-context-isolated',
+      name: 'application-allowlist',
       severity: 'error',
-      from: { path: '^app/features/upload/' },
-      to: { path: '^app/features/(?:files|drift|share)/' },
-    },
-    {
-      name: 'files-context-isolated',
-      severity: 'error',
-      from: { path: '^app/features/files/' },
-      to: { path: '^app/features/(?:drift|share)/' },
-    },
-    {
-      name: 'drift-context-isolated',
-      severity: 'error',
-      from: { path: '^app/features/drift/' },
-      to: { path: '^app/features/(?:files|upload|share)/' },
-    },
-    {
-      name: 'share-context-isolated',
-      severity: 'error',
-      from: { path: '^app/features/share/' },
-      to: { path: '^app/features/(?:files|upload|drift)/' },
-    },
-    {
-      name: 'production-does-not-use-api-compatibility-facade',
-      severity: 'error',
-      comment: 'The api.ts barrel exists for compatibility tests only.',
-      from: {
-        path: '^app/',
-        pathNot: '[.](?:test|spec)[.](?:ts|tsx)$',
+      comment: 'Application owns use cases and ports; it is browser-neutral.',
+      from: { path: `^${APP_ROOT_PATTERN}/features/[^/]+/application/` },
+      to: {
+        path: `^${APP_ROOT_PATTERN}/`,
+        pathNot: [
+          `^${APP_ROOT_PATTERN}/features/[^/]+/(?:application|domain)/`,
+          `^${APP_ROOT_PATTERN}/shared/kernel/`,
+        ],
       },
-      to: { path: '^app/lib/api[.]ts$' },
+    },
+    {
+      name: 'infrastructure-allowlist',
+      severity: 'error',
+      comment: 'Infrastructure implements application ports and cannot see UI.',
+      from: {
+        path: `^${APP_ROOT_PATTERN}/features/[^/]+/infrastructure/`,
+      },
+      to: {
+        path: `^${APP_ROOT_PATTERN}/`,
+        pathNot: [
+          `^${APP_ROOT_PATTERN}/features/[^/]+/(?:infrastructure|application|domain)/`,
+          `^${APP_ROOT_PATTERN}/shared/(?:infrastructure|kernel)/`,
+        ],
+      },
+    },
+    {
+      name: 'presentation-allowlist',
+      severity: 'error',
+      comment:
+        'Presentation uses application/domain contracts and shared UI only.',
+      from: { path: `^${APP_ROOT_PATTERN}/features/[^/]+/presentation/` },
+      to: {
+        path: `^${APP_ROOT_PATTERN}/`,
+        pathNot: [
+          `^${APP_ROOT_PATTERN}/features/[^/]+/(?:presentation|application|domain)/`,
+          `^${APP_ROOT_PATTERN}/shared/(?:presentation|kernel)/`,
+        ],
+      },
+    },
+    {
+      name: 'composition-allowlist',
+      severity: 'error',
+      comment: 'Composition is the sole wiring layer for concrete adapters.',
+      from: { path: `^${APP_ROOT_PATTERN}/features/[^/]+/composition/` },
+      to: {
+        path: `^${APP_ROOT_PATTERN}/`,
+        pathNot: [
+          `^${APP_ROOT_PATTERN}/features/[^/]+/(?:composition|presentation|infrastructure|application|domain)/`,
+          `^${APP_ROOT_PATTERN}/shared/`,
+        ],
+      },
+    },
+    {
+      name: 'shared-kernel-allowlist',
+      severity: 'error',
+      from: { path: `^${APP_ROOT_PATTERN}/shared/kernel/` },
+      to: {
+        path: `^${APP_ROOT_PATTERN}/`,
+        pathNot: `^${APP_ROOT_PATTERN}/shared/kernel/`,
+      },
+    },
+    {
+      name: 'shared-infrastructure-allowlist',
+      severity: 'error',
+      from: { path: `^${APP_ROOT_PATTERN}/shared/infrastructure/` },
+      to: {
+        path: `^${APP_ROOT_PATTERN}/`,
+        pathNot: `^${APP_ROOT_PATTERN}/shared/(?:infrastructure|kernel)/`,
+      },
+    },
+    {
+      name: 'shared-presentation-allowlist',
+      severity: 'error',
+      from: { path: `^${APP_ROOT_PATTERN}/shared/presentation/` },
+      to: {
+        path: `^${APP_ROOT_PATTERN}/`,
+        pathNot: `^${APP_ROOT_PATTERN}/shared/(?:presentation|kernel)/`,
+      },
+    },
+    {
+      name: 'route-composition-roots-only',
+      severity: 'error',
+      comment:
+        'Routes and root import only context composition entries and shared adapters.',
+      from: { path: `^${APP_ROOT_PATTERN}/(?:routes/|root[.]tsx$)` },
+      to: {
+        path: `^${APP_ROOT_PATTERN}/`,
+        pathNot: [
+          `^${APP_ROOT_PATTERN}/features/[^/]+/composition(?:/|$)`,
+          `^${APP_ROOT_PATTERN}/shared/`,
+          `^${APP_ROOT_PATTERN}/app[.]css$`,
+        ],
+      },
     },
   ],
   options: {

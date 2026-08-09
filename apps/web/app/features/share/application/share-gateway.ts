@@ -1,13 +1,18 @@
 import type { ShareRecord } from '../domain/share';
 
+export type ShareRequestCancellation = {
+  readonly cancelled: boolean;
+  onCancel(listener: () => void): () => void;
+};
+
 export type ShareGateway = {
   createShareDraft(path: string): Promise<ShareRecord>;
   getShare(
     id: string,
-    options?: { signal?: AbortSignal }
+    cancellation?: ShareRequestCancellation
   ): Promise<ShareRecord>;
   startShare(
     id: string,
-    options?: { signal?: AbortSignal }
+    cancellation?: ShareRequestCancellation
   ): Promise<ShareRecord>;
 };

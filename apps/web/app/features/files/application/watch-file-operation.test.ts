@@ -1,14 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { FileOperationResponse } from '../domain/files';
+import type { FileOperationResult } from './files-results';
 import {
+  FileOperationCancelledError,
   FileOperationPollingTimeoutError,
   watchFileOperation,
 } from './watch-file-operation';
 
-function operation(
-  status: FileOperationResponse['status']
-): FileOperationResponse {
+function operation(status: FileOperationResult['status']): FileOperationResult {
   return {
     operationId: 'operation-1',
     type: 'move',
@@ -28,10 +27,10 @@ describe('watchFileOperation', () => {
   it('stops requesting after the first terminal response', async () => {
     vi.useFakeTimers();
     const fetchOperation = vi
-      .fn<(id: string, signal: AbortSignal) => Promise<FileOperationResponse>>()
+      .fn<(id: string) => Promise<FileOperationResult>>()
       .mockResolvedValueOnce(operation('pending'))
       .mockResolvedValueOnce(operation('completed'));
-    const updates: FileOperationResponse[] = [];
+    const updates: FileOperationResult[] = [];
 
     const result = watchFileOperation({
       id: 'operation-1',
@@ -50,48 +49,27 @@ describe('watchFileOperation', () => {
       'pending',
       'completed',
     ]);
-    expect(fetchOperation.mock.calls[0]?.[1]).toBeInstanceOf(AbortSignal);
+    expect(fetchOperation).toHaveBeenNthCalledWith(1, 'operation-1');
   });
 
-  it('aborts an in-flight request when the caller is disposed', async () => {
-    const controller = new AbortController();
-    let receivedSignal: AbortSignal | undefined;
-    const fetchOperation = vi.fn(
-      (_id: string, signal: AbortSignal) =>
-        new Promise<FileOperationResponse>((_resolve, reject) => {
-          receivedSignal = signal;
-          signal.addEventListener(
-            'abort',
-            () => reject(new DOMException('Aborted', 'AbortError')),
-            { once: true }
-          );
-        })
-    );
+  it('stops before requesting when the application cancellation is set', async () => {
+    const fetchOperation =
+      vi.fn<(id: string) => Promise<FileOperationResult>>();
 
     const result = watchFileOperation({
       id: 'operation-1',
       fetchOperation,
-      signal: controller.signal,
+      cancellation: { cancelled: true },
     });
-    controller.abort();
 
-    await expect(result).rejects.toMatchObject({ name: 'AbortError' });
-    expect(receivedSignal?.aborted).toBe(true);
+    await expect(result).rejects.toBeInstanceOf(FileOperationCancelledError);
+    expect(fetchOperation).not.toHaveBeenCalled();
   });
 
-  it('enforces a hard deadline and aborts the active request', async () => {
+  it('enforces a hard deadline for an active request', async () => {
     vi.useFakeTimers();
-    let receivedSignal: AbortSignal | undefined;
     const fetchOperation = vi.fn(
-      (_id: string, signal: AbortSignal) =>
-        new Promise<FileOperationResponse>((_resolve, reject) => {
-          receivedSignal = signal;
-          signal.addEventListener(
-            'abort',
-            () => reject(new DOMException('Aborted', 'AbortError')),
-            { once: true }
-          );
-        })
+      () => new Promise<FileOperationResult>(() => undefined)
     );
 
     const result = watchFileOperation({
@@ -105,6 +83,25 @@ describe('watchFileOperation', () => {
     await vi.advanceTimersByTimeAsync(5_000);
 
     await assertion;
-    expect(receivedSignal?.aborted).toBe(true);
+    expect(fetchOperation).toHaveBeenCalledOnce();
+  });
+
+  it('does not sleep beyond the deadline between polling requests', async () => {
+    vi.useFakeTimers();
+    const fetchOperation = vi.fn().mockResolvedValue(operation('pending'));
+    const result = watchFileOperation({
+      id: 'operation-1',
+      fetchOperation,
+      intervalMs: 1_500,
+      deadlineMs: 1_000,
+    });
+    const assertion = expect(result).rejects.toBeInstanceOf(
+      FileOperationPollingTimeoutError
+    );
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    await assertion;
+    expect(fetchOperation).toHaveBeenCalledOnce();
   });
 });

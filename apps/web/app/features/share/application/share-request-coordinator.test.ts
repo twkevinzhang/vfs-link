@@ -1,12 +1,19 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ShareRecord, ShareStatus } from '../domain/share';
+import type { ShareRequestCancellation } from './share-gateway';
 import {
   ShareRequestTimeoutError,
   createShareRequestCoordinator,
   isTerminalShareStatus,
   settleShareRequest,
 } from './share-request-coordinator';
+
+const scheduler = {
+  setTimeout: (callback: () => void, delay: number) =>
+    globalThis.setTimeout(callback, delay),
+  clearTimeout: (handle: unknown) => globalThis.clearTimeout(handle as number),
+};
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -43,6 +50,7 @@ describe('share request coordinator', () => {
     const load = vi.fn(() => pending.promise);
     const applied: ShareRecord[] = [];
     const coordinator = createShareRequestCoordinator({
+      scheduler,
       load,
       onSuccess: (next) => applied.push(next),
     });
@@ -63,11 +71,12 @@ describe('share request coordinator', () => {
     const stale = deferred<ShareRecord>();
     const latest = deferred<ShareRecord>();
     const load = vi
-      .fn<(_signal: AbortSignal) => Promise<ShareRecord>>()
+      .fn<(_cancellation: ShareRequestCancellation) => Promise<ShareRecord>>()
       .mockImplementationOnce(() => stale.promise)
       .mockImplementationOnce(() => latest.promise);
     const applied: ShareStatus[] = [];
     const coordinator = createShareRequestCoordinator({
+      scheduler,
       load,
       onSuccess: (next) => applied.push(next.status),
     });
@@ -85,6 +94,7 @@ describe('share request coordinator', () => {
   it('stops automatic polling after a terminal response', async () => {
     const load = vi.fn().mockResolvedValue(share('completed'));
     const coordinator = createShareRequestCoordinator({
+      scheduler,
       load,
       onSuccess: vi.fn(),
     });
@@ -101,6 +111,7 @@ describe('share request coordinator', () => {
       .mockResolvedValueOnce(share('failed'))
       .mockResolvedValueOnce(share('uploading'));
     const coordinator = createShareRequestCoordinator({
+      scheduler,
       load,
       onSuccess: vi.fn(),
     });
@@ -113,26 +124,26 @@ describe('share request coordinator', () => {
   });
 
   it('aborts active work and rejects no state after disposal', async () => {
-    let receivedSignal: AbortSignal | undefined;
+    let receivedCancellation: ShareRequestCancellation | undefined;
     const onSuccess = vi.fn();
     const load = vi.fn(
-      (signal: AbortSignal) =>
+      (cancellation: ShareRequestCancellation) =>
         new Promise<ShareRecord>((_resolve, reject) => {
-          receivedSignal = signal;
-          signal.addEventListener(
-            'abort',
-            () => reject(new DOMException('Aborted', 'AbortError')),
-            { once: true }
-          );
+          receivedCancellation = cancellation;
+          cancellation.onCancel(() => reject(new Error('Cancelled')));
         })
     );
-    const coordinator = createShareRequestCoordinator({ load, onSuccess });
+    const coordinator = createShareRequestCoordinator({
+      scheduler,
+      load,
+      onSuccess,
+    });
 
     const request = coordinator.poll();
     coordinator.dispose();
 
     await expect(request).resolves.toBeUndefined();
-    expect(receivedSignal?.aborted).toBe(true);
+    expect(receivedCancellation?.cancelled).toBe(true);
     expect(onSuccess).not.toHaveBeenCalled();
   });
 
@@ -140,16 +151,13 @@ describe('share request coordinator', () => {
     vi.useFakeTimers();
     const errors: unknown[] = [];
     const load = vi.fn(
-      (signal: AbortSignal) =>
+      (cancellation: ShareRequestCancellation) =>
         new Promise<ShareRecord>((_resolve, reject) => {
-          signal.addEventListener(
-            'abort',
-            () => reject(new DOMException('Aborted', 'AbortError')),
-            { once: true }
-          );
+          cancellation.onCancel(() => reject(new Error('Cancelled')));
         })
     );
     const coordinator = createShareRequestCoordinator({
+      scheduler,
       load,
       onSuccess: vi.fn(),
       onError: (error) => errors.push(error),
@@ -168,12 +176,13 @@ describe('share request coordinator', () => {
   it('ignores and aborts a stale start response superseded by refresh', async () => {
     const staleStart = deferred<ShareRecord>();
     const latestLoad = deferred<ShareRecord>();
-    let startSignal: AbortSignal | undefined;
+    let startCancellation: ShareRequestCancellation | undefined;
     const applied: ShareStatus[] = [];
     const coordinator = createShareRequestCoordinator({
+      scheduler,
       load: () => latestLoad.promise,
-      start: (signal) => {
-        startSignal = signal;
+      start: (cancellation) => {
+        startCancellation = cancellation;
         return staleStart.promise;
       },
       onSuccess: (next) => applied.push(next.status),
@@ -181,7 +190,7 @@ describe('share request coordinator', () => {
 
     const startRequest = coordinator.start();
     const refreshRequest = coordinator.refresh();
-    expect(startSignal?.aborted).toBe(true);
+    expect(startCancellation?.cancelled).toBe(true);
 
     latestLoad.resolve(share('uploading'));
     await refreshRequest;
@@ -192,18 +201,15 @@ describe('share request coordinator', () => {
   });
 
   it('aborts start and applies no state after disposal', async () => {
-    let startSignal: AbortSignal | undefined;
+    let startCancellation: ShareRequestCancellation | undefined;
     const onSuccess = vi.fn();
     const coordinator = createShareRequestCoordinator({
+      scheduler,
       load: vi.fn(),
-      start: (signal) =>
+      start: (cancellation) =>
         new Promise<ShareRecord>((_resolve, reject) => {
-          startSignal = signal;
-          signal.addEventListener(
-            'abort',
-            () => reject(new DOMException('Aborted', 'AbortError')),
-            { once: true }
-          );
+          startCancellation = cancellation;
+          cancellation.onCancel(() => reject(new Error('Cancelled')));
         }),
       onSuccess,
     });
@@ -212,7 +218,7 @@ describe('share request coordinator', () => {
     coordinator.dispose();
 
     await expect(request).resolves.toBeUndefined();
-    expect(startSignal?.aborted).toBe(true);
+    expect(startCancellation?.cancelled).toBe(true);
     expect(onSuccess).not.toHaveBeenCalled();
   });
 

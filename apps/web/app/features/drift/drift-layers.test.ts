@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import type { DriftAction } from './domain/drift';
+import type { DriftAction, DriftItem } from './domain/drift';
 import { createDriftActionListResponseGuard } from './application/drift-action-list-guard';
 import {
   driftActionFailedPaths,
   driftActionPaths,
+  isActionableDriftItem,
   isDriftActionTerminal,
   markDriftActionRetrying,
   upsertDriftAction,
@@ -26,6 +27,7 @@ function deferred<T>() {
 
 const action: DriftAction = {
   id: 'action-1',
+  idempotencyKey: 'key-1',
   planId: 'plan-1',
   status: 'partial',
   progress: 3,
@@ -36,9 +38,31 @@ const action: DriftAction = {
     { logicPath: 'ok.txt', status: 'completed' },
     { logicPath: 'retry.txt', status: 'failed', error: 'precondition' },
   ],
+  createdAt: '2026-08-09T00:00:00Z',
+  updatedAt: '2026-08-09T00:00:00Z',
 };
 
 describe('drift layers', () => {
+  it('uses the server-authoritative actionable flag without status inference', () => {
+    const item = {
+      logicPath: 'archive/report.pdf',
+      currentKey: 'object-key',
+      targetKey: 'archive/report.pdf',
+      status: 'shared_object',
+      size: 10,
+      storageClass: 'ARCHIVE',
+      generation: 42,
+      estimatedCostUsdMin: 0,
+      estimatedCostUsdMax: 0,
+      actionable: false,
+    } satisfies DriftItem;
+
+    expect(isActionableDriftItem(item)).toBe(false);
+    expect(
+      isActionableDriftItem({ ...item, status: 'unknown', actionable: true })
+    ).toBe(true);
+  });
+
   it('identifies terminal action states and computes bounded progress', () => {
     expect(isDriftActionTerminal('partial')).toBe(true);
     expect(isDriftActionTerminal('running')).toBe(false);

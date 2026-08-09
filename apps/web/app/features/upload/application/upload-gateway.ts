@@ -3,6 +3,7 @@ import type {
   UploadPreflightItemInput,
   UploadPreflightResponse,
   UploadSession,
+  UploadCancellation,
 } from './upload-contracts';
 
 export type UploadChunkResult = { uploadedSize: number; status: number };
@@ -13,20 +14,21 @@ export type UploadGateway = {
     items: UploadPreflightItemInput[]
   ): Promise<UploadPreflightResponse>;
   getUploadSession(
-    session: Pick<UploadSession, 'statusUrl'>,
-    signal?: AbortSignal
+    session: Pick<UploadSession, 'id'>,
+    cancellation?: UploadCancellation
   ): Promise<UploadSession>;
   completeUpload(
     session: UploadSession,
-    signal?: AbortSignal
+    cancellation?: UploadCancellation
   ): Promise<UploadSession>;
   cancelUpload(id: string): Promise<void>;
   putUploadChunk(
     session: UploadSession,
-    chunk: Blob,
+    sourceId: string,
     start: number,
+    endExclusive: number,
     total: number,
     onProgress: (uploaded: number, total: number) => void,
-    signal?: AbortSignal
+    cancellation?: UploadCancellation
   ): Promise<UploadChunkResult>;
 };

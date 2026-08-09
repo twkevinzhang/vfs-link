@@ -1,4 +1,5 @@
 import { isTerminalShareStatus, type ShareRecord } from '../domain/share';
+import type { ShareRequestCancellation } from './share-gateway';
 
 const DEFAULT_DEADLINE_MS = 15_000;
 
@@ -12,15 +13,44 @@ export class ShareRequestTimeoutError extends Error {
 export { isTerminalShareStatus } from '../domain/share';
 
 type ShareRequestCoordinatorOptions = {
-  load: (signal: AbortSignal) => Promise<ShareRecord>;
-  start?: (signal: AbortSignal) => Promise<ShareRecord>;
+  load: (cancellation: ShareRequestCancellation) => Promise<ShareRecord>;
+  start?: (cancellation: ShareRequestCancellation) => Promise<ShareRecord>;
   onSuccess: (share: ShareRecord) => void;
   onError?: (error: unknown) => void;
   deadlineMs?: number;
+  scheduler: ShareDeadlineScheduler;
 };
 
+export type ShareDeadlineScheduler = {
+  setTimeout(callback: () => void, delayMs: number): unknown;
+  clearTimeout(handle: unknown): void;
+};
+
+type CancellationSource = ShareRequestCancellation & { cancel(): void };
+
+function createCancellationSource(): CancellationSource {
+  let cancelled = false;
+  const listeners = new Set<() => void>();
+  return {
+    get cancelled() {
+      return cancelled;
+    },
+    onCancel(listener) {
+      if (cancelled) listener();
+      else listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    cancel() {
+      if (cancelled) return;
+      cancelled = true;
+      for (const listener of listeners) listener();
+      listeners.clear();
+    },
+  };
+}
+
 type ActiveRequest = {
-  controller: AbortController;
+  cancellation: CancellationSource;
   generation: number;
   promise: Promise<ShareRecord | undefined>;
 };
@@ -39,31 +69,34 @@ export function createShareRequestCoordinator({
   onSuccess,
   onError,
   deadlineMs = DEFAULT_DEADLINE_MS,
+  scheduler,
 }: ShareRequestCoordinatorOptions): ShareRequestCoordinator {
   let active: ActiveRequest | undefined;
   let disposed = false;
   let generation = 0;
   let terminal = false;
 
-  const run = (request: (signal: AbortSignal) => Promise<ShareRecord>) => {
-    active?.controller.abort();
-    const controller = new AbortController();
+  const run = (
+    request: (cancellation: ShareRequestCancellation) => Promise<ShareRecord>
+  ) => {
+    active?.cancellation.cancel();
+    const cancellation = createCancellationSource();
     const requestGeneration = ++generation;
     let deadlineReached = false;
-    const deadline = globalThis.setTimeout(() => {
+    const deadline = scheduler.setTimeout(() => {
       deadlineReached = true;
-      controller.abort();
+      cancellation.cancel();
     }, deadlineMs);
 
     const promise = (async (): Promise<ShareRecord | undefined> => {
       try {
-        const nextShare = await request(controller.signal);
+        const nextShare = await request(cancellation);
         if (deadlineReached) {
           throw new ShareRequestTimeoutError(deadlineMs);
         }
         if (
           disposed ||
-          controller.signal.aborted ||
+          cancellation.cancelled ||
           requestGeneration !== generation
         ) {
           return undefined;
@@ -74,7 +107,7 @@ export function createShareRequestCoordinator({
       } catch (error) {
         if (
           disposed ||
-          (controller.signal.aborted && !deadlineReached) ||
+          (cancellation.cancelled && !deadlineReached) ||
           requestGeneration !== generation
         ) {
           return undefined;
@@ -85,13 +118,13 @@ export function createShareRequestCoordinator({
         onError?.(reportedError);
         throw reportedError;
       } finally {
-        globalThis.clearTimeout(deadline);
+        scheduler.clearTimeout(deadline);
         if (active?.generation === requestGeneration) {
           active = undefined;
         }
       }
     })();
-    active = { controller, generation: requestGeneration, promise };
+    active = { cancellation, generation: requestGeneration, promise };
     return promise;
   };
 
@@ -123,13 +156,13 @@ export function createShareRequestCoordinator({
     cancel() {
       generation += 1;
       terminal = false;
-      active?.controller.abort();
+      active?.cancellation.cancel();
       active = undefined;
     },
     dispose() {
       disposed = true;
       generation += 1;
-      active?.controller.abort();
+      active?.cancellation.cancel();
       active = undefined;
     },
   };

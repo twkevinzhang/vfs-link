@@ -1,0 +1,96 @@
+import { describe, expect, it } from 'vitest';
+
+import { buildArchivePlans, splitArchiveNames } from './archive-plan';
+import type { UploadCandidate } from './upload-candidates';
+
+function candidate(
+  relativePath: string,
+  selectionRoot: string,
+  selectionRootKind: UploadCandidate['selectionRootKind']
+): UploadCandidate {
+  const name = relativePath.split('/').at(-1) ?? relativePath;
+  return {
+    file: new File(['x'], name, {
+      type: /[.]jpg$/i.test(name) ? 'image/jpeg' : '',
+    }),
+    relativePath,
+    selectionRoot,
+    selectionRootKind,
+  };
+}
+
+const fixture = [
+  candidate('readme.txt', 'readme.txt', 'file'),
+  candidate('cover.jpg', 'cover.jpg', 'file'),
+  candidate('photos/a.jpg', 'photos', 'directory'),
+  candidate('photos/b.jpg', 'photos', 'directory'),
+  candidate('docs/manual.pdf', 'docs', 'directory'),
+];
+
+const base = {
+  archiveName: 'upload.zip',
+  compressionLevel: 6,
+  splitSize: 0,
+  password: '',
+  oneArchivePerItem: false,
+  preserveExtension: false,
+  recurseFolders: false,
+};
+
+describe('buildArchivePlans', () => {
+  it('places every selected item in one named archive by default', () => {
+    const [plan] = buildArchivePlans(fixture, base);
+    expect(plan.name).toBe('upload.zip');
+    expect(plan.entries.map((entry) => entry.path)).toEqual([
+      'cover.jpg',
+      'docs/manual.pdf',
+      'photos/a.jpg',
+      'photos/b.jpg',
+      'readme.txt',
+    ]);
+  });
+
+  it('groups a selected folder unless recursive per-file mode is enabled', () => {
+    expect(
+      buildArchivePlans(fixture, { ...base, oneArchivePerItem: true }).map(
+        (plan) => plan.name
+      )
+    ).toEqual(['cover.zip', 'docs.zip', 'photos.zip', 'readme.zip']);
+    expect(
+      buildArchivePlans(fixture, {
+        ...base,
+        oneArchivePerItem: true,
+        recurseFolders: true,
+      }).map((plan) => plan.name)
+    ).toEqual(['cover.zip', 'manual.zip', 'a.zip', 'b.zip', 'readme.zip']);
+  });
+
+  it('avoids case-insensitive collisions and supports double extensions', () => {
+    const plans = buildArchivePlans(
+      [
+        candidate('report.docx', 'report.docx', 'file'),
+        candidate('report.pdf', 'report.pdf', 'file'),
+      ],
+      { ...base, oneArchivePerItem: true }
+    );
+    expect(plans.map((plan) => plan.name)).toEqual([
+      'report.zip',
+      'report (2).zip',
+    ]);
+    expect(
+      buildArchivePlans([fixture[0]], {
+        ...base,
+        oneArchivePerItem: true,
+        preserveExtension: true,
+      })[0].name
+    ).toBe('readme.txt.zip');
+  });
+});
+
+it('uses standard ZIP split-volume names', () => {
+  expect(splitArchiveNames('photos.zip', 3)).toEqual([
+    'photos.z01',
+    'photos.z02',
+    'photos.zip',
+  ]);
+});

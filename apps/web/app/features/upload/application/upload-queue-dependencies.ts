@@ -1,17 +1,6 @@
 import type { UploadGateway } from './upload-gateway';
-
-export type ArchiveTemporaryFileUsage = {
-  name: string;
-  size: number;
-  lastModified: number;
-  ownerId?: string;
-};
-
-export type ArchiveTemporaryStorageUsage = {
-  files: ArchiveTemporaryFileUsage[];
-  fileCount: number;
-  totalBytes: number;
-};
+import type { UploadSourceDescriptor } from './upload-contracts';
+import type { UploadCancellation } from './upload-contracts';
 
 export type UploadQueueDependencies = {
   gateway: UploadGateway;
@@ -24,13 +13,26 @@ export type UploadQueueDependencies = {
       retriesAlreadyUsed: number
     ): boolean;
   };
-  archiveTemporaryStorage: {
-    findOrphans(
-      files: ArchiveTemporaryFileUsage[],
-      manifests: unknown[],
-      olderThan: number
-    ): string[];
-    listUsage(): Promise<ArchiveTemporaryStorageUsage>;
-    remove(names: string[]): Promise<void>;
+  sources: {
+    register(
+      source: unknown,
+      metadata: Omit<UploadSourceDescriptor, 'sourceId'>
+    ): UploadSourceDescriptor;
+    release(sourceId: string): void;
+    clear(): void;
+  };
+  thumbnails: {
+    save(input: {
+      paths: string[];
+      sourceId: string;
+      width: number;
+      height: number;
+    }): Promise<void>;
+    clear(paths: string[]): Promise<void>;
+  };
+  runtime: {
+    now(): number;
+    sleep(delayMs: number, cancellation: UploadCancellation): Promise<void>;
+    scheduleFrame(callback: () => void): () => void;
   };
 };
