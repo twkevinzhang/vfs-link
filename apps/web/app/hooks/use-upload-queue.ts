@@ -10,22 +10,10 @@ import {
   type ReactNode,
 } from 'react';
 
-import {
-  cancelUpload,
-  completeUpload,
-  createUpload,
-  getUploadSession,
-  preflightUploads,
-  putUploadChunk,
-} from '../lib/api';
+import { type UploadQueueDependencies } from '../features/upload/application/upload-queue-dependencies';
 import { normalizePath } from '../lib/format';
 import type { UploadCandidate } from '../lib/folder-upload';
-import {
-  findArchiveTemporaryOrphanNames,
-  listArchiveTemporaryStorageUsage,
-  removeArchiveTemporaryFiles,
-  type ArchiveTemporaryManifest,
-} from '../lib/archive-compression';
+import type { ArchiveTemporaryManifest } from '../features/upload/domain/archive-manifest';
 import { uploadRemainingChunks } from '../lib/upload-chunks';
 import {
   holdUploadQueueLeadership,
@@ -33,16 +21,15 @@ import {
 } from '../lib/upload-queue-coordinator';
 import {
   MAX_CONCURRENT_UPLOADS,
-  duplicateLogicPaths,
   fileFingerprint,
-  isRetryAllEligible,
-  isTransientUploadError,
-  isUploadTargetChanged,
   matchesFingerprint,
+} from '../lib/upload-queue-core';
+import {
+  duplicateLogicPaths,
+  isRetryAllEligible,
   nextRunnableUploadKeys,
   retryDelayMs,
-  shouldAutomaticallyRetry,
-} from '../lib/upload-queue-core';
+} from '../features/upload/domain/upload-queue';
 import type {
   UploadQueueItem,
   UploadQueueState,
@@ -64,7 +51,7 @@ import {
   pauseUploadQueueItem,
   resumeUploadQueueItem,
 } from '../lib/upload-queue-transitions';
-import type { UploadSession } from '../types/upload';
+import type { UploadSession } from '../features/upload/application/upload-contracts';
 import {
   createUploadQueueLeadershipHandler,
   hydrateUploadQueueLifecycle,
@@ -80,6 +67,7 @@ const ARCHIVE_ORPHAN_GRACE_MS = 24 * 60 * 60 * 1000;
 const UPLOAD_QUEUE_CHANNEL = 'vfs-link-upload-queue-v1';
 
 type UseUploadQueueOptions = {
+  dependencies: UploadQueueDependencies;
   onItemComplete?: (item: UploadQueueItem) => void;
 };
 
@@ -103,7 +91,31 @@ function makeBatchId() {
  * only resume cursor, so an aborted or ambiguous request is always reconciled
  * before another chunk is sent.
  */
-export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
+export function useUploadQueue({
+  dependencies,
+  onItemComplete,
+}: UseUploadQueueOptions) {
+  const {
+    archiveTemporaryStorage: {
+      findOrphans: findArchiveTemporaryOrphanNames,
+      listUsage: listArchiveTemporaryStorageUsage,
+      remove: removeArchiveTemporaryFiles,
+    },
+    errors: {
+      isOffsetConflict,
+      isTargetChanged: isUploadTargetChanged,
+      isTransient: isTransientUploadError,
+      shouldAutomaticallyRetry,
+    },
+    gateway: {
+      cancelUpload,
+      completeUpload,
+      createUpload,
+      getUploadSession,
+      preflightUploads,
+      putUploadChunk,
+    },
+  } = dependencies;
   const [items, setItems] = useState<UploadQueueItem[]>([]);
   const [hydrated, setHydrated] = useState(false);
   const [globallyPaused, setGloballyPaused] = useState(false);
@@ -176,9 +188,12 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
     [updateItems]
   );
 
-  const cleanupUploadSession = useCallback((sessionId: string) => {
-    void cancelUpload(sessionId).catch(() => undefined);
-  }, []);
+  const cleanupUploadSession = useCallback(
+    (sessionId: string) => {
+      void cancelUpload(sessionId).catch(() => undefined);
+    },
+    [cancelUpload]
+  );
 
   const flushProgress = useCallback(() => {
     progressFrameRef.current = undefined;
@@ -576,7 +591,7 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
         );
       }
     },
-    [updateItems]
+    [isTransientUploadError, preflightUploads, updateItems]
   );
 
   preflightRef.current = runPreflight;
@@ -792,6 +807,7 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
           );
           return activeSession.uploadedSize ?? 0;
         },
+        isOffsetConflict,
         onProgress: (uploaded) => queueProgress(key, uploaded),
         onCommitted: (committedSize) => {
           activeSession = { ...activeSession, uploadedSize: committedSize };
@@ -827,7 +843,17 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
       updateItem(key, () => nextItem);
       onItemCompleteRef.current?.(nextItem);
     },
-    [cleanupUploadSession, markLocalMissing, queueProgress, updateItem]
+    [
+      cleanupUploadSession,
+      completeUpload,
+      createUpload,
+      getUploadSession,
+      isOffsetConflict,
+      markLocalMissing,
+      putUploadChunk,
+      queueProgress,
+      updateItem,
+    ]
   );
 
   const startUpload = useCallback(
@@ -919,7 +945,14 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
         scheduleRef.current?.();
       }
     },
-    [runPreflight, updateItem, uploadOnce]
+    [
+      isTransientUploadError,
+      isUploadTargetChanged,
+      runPreflight,
+      shouldAutomaticallyRetry,
+      updateItem,
+      uploadOnce,
+    ]
   );
 
   const schedule = useCallback(() => {
@@ -1134,7 +1167,7 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
       archiveManifestsRef.current.delete(ownerId);
       void removeArchiveTemporaryFiles(manifest.files.map((file) => file.name));
     }
-  }, [hydrated, items]);
+  }, [hydrated, items, removeArchiveTemporaryFiles]);
 
   useEffect(() => {
     if (!hydrated || orphanCleanupStartedRef.current) return;
@@ -1154,7 +1187,13 @@ export function useUploadQueue({ onItemComplete }: UseUploadQueueOptions = {}) {
         await removeArchiveTemporaryFiles(orphanNames);
       })
       .catch(() => undefined);
-  }, [hydrated, items]);
+  }, [
+    findArchiveTemporaryOrphanNames,
+    hydrated,
+    items,
+    listArchiveTemporaryStorageUsage,
+    removeArchiveTemporaryFiles,
+  ]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -1226,8 +1265,14 @@ type UploadQueue = ReturnType<typeof useUploadQueue>;
 const UploadQueueContext = createContext<UploadQueue | null>(null);
 
 /** Keeps uploads alive while the user navigates between browser routes. */
-export function UploadQueueProvider({ children }: { children: ReactNode }) {
-  const queue = useUploadQueue();
+export function UploadQueueProvider({
+  children,
+  dependencies,
+}: {
+  children: ReactNode;
+  dependencies: UploadQueueDependencies;
+}) {
+  const queue = useUploadQueue({ dependencies });
   return createElement(UploadQueueContext.Provider, { value: queue }, children);
 }
 

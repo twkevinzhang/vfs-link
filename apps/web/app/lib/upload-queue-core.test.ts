@@ -2,6 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import { UploadHttpError, committedOffsetFromRange } from './api';
 import {
+  isOffsetConflict,
+  isTransientUploadError,
+  isUploadTargetChanged,
+  shouldAutomaticallyRetry,
+} from '../features/upload/infrastructure/upload-error-mapping';
+import {
   MAX_AUTOMATIC_RETRIES,
   MAX_CONCURRENT_UPLOADS,
   MAX_UPLOAD_CHUNK_SIZE,
@@ -9,16 +15,12 @@ import {
   UPLOAD_CHUNK_ALIGNMENT,
   UPLOAD_CHUNK_SIZE,
   duplicateLogicPaths,
-  isOffsetConflict,
   isRetryAllEligible,
-  isTransientUploadError,
-  isUploadTargetChanged,
   matchesFingerprint,
   nextAdaptiveChunkSize,
   nextChunkRange,
   nextRunnableUploadKeys,
   retryDelayMs,
-  shouldAutomaticallyRetry,
   uploadStateNeedsSource,
 } from './upload-queue-core';
 

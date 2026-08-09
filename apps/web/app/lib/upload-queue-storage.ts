@@ -1,23 +1,14 @@
-import type { UploadSession } from '../types/upload';
-import type { ArchiveTemporaryManifest } from './archive-compression';
+import type { UploadSession } from '../features/upload/application/upload-contracts';
+import type { ArchiveTemporaryManifest } from '../features/upload/domain/archive-manifest';
 import type { UploadFingerprint } from './upload-queue-core';
+import type { UploadQueueState } from '../features/upload/domain/upload-queue';
 
 const DATABASE_NAME = 'vfs-link-upload-queue';
 const DATABASE_VERSION = 4;
 const QUEUE_STORE = 'queue';
 const SETTINGS_STORE = 'settings';
 
-export type PersistedUploadState =
-  | 'queued'
-  | 'checking'
-  | 'needs-decision'
-  | 'skipped'
-  | 'uploading'
-  | 'retrying'
-  | 'paused'
-  | 'complete'
-  | 'failed'
-  | 'local-missing';
+export type PersistedUploadState = UploadQueueState;
 
 export type PersistedUploadItem = {
   key: string;

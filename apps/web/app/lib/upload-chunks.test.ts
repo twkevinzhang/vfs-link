@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { UploadHttpError } from './api';
+import { isOffsetConflict } from '../features/upload/infrastructure/upload-error-mapping';
 import { UPLOAD_CHUNK_SIZE } from './upload-queue-core';
 import { uploadRemainingChunks } from './upload-chunks';
 
@@ -32,6 +33,7 @@ describe('adaptive upload transport', () => {
         return { uploadedSize: start + chunk.size, status: 308 };
       },
       reconcileOffset: vi.fn(),
+      isOffsetConflict,
       onProgress: vi.fn(),
       onCommitted: vi.fn(),
       now: () => elapsedMs,
@@ -64,6 +66,7 @@ describe('adaptive upload transport', () => {
         return { uploadedSize: start + chunk.size, status: 308 };
       },
       reconcileOffset: async () => 16 * 1024 * 1024,
+      isOffsetConflict,
       onProgress: vi.fn(),
       onCommitted: vi.fn(),
       now: () => attempts * 1_000,
@@ -86,6 +89,7 @@ describe('adaptive upload transport', () => {
         signal: controller.signal,
         sendChunk,
         reconcileOffset: vi.fn(),
+        isOffsetConflict,
         onProgress: vi.fn(),
         onCommitted: vi.fn(),
       })

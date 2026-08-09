@@ -8,10 +8,16 @@ import {
   ExternalLink,
 } from 'lucide-react';
 
-import { formatUsd, formatUsdRange } from '../../lib/drift';
+import {
+  formatUsd,
+  formatUsdRange,
+} from '../../features/drift/presentation/drift-formatters';
 import { formatBytes } from '../../lib/format';
 import { cn } from '../../lib/utils';
-import type { DriftCostItem, DriftResponse } from '../../types/drift';
+import type {
+  DriftCostItem,
+  DriftResponse,
+} from '../../features/drift/domain/drift';
 import { Alert } from '../ui/alert';
 import { Badge } from '../ui/badge';
 import { Card } from '../ui/card';

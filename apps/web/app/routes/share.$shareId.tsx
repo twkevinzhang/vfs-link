@@ -8,7 +8,7 @@ import {
   Send,
   UploadCloud,
 } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router';
 
 import { Alert } from '../components/ui/alert';
@@ -21,30 +21,23 @@ import {
   CardTitle,
 } from '../components/ui/card';
 import { Skeleton } from '../components/ui/skeleton';
-import { getShare, startShare } from '../lib/api';
+import {
+  createShareRequestCoordinator,
+  isTerminalShareStatus,
+  settleShareRequest,
+  type ShareRequestCoordinator,
+} from '../features/share/application/share-request-coordinator';
+import type { ShareRecord } from '../features/share/domain/share';
+import {
+  getShare,
+  startShare,
+} from '../features/share/infrastructure/share-http-gateway';
+import {
+  shareStatusLabels,
+  shareViewState,
+} from '../features/share/presentation/share-view-model';
 import { FILES_ROUTE } from '../lib/file-route';
 import { formatBytes, formatDate } from '../lib/format';
-import { ShareRecord, ShareStatus } from '../types/share';
-
-const terminalStatuses = new Set<ShareStatus>([
-  'completed',
-  'notified',
-  'notification_failed',
-  'email_sent',
-  'failed',
-  'email_failed',
-]);
-
-const statusLabels = {
-  draft: 'draft',
-  uploading: 'uploading',
-  completed: 'completed',
-  notified: 'notified',
-  notification_failed: 'notification failed',
-  email_sent: 'email sent',
-  failed: 'failed',
-  email_failed: 'email failed',
-} satisfies Record<ShareStatus, string>;
 
 export default function ShareRoute() {
   const { shareId } = useParams();
@@ -53,39 +46,72 @@ export default function ShareRoute() {
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string>();
   const [copied, setCopied] = useState(false);
+  const requestCoordinatorRef = useRef<ShareRequestCoordinator | undefined>(
+    undefined
+  );
+  const startGenerationRef = useRef(0);
 
-  const load = useCallback(async () => {
+  const load = useCallback(() => {
     if (!shareId) {
+      setError('Missing share id');
+      setLoading(false);
+      return Promise.resolve(undefined);
+    }
+    return (
+      requestCoordinatorRef.current?.refresh() ?? Promise.resolve(undefined)
+    );
+  }, [shareId]);
+
+  useEffect(() => {
+    requestCoordinatorRef.current?.dispose();
+    startGenerationRef.current += 1;
+    setStarting(false);
+    if (!shareId) {
+      setShare(undefined);
       setError('Missing share id');
       setLoading(false);
       return;
     }
-    try {
-      const nextShare = await getShare(shareId);
-      setShare(nextShare);
-      setError(undefined);
-    } catch (loadError) {
-      setError(
-        loadError instanceof Error ? loadError.message : 'Unable to load share'
-      );
-    } finally {
-      setLoading(false);
-    }
+    setShare(undefined);
+    setError(undefined);
+    setLoading(true);
+    const coordinator = createShareRequestCoordinator({
+      load: (signal) => getShare(shareId, { signal }),
+      start: (signal) => startShare(shareId, { signal }),
+      onSuccess: (nextShare) => {
+        setShare(nextShare);
+        setError(undefined);
+        setLoading(false);
+      },
+      onError: (loadError) => {
+        setError(
+          loadError instanceof Error
+            ? loadError.message
+            : 'Unable to load share'
+        );
+        setLoading(false);
+      },
+    });
+    requestCoordinatorRef.current = coordinator;
+    void coordinator.refresh().catch(() => undefined);
+    return () => {
+      coordinator.dispose();
+      if (requestCoordinatorRef.current === coordinator) {
+        requestCoordinatorRef.current = undefined;
+      }
+    };
   }, [shareId]);
 
+  const shareStatus = share?.status;
   useEffect(() => {
-    void load();
-  }, [load]);
-
-  useEffect(() => {
-    if (!share || terminalStatuses.has(share.status)) {
+    if (!shareStatus || isTerminalShareStatus(shareStatus)) {
       return;
     }
     const timer = window.setInterval(() => {
-      void load();
+      void requestCoordinatorRef.current?.poll().catch(() => undefined);
     }, 1500);
     return () => window.clearInterval(timer);
-  }, [load, share]);
+  }, [shareStatus]);
 
   async function handleStart() {
     if (!shareId) {
@@ -93,9 +119,9 @@ export default function ShareRoute() {
     }
     setStarting(true);
     setError(undefined);
+    const generation = ++startGenerationRef.current;
     try {
-      const nextShare = await startShare(shareId);
-      setShare(nextShare);
+      await requestCoordinatorRef.current?.start();
     } catch (startError) {
       setError(
         startError instanceof Error
@@ -103,7 +129,9 @@ export default function ShareRoute() {
           : 'Unable to start share'
       );
     } finally {
-      setStarting(false);
+      if (startGenerationRef.current === generation) {
+        setStarting(false);
+      }
     }
   }
 
@@ -116,16 +144,9 @@ export default function ShareRoute() {
     window.setTimeout(() => setCopied(false), 1500);
   }
 
-  const canStart =
-    share?.status === 'draft' ||
-    share?.status === 'failed' ||
-    share?.status === 'notification_failed' ||
-    share?.status === 'email_failed';
-  const isBusy = share?.status === 'uploading' || starting;
-  const isSuccessful =
-    share?.status === 'completed' ||
-    share?.status === 'notified' ||
-    share?.status === 'email_sent';
+  const { canStart, isBusy, isSuccessful } = share
+    ? shareViewState(share.status, starting)
+    : { canStart: false, isBusy: starting, isSuccessful: false };
 
   return (
     <main className="min-h-screen bg-background text-foreground">
@@ -142,7 +163,7 @@ export default function ShareRoute() {
             <div className="flex flex-wrap items-center gap-2">
               <Badge variant="secondary">GCS share</Badge>
               <Badge variant="outline">
-                {share ? statusLabels[share.status] : 'loading'}
+                {share ? shareStatusLabels[share.status] : 'loading'}
               </Badge>
             </div>
             <h1 className="text-2xl font-semibold tracking-normal sm:text-3xl">
@@ -151,7 +172,7 @@ export default function ShareRoute() {
           </div>
           <Button
             variant="outline"
-            onClick={() => void load()}
+            onClick={() => void settleShareRequest(load())}
             disabled={loading}
           >
             <RefreshCcw aria-hidden="true" className="h-4 w-4" />

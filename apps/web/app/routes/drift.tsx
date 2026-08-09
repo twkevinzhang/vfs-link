@@ -37,13 +37,16 @@ import {
 import { Button } from '../components/ui/button';
 import { Checkbox } from '../components/ui/checkbox';
 import { Input } from '../components/ui/input';
-import { useDriftController } from '../hooks/use-drift-controller';
+import { useDriftController } from '../features/drift/presentation/use-drift-controller';
+import { driftHttpGateway } from '../features/drift/infrastructure/drift-http-gateway';
 import {
   driftActionFailedPaths,
   driftActionPaths,
+} from '../features/drift/domain/drift-policy';
+import {
   driftMethodLabel,
   formatUsdRange,
-} from '../lib/drift';
+} from '../features/drift/presentation/drift-formatters';
 import { FILES_ROUTE } from '../lib/file-route';
 import { formatBytes, formatDate } from '../lib/format';
 import { cn } from '../lib/utils';
@@ -66,7 +69,7 @@ export default function DriftRoute() {
     plan: planController,
     actions: actionController,
     scan: scanController,
-  } = useDriftController();
+  } = useDriftController(driftHttpGateway);
   const {
     query,
     setQuery,

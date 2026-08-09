@@ -10,14 +10,54 @@ import {
   Upload,
   X,
 } from 'lucide-react';
-import { useCallback, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   useBackgroundUploadQueue,
   type UploadQueueItem,
-} from '../../hooks/use-upload-queue';
+} from '../../features/upload/presentation/upload-queue';
+import {
+  INITIAL_UPLOAD_ROW_LIMIT,
+  nextUploadRowLimit,
+  visibleUploadRows,
+} from '../../features/upload/presentation/upload-list-window';
 import { formatBytes } from '../../lib/format';
 import { Button } from '../ui/button';
+
+type UploadActivityQueue = Pick<
+  ReturnType<typeof useBackgroundUploadQueue>,
+  | 'items'
+  | 'summary'
+  | 'retry'
+  | 'retryAll'
+  | 'dismiss'
+  | 'cancel'
+  | 'pause'
+  | 'resume'
+  | 'pauseAll'
+  | 'resumeAll'
+  | 'reconnect'
+  | 'authorizeSource'
+  | 'replaceOne'
+  | 'skipOne'
+  | 'replaceAll'
+  | 'skipAll'
+  | 'globallyPaused'
+  | 'isUploadLeader'
+>;
+
+type UploadActivityItemActions = Pick<
+  UploadActivityQueue,
+  | 'retry'
+  | 'dismiss'
+  | 'cancel'
+  | 'pause'
+  | 'resume'
+  | 'reconnect'
+  | 'authorizeSource'
+  | 'replaceOne'
+  | 'skipOne'
+>;
 
 export function UploadActivity({
   queue,
@@ -25,47 +65,71 @@ export function UploadActivity({
   onExpandedChange,
   onRequestCancelAll,
 }: {
-  queue: Pick<
-    ReturnType<typeof useBackgroundUploadQueue>,
-    | 'items'
-    | 'summary'
-    | 'retry'
-    | 'retryAll'
-    | 'dismiss'
-    | 'cancel'
-    | 'pause'
-    | 'resume'
-    | 'pauseAll'
-    | 'resumeAll'
-    | 'reconnect'
-    | 'authorizeSource'
-    | 'replaceOne'
-    | 'skipOne'
-    | 'replaceAll'
-    | 'skipAll'
-    | 'globallyPaused'
-    | 'isUploadLeader'
-  >;
+  queue: UploadActivityQueue;
   expanded: boolean;
   onExpandedChange: (expanded: boolean) => void;
   onRequestCancelAll: () => void;
 }) {
   const { items, summary } = queue;
+  const [visibleRowLimit, setVisibleRowLimit] = useState(
+    INITIAL_UPLOAD_ROW_LIMIT
+  );
+  const visibleItems = useMemo(
+    () => visibleUploadRows(items, visibleRowLimit),
+    [items, visibleRowLimit]
+  );
+  const hiddenRowCount = items.length - visibleItems.length;
+  useEffect(() => {
+    if (items.length === 0) {
+      setVisibleRowLimit(INITIAL_UPLOAD_ROW_LIMIT);
+    }
+  }, [items.length]);
   const roundedProgress = Math.round(summary.progress);
   const pendingCount =
     summary.checking + summary.queued + summary.uploading + summary.retrying;
-  const retryableCount = items.filter(
-    (item) => item.state === 'failed' && item.retryEligible
-  ).length;
-  const decisionBatches = Array.from(
-    items
-      .filter((item) => item.state === 'needs-decision')
-      .reduce((batches, item) => {
-        const batch = batches.get(item.batchId) ?? [];
-        batch.push(item);
-        batches.set(item.batchId, batch);
-        return batches;
-      }, new Map<string, UploadQueueItem[]>())
+  const retryableCount = useMemo(
+    () =>
+      items.filter((item) => item.state === 'failed' && item.retryEligible)
+        .length,
+    [items]
+  );
+  const decisionBatches = useMemo(
+    () =>
+      Array.from(
+        items
+          .filter((item) => item.state === 'needs-decision')
+          .reduce((batches, item) => {
+            const batch = batches.get(item.batchId) ?? [];
+            batch.push(item);
+            batches.set(item.batchId, batch);
+            return batches;
+          }, new Map<string, UploadQueueItem[]>())
+      ),
+    [items]
+  );
+  const itemActions = useMemo<UploadActivityItemActions>(
+    () => ({
+      authorizeSource: queue.authorizeSource,
+      cancel: queue.cancel,
+      dismiss: queue.dismiss,
+      pause: queue.pause,
+      reconnect: queue.reconnect,
+      replaceOne: queue.replaceOne,
+      resume: queue.resume,
+      retry: queue.retry,
+      skipOne: queue.skipOne,
+    }),
+    [
+      queue.authorizeSource,
+      queue.cancel,
+      queue.dismiss,
+      queue.pause,
+      queue.reconnect,
+      queue.replaceOne,
+      queue.resume,
+      queue.retry,
+      queue.skipOne,
+    ]
   );
   const queueListId = 'background-upload-queue';
   const headline =
@@ -263,30 +327,94 @@ export function UploadActivity({
               className="grid gap-2"
               aria-label="Upload queue"
             >
-              {items.map((item) => (
-                <UploadActivityItem
+              {visibleItems.map((item) => (
+                <UploadActivityItemRow
                   key={item.key}
                   item={item}
-                  onCancel={() => queue.cancel(item.key)}
-                  onRetry={() => queue.retry(item.key)}
-                  onPause={() => queue.pause(item.key)}
-                  onResume={() => queue.resume(item.key)}
-                  onReconnect={(file, handle) =>
-                    queue.reconnect(item.key, file, handle)
-                  }
-                  onAuthorize={() => void queue.authorizeSource(item.key)}
-                  onReplace={() => queue.replaceOne(item.key)}
-                  onSkip={() => queue.skipOne(item.key)}
-                  onDismiss={() => queue.dismiss(item.key)}
+                  actions={itemActions}
                 />
               ))}
             </ul>
+            {hiddenRowCount > 0 && (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() =>
+                  setVisibleRowLimit((current) =>
+                    nextUploadRowLimit(current, items.length)
+                  )
+                }
+              >
+                Show 100 more · {hiddenRowCount} remaining
+              </Button>
+            )}
           </div>
         )}
       </fieldset>
     </section>
   );
 }
+
+const UploadActivityItemRow = memo(function UploadActivityItemRow({
+  item,
+  actions,
+}: {
+  item: UploadQueueItem;
+  actions: UploadActivityItemActions;
+}) {
+  const onCancel = useCallback(
+    () => actions.cancel(item.key),
+    [actions, item.key]
+  );
+  const onRetry = useCallback(
+    () => actions.retry(item.key),
+    [actions, item.key]
+  );
+  const onPause = useCallback(
+    () => actions.pause(item.key),
+    [actions, item.key]
+  );
+  const onResume = useCallback(
+    () => actions.resume(item.key),
+    [actions, item.key]
+  );
+  const onReconnect = useCallback(
+    (file: File, handle?: FileSystemFileHandle) =>
+      actions.reconnect(item.key, file, handle),
+    [actions, item.key]
+  );
+  const onAuthorize = useCallback(
+    () => void actions.authorizeSource(item.key),
+    [actions, item.key]
+  );
+  const onReplace = useCallback(
+    () => actions.replaceOne(item.key),
+    [actions, item.key]
+  );
+  const onSkip = useCallback(
+    () => actions.skipOne(item.key),
+    [actions, item.key]
+  );
+  const onDismiss = useCallback(
+    () => actions.dismiss(item.key),
+    [actions, item.key]
+  );
+
+  return (
+    <UploadActivityItem
+      item={item}
+      onCancel={onCancel}
+      onRetry={onRetry}
+      onPause={onPause}
+      onResume={onResume}
+      onReconnect={onReconnect}
+      onAuthorize={onAuthorize}
+      onReplace={onReplace}
+      onSkip={onSkip}
+      onDismiss={onDismiss}
+    />
+  );
+});
 
 export function UploadActivityItem({
   item,
@@ -337,7 +465,7 @@ export function UploadActivityItem({
       : 'Failed';
 
   return (
-    <li className="grid gap-1.5 rounded-lg border border-border bg-muted/20 p-2.5">
+    <li className="upload-activity-item grid gap-1.5 rounded-lg border border-border bg-muted/20 p-2.5">
       <div className="flex min-w-0 flex-wrap items-center gap-2">
         {item.state === 'complete' || item.state === 'skipped' ? (
           <Check

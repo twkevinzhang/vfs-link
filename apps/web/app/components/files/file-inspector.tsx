@@ -10,9 +10,9 @@ import {
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
-import { getDownloadUrl, getPreviewUrl, getThumbnailUrl } from '../../lib/api';
+import type { FilesPresentationDependencies } from '../../features/files/application/files-controller-dependencies';
 import { formatBytes, formatDate } from '../../lib/format';
-import { type FileEntry } from '../../types/files';
+import { type FileEntry } from '../../features/files/domain/files';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { Skeleton } from '../ui/skeleton';
@@ -32,6 +32,7 @@ export function FileInspector({
   onMove,
   onRename,
   onTrash,
+  dependencies,
 }: {
   file?: FileEntry;
   sharingPath?: string;
@@ -40,7 +41,12 @@ export function FileInspector({
   onMove: (file: FileEntry) => void;
   onRename: (file: FileEntry) => void;
   onTrash: (file: FileEntry) => void;
+  dependencies: Pick<
+    FilesPresentationDependencies,
+    'getDownloadUrl' | 'getPreviewUrl' | 'getThumbnailUrl'
+  >;
 }) {
+  const { getDownloadUrl, getPreviewUrl } = dependencies;
   if (!file) {
     return (
       <aside className="hidden min-h-[360px] overflow-hidden rounded-lg border border-border bg-white xl:block xl:min-h-0">
@@ -153,7 +159,7 @@ export function FileInspector({
             <div className="border-b border-border px-4 py-3">
               <h3 className="text-sm font-semibold">Preview</h3>
             </div>
-            <FilePreview file={file} />
+            <FilePreview file={file} dependencies={dependencies} />
           </div>
         </div>
       </aside>
@@ -270,7 +276,7 @@ export function FileInspector({
               <h3 className="text-sm font-semibold">Preview</h3>
             </div>
             <div className="flex min-h-[260px] flex-1 flex-col overflow-hidden">
-              <FilePreview file={file} />
+              <FilePreview file={file} dependencies={dependencies} />
             </div>
           </div>
         </div>
@@ -279,7 +285,17 @@ export function FileInspector({
   );
 }
 
-function FilePreview({ file }: { file: FileEntry }) {
+function FilePreview({
+  file,
+  dependencies,
+}: {
+  file: FileEntry;
+  dependencies: Pick<
+    FilesPresentationDependencies,
+    'getPreviewUrl' | 'getThumbnailUrl'
+  >;
+}) {
+  const { getPreviewUrl, getThumbnailUrl } = dependencies;
   const previewUrl = getPreviewUrl(file.path);
   const previewKind = getPreviewKind(file);
   const [textPreview, setTextPreview] = useState<TextPreviewState>({

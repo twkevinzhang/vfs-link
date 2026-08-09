@@ -1,7 +1,6 @@
-import type { UploadChunkResult } from './api';
+import type { UploadChunkResult } from '../features/upload/application/upload-gateway';
 import {
   UPLOAD_CHUNK_SIZE,
-  isOffsetConflict,
   nextAdaptiveChunkSize,
   nextChunkRange,
 } from './upload-queue-core';
@@ -22,6 +21,7 @@ type UploadRemainingChunksOptions = {
     signal: AbortSignal
   ) => Promise<UploadChunkResult>;
   reconcileOffset: () => Promise<number>;
+  isOffsetConflict: (error: unknown) => boolean;
   onProgress: (uploaded: number, total: number) => void;
   onCommitted: (uploadedSize: number) => void;
   now?: () => number;
@@ -36,6 +36,7 @@ export async function uploadRemainingChunks({
   signal,
   sendChunk,
   reconcileOffset,
+  isOffsetConflict,
   onProgress,
   onCommitted,
   now = () => performance.now(),

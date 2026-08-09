@@ -9,9 +9,9 @@ import {
 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 
-import { getDownloadUrl, getTree } from '../lib/api';
 import { validateFileName } from '../lib/file-name';
-import type { FileEntry, TreeNode } from '../types/files';
+import type { FileEntry, TreeNode } from '../features/files/domain/files';
+import type { FilesPresentationDependencies } from '../features/files/application/files-controller-dependencies';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -43,6 +43,7 @@ export function FileActionMenu({
   onRename,
   onMove,
   onTrash,
+  dependencies,
 }: {
   entry: FileEntry;
   sharing?: boolean;
@@ -51,7 +52,9 @@ export function FileActionMenu({
   onRename: () => void;
   onMove: () => void;
   onTrash: () => void;
+  dependencies: Pick<FilesPresentationDependencies, 'getDownloadUrl'>;
 }) {
+  const { getDownloadUrl } = dependencies;
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -212,13 +215,16 @@ export function MoveDialog({
   initialPath = '/',
   onOpenChange,
   onMove,
+  dependencies,
 }: {
   open: boolean;
   count: number;
   initialPath?: string;
   onOpenChange: (open: boolean) => void;
   onMove: (destination: string) => Promise<void>;
+  dependencies: Pick<FilesPresentationDependencies, 'loadTree'>;
 }) {
+  const { loadTree } = dependencies;
   const [current, setCurrent] = useState(initialPath);
   const [tree, setTree] = useState<TreeNode>();
   const [loading, setLoading] = useState(false);
@@ -234,7 +240,7 @@ export function MoveDialog({
     let active = true;
     setLoading(true);
     setError(undefined);
-    void getTree(current)
+    void loadTree(current)
       .then((value) => active && setTree(value))
       .catch(
         (reason) =>
@@ -247,7 +253,7 @@ export function MoveDialog({
     return () => {
       active = false;
     };
-  }, [current, open]);
+  }, [current, loadTree, open]);
 
   const goUp = () => {
     if (current === '') return;

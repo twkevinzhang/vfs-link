@@ -11,11 +11,14 @@ import {
 } from 'lucide-react';
 import { useCallback, useMemo, useRef, useState } from 'react';
 
-import {
-  buildArchives,
-  removeArchiveTemporaryFiles,
-  type ArchiveBuildProgress,
-  type ArchiveTemporaryManifest,
+import type {
+  PreparedArchiveBatch,
+  UploadDialogDependencies,
+} from '../features/upload/application/upload-contracts';
+
+import type {
+  ArchiveBuildProgress,
+  BuiltArchive,
 } from '../lib/archive-compression';
 import { buildArchivePlans, type ArchiveOptions } from '../lib/archive-plan';
 import { firstDecodableThumbnail } from '../lib/archive-thumbnail';
@@ -38,13 +41,7 @@ import {
 } from './ui/dialog';
 import { Input } from './ui/input';
 
-export type PreparedArchiveBatch = {
-  id: string;
-  candidates: UploadCandidate[];
-  thumbnail?: { blob: Blob; width: number; height: number };
-  temporaryNames: string[];
-  temporaryManifest?: ArchiveTemporaryManifest;
-};
+export type { PreparedArchiveBatch } from '../features/upload/application/upload-contracts';
 
 const DEFAULT_OPTIONS: ArchiveOptions = {
   archiveName: 'upload.zip',
@@ -62,13 +59,16 @@ export function UploadDialog({
   onAddArchives,
   open,
   onOpenChange,
+  dependencies,
 }: {
   currentPath: string;
   onAddFiles: (candidates: UploadCandidate[]) => void;
   onAddArchives: (batches: PreparedArchiveBatch[]) => void;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  dependencies: UploadDialogDependencies;
 }) {
+  const { removeArchiveTemporaryFiles } = dependencies;
   const [mode, setMode] = useState<'select' | 'archive'>('select');
   const [candidates, setCandidates] = useState<UploadCandidate[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -152,7 +152,7 @@ export function UploadDialog({
     abortRef.current = controller;
     setBuilding(true);
     setSelectionError(undefined);
-    let built: Awaited<ReturnType<typeof buildArchives>> = [];
+    let built: BuiltArchive[] = [];
     try {
       const preparedThumbnails = await Promise.all(
         plans.map((plan) => {
@@ -170,6 +170,7 @@ export function UploadDialog({
           return firstDecodableThumbnail(ordered);
         })
       );
+      const { buildArchives } = await import('../lib/archive-compression');
       built = await buildArchives(plans, {
         compressionLevel: options.compressionLevel,
         splitSize: options.splitSize,
@@ -210,6 +211,7 @@ export function UploadDialog({
     }
   }, [
     handleOpenChange,
+    removeArchiveTemporaryFiles,
     onAddArchives,
     options,
     passwordsMatch,

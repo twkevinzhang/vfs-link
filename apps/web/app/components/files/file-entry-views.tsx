@@ -1,10 +1,13 @@
 import { File, Folder, RotateCcw, Trash2 } from 'lucide-react';
 
-import { getThumbnailUrl } from '../../lib/api';
+import type { FilesPresentationDependencies } from '../../features/files/application/files-controller-dependencies';
 import { type FileViewMode } from '../../lib/file-view-mode';
 import { formatBytes, formatDate } from '../../lib/format';
 import { cn } from '../../lib/utils';
-import { type FileEntry, type Pagination } from '../../types/files';
+import {
+  type FileEntry,
+  type Pagination,
+} from '../../features/files/domain/files';
 import { FileActionMenu } from '../file-actions';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
@@ -36,9 +39,11 @@ const fileEntryVisualClasses: Record<
 function FileEntryVisual({
   entry,
   variant,
+  getThumbnailUrl,
 }: {
   entry: FileEntry;
   variant: FileEntryVisualVariant;
+  getThumbnailUrl: FilesPresentationDependencies['getThumbnailUrl'];
 }) {
   const classes = fileEntryVisualClasses[variant];
   if (entry.kind === 'directory') {
@@ -88,6 +93,7 @@ export function FileTable({
   onRestore,
   onPermanentDelete,
   onShareFile,
+  dependencies,
 }: {
   entries: FileEntry[];
   viewMode: FileViewMode;
@@ -111,6 +117,10 @@ export function FileTable({
   onRestore: (entry: FileEntry) => void;
   onPermanentDelete: (entry: FileEntry) => void;
   onShareFile: (path: string) => void;
+  dependencies: Pick<
+    FilesPresentationDependencies,
+    'getDownloadUrl' | 'getThumbnailUrl'
+  >;
 }) {
   const limit = pagination?.limit ?? pageSize;
   const offset = pagination?.offset ?? 0;
@@ -135,6 +145,7 @@ export function FileTable({
           onRename={onRename}
           onTrash={onTrash}
           onShareFile={onShareFile}
+          dependencies={dependencies}
         />
       ) : (
         <>
@@ -152,6 +163,7 @@ export function FileTable({
               onRestore={onRestore}
               onPermanentDelete={onPermanentDelete}
               onShareFile={onShareFile}
+              dependencies={dependencies}
             />
           </div>
           <div className="hidden min-h-0 flex-1 overflow-auto md:block">
@@ -220,7 +232,11 @@ export function FileTable({
                           className="flex max-w-[360px] items-center gap-2 overflow-hidden text-left font-medium"
                           title={entry.path}
                         >
-                          <FileEntryVisual entry={entry} variant="table" />
+                          <FileEntryVisual
+                            entry={entry}
+                            variant="table"
+                            getThumbnailUrl={dependencies.getThumbnailUrl}
+                          />
                           <span className="truncate">{entry.name}</span>
                         </div>
                       </td>
@@ -262,6 +278,7 @@ export function FileTable({
                         ) : (
                           <FileActionMenu
                             entry={entry}
+                            dependencies={dependencies}
                             sharing={sharingPath === entry.path}
                             onOpen={() =>
                               isDirectory
@@ -330,6 +347,7 @@ export function FileGrid({
   onRename,
   onTrash,
   onShareFile,
+  dependencies,
 }: {
   entries: FileEntry[];
   sharingPath?: string;
@@ -345,6 +363,10 @@ export function FileGrid({
   onRename: (entry: FileEntry) => void;
   onTrash: (entry: FileEntry) => void;
   onShareFile: (path: string) => void;
+  dependencies: Pick<
+    FilesPresentationDependencies,
+    'getDownloadUrl' | 'getThumbnailUrl'
+  >;
 }) {
   const openEntry = (entry: FileEntry) => {
     if (entry.kind === 'directory') onOpenFolder(entry.path);
@@ -390,6 +412,7 @@ export function FileGrid({
               >
                 <FileActionMenu
                   entry={entry}
+                  dependencies={dependencies}
                   sharing={sharingPath === entry.path}
                   onOpen={() => openEntry(entry)}
                   onShare={() => onShareFile(entry.path)}
@@ -430,7 +453,11 @@ export function FileGrid({
                 }}
               >
                 <div className="flex aspect-[4/3] items-center justify-center overflow-hidden bg-muted/25">
-                  <FileEntryVisual entry={entry} variant="grid" />
+                  <FileEntryVisual
+                    entry={entry}
+                    variant="grid"
+                    getThumbnailUrl={dependencies.getThumbnailUrl}
+                  />
                 </div>
 
                 <div className="grid min-w-0 gap-1.5 p-3">
@@ -474,6 +501,7 @@ export function MobileFileList({
   onRestore,
   onPermanentDelete,
   onShareFile,
+  dependencies,
 }: {
   entries: FileEntry[];
   sharingPath?: string;
@@ -487,6 +515,10 @@ export function MobileFileList({
   onRestore: (entry: FileEntry) => void;
   onPermanentDelete: (entry: FileEntry) => void;
   onShareFile: (path: string) => void;
+  dependencies: Pick<
+    FilesPresentationDependencies,
+    'getDownloadUrl' | 'getThumbnailUrl'
+  >;
 }) {
   return (
     <div className="divide-y divide-border">
@@ -504,7 +536,11 @@ export function MobileFileList({
               }
               title={entry.path}
             >
-              <FileEntryVisual entry={entry} variant="mobile" />
+              <FileEntryVisual
+                entry={entry}
+                variant="mobile"
+                getThumbnailUrl={dependencies.getThumbnailUrl}
+              />
               <span className="min-w-0 flex-1 break-words font-medium leading-6">
                 {entry.name}
               </span>
@@ -540,6 +576,7 @@ export function MobileFileList({
               ) : (
                 <FileActionMenu
                   entry={entry}
+                  dependencies={dependencies}
                   sharing={sharingPath === entry.path}
                   onOpen={() =>
                     isDirectory ? onOpenFolder(entry.path) : onSelectFile(entry)

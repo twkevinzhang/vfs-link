@@ -8,11 +8,11 @@ import {
 import {
   driftActionPercent,
   driftStatusLabel,
-  isDriftActionTerminal,
-} from '../../lib/drift';
+} from '../../features/drift/presentation/drift-formatters';
+import { isDriftActionTerminal } from '../../features/drift/domain/drift-policy';
 import { formatDate } from '../../lib/format';
 import { cn } from '../../lib/utils';
-import type { DriftAction, DriftScan } from '../../types/drift';
+import type { DriftAction, DriftScan } from '../../features/drift/domain/drift';
 import { Button } from '../ui/button';
 
 export function DriftActionProgress({

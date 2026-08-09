@@ -1,30 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import type { DriftControllerDependencies } from '../features/drift/application/drift-controller-dependencies';
+import { createDriftActionListResponseGuard } from '../features/drift/application/drift-action-list-guard';
 import {
-  createDriftAction,
-  createDriftPlan,
-  dismissDriftAction,
-  getCurrentDriftScan,
-  getDrift,
-  getDriftAction,
-  getDriftActions,
-  startDriftScan,
-} from '../lib/api';
-import {
-  createDriftActionListResponseGuard,
   driftActionPaths,
   isActionableDriftItem,
   isDriftActionTerminal,
   markDriftActionRetrying,
   upsertDriftAction,
-} from '../lib/drift';
+} from '../features/drift/domain/drift-policy';
 import type {
   DriftAction,
   DriftItem,
   DriftPlan,
   DriftResponse,
   DriftScan,
-} from '../types/drift';
+} from '../features/drift/domain/drift';
 
 const PAGE_SIZE = 50;
 const SEARCH_DEBOUNCE_MS = 250;
@@ -79,7 +70,17 @@ type LoadState = {
   error?: string;
 };
 
-export function useDriftController() {
+export function useDriftController(dependencies: DriftControllerDependencies) {
+  const {
+    createDriftAction,
+    createDriftPlan,
+    dismissDriftAction,
+    getCurrentDriftScan,
+    getDrift,
+    getDriftAction,
+    getDriftActions,
+    startDriftScan,
+  } = dependencies;
   const [query, setQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [status, setStatus] = useState('all');
@@ -169,7 +170,7 @@ export function useDriftController() {
         }));
       }
     },
-    [debouncedQuery, offset, status]
+    [debouncedQuery, getDrift, offset, status]
   );
 
   useEffect(() => {
@@ -193,7 +194,7 @@ export function useDriftController() {
     return () => {
       requestGuard.dispose();
     };
-  }, []);
+  }, [getDriftActions]);
 
   const data = state.data;
   const driftCapabilityKnown = Boolean(data);
@@ -218,38 +219,43 @@ export function useDriftController() {
     actionableItems.length > 0 &&
     actionableItems.every((item) => selected.has(item.logicPath));
 
-  const loadActions = useCallback(async (background = false) => {
-    if (listingActionsRef.current) return;
-    listingActionsRef.current = true;
-    const requestToken = actionListGuardRef.current.beginRequest();
-    if (!background) setActionsLoading(true);
-    try {
-      const next = await getDriftActions();
-      if (
-        !controllerRequestGuardRef.current.isActive() ||
-        !actionListGuardRef.current.isCurrent(requestToken)
-      ) {
-        return;
+  const loadActions = useCallback(
+    async (background = false) => {
+      if (listingActionsRef.current) return;
+      listingActionsRef.current = true;
+      const requestToken = actionListGuardRef.current.beginRequest();
+      if (!background) setActionsLoading(true);
+      try {
+        const next = await getDriftActions();
+        if (
+          !controllerRequestGuardRef.current.isActive() ||
+          !actionListGuardRef.current.isCurrent(requestToken)
+        ) {
+          return;
+        }
+        setActions(next);
+        setActionsError(undefined);
+      } catch (error) {
+        if (
+          !controllerRequestGuardRef.current.isActive() ||
+          !actionListGuardRef.current.isCurrent(requestToken)
+        ) {
+          return;
+        }
+        setActionsError(
+          error instanceof Error
+            ? error.message
+            : 'Unable to load drift actions'
+        );
+      } finally {
+        listingActionsRef.current = false;
+        if (!background && controllerRequestGuardRef.current.isActive()) {
+          setActionsLoading(false);
+        }
       }
-      setActions(next);
-      setActionsError(undefined);
-    } catch (error) {
-      if (
-        !controllerRequestGuardRef.current.isActive() ||
-        !actionListGuardRef.current.isCurrent(requestToken)
-      ) {
-        return;
-      }
-      setActionsError(
-        error instanceof Error ? error.message : 'Unable to load drift actions'
-      );
-    } finally {
-      listingActionsRef.current = false;
-      if (!background && controllerRequestGuardRef.current.isActive()) {
-        setActionsLoading(false);
-      }
-    }
-  }, []);
+    },
+    [getDriftActions]
+  );
 
   useEffect(() => {
     actionsRef.current = actions;
@@ -328,7 +334,7 @@ export function useDriftController() {
     return scheduleDriftPoll(() => {
       void pollActions();
     }, ACTION_POLL_MS);
-  }, []);
+  }, [getDriftAction]);
 
   const loadScan = useCallback(async () => {
     if (loadingScanRef.current) return;
@@ -357,7 +363,7 @@ export function useDriftController() {
     } finally {
       loadingScanRef.current = false;
     }
-  }, []);
+  }, [getCurrentDriftScan]);
 
   const beginScan = useCallback(async () => {
     if (startingScan || scanRunning) return;
@@ -376,7 +382,7 @@ export function useDriftController() {
     } finally {
       if (controllerRequestGuardRef.current.isActive()) setStartingScan(false);
     }
-  }, [scanRunning, startingScan]);
+  }, [scanRunning, startDriftScan, startingScan]);
 
   useEffect(() => {
     if (!canScan) return;

@@ -1,25 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { NavigateFunction } from 'react-router';
 
-import type { PreparedArchiveBatch } from '../components/upload-panel';
+import type { FilesControllerDependencies } from '../features/files/application/files-controller-dependencies';
+import type { PreparedArchiveBatch } from '../features/upload/application/upload-contracts';
+import { watchFileOperation } from '../features/files/application/watch-file-operation';
 import { appPath } from '../lib/base-path';
-import {
-  createShareDraft,
-  createThumbnail,
-  deleteTrash,
-  deleteThumbnails,
-  emptyTrash,
-  getFiles,
-  getFileOperation,
-  getPreviewUrl,
-  getStatus,
-  getTrash,
-  moveFiles,
-  moveFilesToTrash,
-  renameFile,
-  restoreTrash,
-} from '../lib/api';
-import { removeArchiveTemporaryFiles } from '../lib/archive-compression';
 import { fileBrowserPath } from '../lib/file-route';
 import {
   type FileViewMode,
@@ -33,7 +18,7 @@ import type {
   FilesResponse,
   StatusResponse,
   TrashEntry,
-} from '../types/files';
+} from '../features/files/domain/files';
 import { useFileSelection } from './use-file-selection';
 import {
   useBackgroundUploadQueue,
@@ -51,6 +36,7 @@ type FileBrowserView = 'files' | 'trash';
 
 type UseFilesControllerOptions = {
   currentPath: string;
+  dependencies: FilesControllerDependencies;
   navigate: NavigateFunction;
   view: FileBrowserView;
 };
@@ -69,9 +55,27 @@ type PendingArchiveBatch = PreparedArchiveBatch & {
 
 export function useFilesController({
   currentPath,
+  dependencies,
   navigate,
   view,
 }: UseFilesControllerOptions) {
+  const {
+    createShareDraft,
+    createThumbnail,
+    deleteThumbnails,
+    deleteTrash,
+    emptyTrash,
+    getFileOperation,
+    getFiles,
+    getPreviewUrl,
+    getStatus,
+    getTrash,
+    moveFiles,
+    moveFilesToTrash,
+    removeArchiveTemporaryFiles,
+    renameFile,
+    restoreTrash,
+  } = dependencies;
   const [query, setQuery] = useState('');
   const [fileQuery, setFileQuery] = useState('');
   const [fileViewMode, setFileViewMode] = useState<FileViewMode>(() =>
@@ -101,6 +105,7 @@ export function useFilesController({
   const [showCancelUploadsConfirm, setShowCancelUploadsConfirm] =
     useState(false);
   const filesRequestRef = useRef(0);
+  const fileOperationAbortRef = useRef<AbortController | undefined>(undefined);
   const uploadRefreshTimerRef = useRef<number | undefined>(undefined);
   const completedUploadDestinationsRef = useRef(new Set<string>());
   const handledCompletedUploadsRef = useRef(new Set<string>());
@@ -123,7 +128,7 @@ export function useFilesController({
         error: error instanceof Error ? error.message : 'Unable to load status',
       }));
     }
-  }, []);
+  }, [getStatus]);
 
   const loadFiles = useCallback(
     async (path: string, searchQuery: string, offset: number) => {
@@ -156,7 +161,7 @@ export function useFilesController({
         }));
       }
     },
-    []
+    [getFiles]
   );
 
   const handleUploadComplete = useCallback(
@@ -190,6 +195,14 @@ export function useFilesController({
       if (uploadRefreshTimerRef.current !== undefined) {
         window.clearTimeout(uploadRefreshTimerRef.current);
       }
+    },
+    []
+  );
+
+  useEffect(
+    () => () => {
+      fileOperationAbortRef.current?.abort();
+      fileOperationAbortRef.current = undefined;
     },
     []
   );
@@ -262,7 +275,14 @@ export function useFilesController({
         }
       }
     }
-  }, [handleUploadComplete, loadFiles, uploadQueue.items]);
+  }, [
+    createThumbnail,
+    deleteThumbnails,
+    handleUploadComplete,
+    loadFiles,
+    removeArchiveTemporaryFiles,
+    uploadQueue.items,
+  ]);
 
   const refresh = useCallback(() => {
     const nextOffset = 0;
@@ -294,7 +314,7 @@ export function useFilesController({
     } finally {
       setTrashLoading(false);
     }
-  }, []);
+  }, [getTrash]);
 
   useEffect(() => {
     void loadStatus();
@@ -431,7 +451,7 @@ export function useFilesController({
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [openFolder, selectedEntries, selection, view]);
+  }, [getPreviewUrl, openFolder, selectedEntries, selection, view]);
 
   const beginMove = (paths: string[]) => {
     setActionPaths(paths);
@@ -486,33 +506,51 @@ export function useFilesController({
   };
 
   const watchOperation = async (id: string) => {
+    fileOperationAbortRef.current?.abort();
+    const controller = new AbortController();
+    fileOperationAbortRef.current = controller;
     try {
-      for (;;) {
-        const operation = await getFileOperation(id);
-        setActiveOperation(operation);
-        if (operation.status === 'completed') {
-          setActiveOperation(undefined);
-          selection.clear();
-          setSelectedFile(undefined);
-          refresh();
-          void loadTrash();
-          void loadStatus();
-          return;
-        }
-        if (operation.status === 'failed') {
-          setActiveOperation(undefined);
-          setActionError(operation.error || 'Background operation failed');
-          return;
-        }
-        await new Promise((resolve) => window.setTimeout(resolve, 1500));
+      const operation = await watchFileOperation({
+        id,
+        signal: controller.signal,
+        fetchOperation: (operationId, signal) =>
+          getFileOperation(operationId, { signal }),
+        onUpdate: (nextOperation) => {
+          if (fileOperationAbortRef.current === controller) {
+            setActiveOperation(nextOperation);
+          }
+        },
+      });
+      if (fileOperationAbortRef.current !== controller) {
+        return;
+      }
+      setActiveOperation(undefined);
+      if (operation.status === 'completed') {
+        selection.clear();
+        setSelectedFile(undefined);
+        refresh();
+        void loadTrash();
+        void loadStatus();
+      } else {
+        setActionError(operation.error || 'Background operation failed');
       }
     } catch (error) {
+      if (
+        controller.signal.aborted ||
+        fileOperationAbortRef.current !== controller
+      ) {
+        return;
+      }
       setActiveOperation(undefined);
       setActionError(
         error instanceof Error
           ? error.message
           : 'Unable to monitor background operation'
       );
+    } finally {
+      if (fileOperationAbortRef.current === controller) {
+        fileOperationAbortRef.current = undefined;
+      }
     }
   };
   const runTrash = async () => {
@@ -600,28 +638,31 @@ export function useFilesController({
     }
   };
 
-  const shareFile = useCallback(async (path: string) => {
-    setShareError(undefined);
-    setSharingPath(path);
-    const popup = window.open('about:blank', '_blank');
-    try {
-      const draft = await createShareDraft(path);
-      const sharePath = `/share/${encodeURIComponent(draft.id)}`;
-      if (popup) {
-        popup.opener = null;
-        popup.location.replace(appPath(sharePath));
-      } else {
-        window.location.href = appPath(sharePath);
+  const shareFile = useCallback(
+    async (path: string) => {
+      setShareError(undefined);
+      setSharingPath(path);
+      const popup = window.open('about:blank', '_blank');
+      try {
+        const draft = await createShareDraft(path);
+        const sharePath = `/share/${encodeURIComponent(draft.id)}`;
+        if (popup) {
+          popup.opener = null;
+          popup.location.replace(appPath(sharePath));
+        } else {
+          window.location.href = appPath(sharePath);
+        }
+      } catch (error) {
+        popup?.close();
+        setShareError(
+          error instanceof Error ? error.message : 'Unable to create share'
+        );
+      } finally {
+        setSharingPath(undefined);
       }
-    } catch (error) {
-      popup?.close();
-      setShareError(
-        error instanceof Error ? error.message : 'Unable to create share'
-      );
-    } finally {
-      setSharingPath(undefined);
-    }
-  }, []);
+    },
+    [createShareDraft]
+  );
 
   const hasActivityDock = Boolean(
     state.error ||

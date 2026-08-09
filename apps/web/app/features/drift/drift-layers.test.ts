@@ -1,18 +1,20 @@
 import { describe, expect, it } from 'vitest';
 
-import type { DriftAction } from '../types/drift';
+import type { DriftAction } from './domain/drift';
+import { createDriftActionListResponseGuard } from './application/drift-action-list-guard';
 import {
-  createDriftActionListResponseGuard,
   driftActionFailedPaths,
   driftActionPaths,
+  isDriftActionTerminal,
+  markDriftActionRetrying,
+  upsertDriftAction,
+} from './domain/drift-policy';
+import {
   driftActionPercent,
   driftMethodLabel,
   driftStatusLabel,
   formatUsdRange,
-  isDriftActionTerminal,
-  markDriftActionRetrying,
-  upsertDriftAction,
-} from './drift';
+} from './presentation/drift-formatters';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -36,7 +38,7 @@ const action: DriftAction = {
   ],
 };
 
-describe('drift helpers', () => {
+describe('drift layers', () => {
   it('identifies terminal action states and computes bounded progress', () => {
     expect(isDriftActionTerminal('partial')).toBe(true);
     expect(isDriftActionTerminal('running')).toBe(false);
@@ -49,7 +51,7 @@ describe('drift helpers', () => {
     expect(driftActionPaths(action)).toEqual(['ok.txt', 'retry.txt']);
   });
 
-  it('keeps action order stable while polling and prepends newly started actions', () => {
+  it('keeps action order stable while polling and prepends new actions', () => {
     const other = { ...action, id: 'action-2' };
     expect(
       upsertDriftAction([action, other], { ...action, progress: 4 })
@@ -59,46 +61,38 @@ describe('drift helpers', () => {
     ).toEqual(['action-2', 'action-1']);
   });
 
-  it('keeps polling after an explicit retry returns the previous terminal record', () => {
+  it('keeps polling after retry returns the previous terminal record', () => {
     expect(
       markDriftActionRetrying({ ...action, error: 'precondition' })
-    ).toEqual({
-      ...action,
-      status: 'pending',
-      error: undefined,
-    });
+    ).toEqual({ ...action, status: 'pending', error: undefined });
   });
 
-  it('rejects an older list response after a later action mutation completes', async () => {
+  it('rejects an older list response after a mutation', async () => {
     const guard = createDriftActionListResponseGuard();
-    const listResponse = deferred<DriftAction[]>();
+    const response = deferred<DriftAction[]>();
     const token = guard.beginRequest();
     let current = [action];
-    const applyList = listResponse.promise.then((actions) => {
+    const apply = response.promise.then((actions) => {
       if (guard.isCurrent(token)) current = actions;
     });
-
     guard.markMutation();
     current = upsertDriftAction(current, { ...action, progress: 4 });
-    listResponse.resolve([{ ...action, progress: 1 }]);
-    await applyList;
-
+    response.resolve([{ ...action, progress: 1 }]);
+    await apply;
     expect(current[0].progress).toBe(4);
   });
 
-  it('rejects an older list response after a newer list request starts', async () => {
+  it('rejects an older list response after a newer request', async () => {
     const guard = createDriftActionListResponseGuard();
-    const listResponse = deferred<DriftAction[]>();
+    const response = deferred<DriftAction[]>();
     const token = guard.beginRequest();
     let current = [action];
-    const applyList = listResponse.promise.then((actions) => {
+    const apply = response.promise.then((actions) => {
       if (guard.isCurrent(token)) current = actions;
     });
-
     guard.beginRequest();
-    listResponse.resolve([{ ...action, progress: 1 }]);
-    await applyList;
-
+    response.resolve([{ ...action, progress: 1 }]);
+    await apply;
     expect(current[0].progress).toBe(3);
   });
 
@@ -107,7 +101,7 @@ describe('drift helpers', () => {
     expect(formatUsdRange(0.001, 0.001)).toBe('< US$0.01');
   });
 
-  it('labels diagnostic statuses and plan methods from the API contract', () => {
+  it('labels statuses and plan methods from the API contract', () => {
     expect(driftStatusLabel('target_conflict')).toBe('Target conflict');
     expect(driftStatusLabel('shared_object')).toBe('Shared object');
     expect(driftMethodLabel('copy_verify_delete')).toBe(

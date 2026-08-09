@@ -82,3 +82,8 @@ a {
   color: #ffffff;
   background: #11615a;
 }
+
+.upload-activity-item {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 88px;
+}

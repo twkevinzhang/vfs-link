@@ -1,20 +1,16 @@
-import {
-  BlobReader,
-  BlobWriter,
-  SplitDataWriter,
-  ZipWriter,
-  createOPFSTempStream,
-} from '@zip.js/zip.js';
-
 import type { ArchivePlan } from './archive-plan';
-import { splitArchiveNames } from './archive-plan';
+import { splitArchiveNames } from './archive-file-names';
 import type { UploadCandidate } from './folder-upload';
+import {
+  createArchiveTemporaryManifest,
+  createArchiveTemporaryName,
+  getArchiveOutputDirectory,
+  removeArchiveTemporaryFiles,
+  supportsArchiveTemporaryStorage,
+  type ArchiveTemporaryManifest,
+} from './archive-temporary-storage';
 
 const ZIP_MIME = 'application/zip';
-const OPFS_DIRECTORY = '_vfs-link-archive-output';
-const TEMPORARY_FILE_PREFIX = 'vfs-archive-v1-';
-const TEMPORARY_FILE_SEPARATOR = '--';
-const ARCHIVE_TEMPORARY_MANIFEST_VERSION = 1 as const;
 
 export type ArchiveBuildProgress = {
   archiveIndex: number;
@@ -32,29 +28,6 @@ export type BuiltArchive = {
   temporaryManifest?: ArchiveTemporaryManifest;
 };
 
-export type ArchiveTemporaryManifest = {
-  version: typeof ARCHIVE_TEMPORARY_MANIFEST_VERSION;
-  ownerId: string;
-  createdAt: number;
-  files: Array<{
-    name: string;
-    size: number;
-  }>;
-};
-
-export type ArchiveTemporaryFileUsage = {
-  name: string;
-  size: number;
-  lastModified: number;
-  ownerId?: string;
-};
-
-export type ArchiveTemporaryStorageUsage = {
-  files: ArchiveTemporaryFileUsage[];
-  fileCount: number;
-  totalBytes: number;
-};
-
 type OutputTarget = {
   writable: WritableStream;
   getBlob: () => Promise<Blob>;
@@ -62,160 +35,12 @@ type OutputTarget = {
   temporaryName?: string;
 };
 
-function supportsOPFS() {
-  return (
-    typeof navigator !== 'undefined' &&
-    typeof navigator.storage?.getDirectory === 'function'
-  );
-}
-
-function isSafeTemporaryIdentifier(value: string) {
-  return (
-    /^[A-Za-z0-9_-]+$/.test(value) && !value.includes(TEMPORARY_FILE_SEPARATOR)
-  );
-}
-
-export function createArchiveTemporaryName(
+async function createOutputTarget(
   ownerId: string,
-  fileId: string = crypto.randomUUID()
-) {
-  if (
-    !isSafeTemporaryIdentifier(ownerId) ||
-    !isSafeTemporaryIdentifier(fileId)
-  ) {
-    throw new TypeError('Archive temporary identifiers are invalid');
-  }
-  return `${TEMPORARY_FILE_PREFIX}${ownerId}${TEMPORARY_FILE_SEPARATOR}${fileId}`;
-}
-
-export function getArchiveTemporaryOwnerId(name: string) {
-  if (!name.startsWith(TEMPORARY_FILE_PREFIX)) return undefined;
-  const remainder = name.slice(TEMPORARY_FILE_PREFIX.length);
-  const separatorIndex = remainder.indexOf(TEMPORARY_FILE_SEPARATOR);
-  if (separatorIndex <= 0) return undefined;
-  const ownerId = remainder.slice(0, separatorIndex);
-  const fileId = remainder.slice(
-    separatorIndex + TEMPORARY_FILE_SEPARATOR.length
-  );
-  if (
-    !isSafeTemporaryIdentifier(ownerId) ||
-    !isSafeTemporaryIdentifier(fileId)
-  ) {
-    return undefined;
-  }
-  return ownerId;
-}
-
-export function createArchiveTemporaryManifest(
-  ownerId: string,
-  files: Array<{ name: string; size: number }>,
-  createdAt = Date.now()
-): ArchiveTemporaryManifest {
-  if (!isSafeTemporaryIdentifier(ownerId)) {
-    throw new TypeError('Archive temporary owner is invalid');
-  }
-  if (!Number.isFinite(createdAt) || createdAt < 0) {
-    throw new TypeError('Archive temporary creation time is invalid');
-  }
-  const normalizedFiles = files.map((file) => {
-    if (
-      getArchiveTemporaryOwnerId(file.name) !== ownerId ||
-      !Number.isFinite(file.size) ||
-      file.size < 0
-    ) {
-      throw new TypeError('Archive temporary file metadata is invalid');
-    }
-    return { name: file.name, size: file.size };
-  });
-  return {
-    version: ARCHIVE_TEMPORARY_MANIFEST_VERSION,
-    ownerId,
-    createdAt,
-    files: normalizedFiles,
-  };
-}
-
-export function isArchiveTemporaryManifest(
-  value: unknown
-): value is ArchiveTemporaryManifest {
-  if (!value || typeof value !== 'object') return false;
-  const manifest = value as Partial<ArchiveTemporaryManifest>;
-  return (
-    manifest.version === ARCHIVE_TEMPORARY_MANIFEST_VERSION &&
-    typeof manifest.ownerId === 'string' &&
-    isSafeTemporaryIdentifier(manifest.ownerId) &&
-    typeof manifest.createdAt === 'number' &&
-    Number.isFinite(manifest.createdAt) &&
-    manifest.createdAt >= 0 &&
-    Array.isArray(manifest.files) &&
-    manifest.files.every(
-      (file) =>
-        file !== null &&
-        typeof file === 'object' &&
-        typeof file.name === 'string' &&
-        getArchiveTemporaryOwnerId(file.name) === manifest.ownerId &&
-        typeof file.size === 'number' &&
-        Number.isFinite(file.size) &&
-        file.size >= 0
-    )
-  );
-}
-
-export function summarizeArchiveTemporaryUsage(
-  files: ArchiveTemporaryFileUsage[]
-): ArchiveTemporaryStorageUsage {
-  return {
-    files: [...files].sort((left, right) =>
-      left.name.localeCompare(right.name)
-    ),
-    fileCount: files.length,
-    totalBytes: files.reduce((total, file) => total + file.size, 0),
-  };
-}
-
-export function findArchiveTemporaryOrphanNames(
-  files: ArchiveTemporaryFileUsage[],
-  manifests: unknown[],
-  olderThan: number
-) {
-  if (!Number.isFinite(olderThan) || olderThan < 0) {
-    throw new TypeError('Archive temporary cutoff is invalid');
-  }
-  const retainedNames = new Set(
-    manifests
-      .filter(isArchiveTemporaryManifest)
-      .flatMap((manifest) => manifest.files.map((file) => file.name))
-  );
-  return files
-    .filter(
-      (file) => file.lastModified <= olderThan && !retainedNames.has(file.name)
-    )
-    .map((file) => file.name);
-}
-
-function isNotFoundError(error: unknown) {
-  return (
-    error !== null &&
-    typeof error === 'object' &&
-    'name' in error &&
-    error.name === 'NotFoundError'
-  );
-}
-
-async function getArchiveOutputDirectory(create: boolean) {
-  if (!supportsOPFS()) return undefined;
-  const root = await navigator.storage.getDirectory();
-  try {
-    return await root.getDirectoryHandle(OPFS_DIRECTORY, { create });
-  } catch (error) {
-    if (!create && isNotFoundError(error)) return undefined;
-    throw error;
-  }
-}
-
-async function createOutputTarget(ownerId: string): Promise<OutputTarget> {
-  if (!supportsOPFS()) {
-    const writer = new BlobWriter(ZIP_MIME);
+  zip: typeof import('@zip.js/zip.js')
+): Promise<OutputTarget> {
+  if (!supportsArchiveTemporaryStorage()) {
+    const writer = new zip.BlobWriter(ZIP_MIME);
     return { writable: writer.writable, getBlob: () => writer.getData() };
   }
   const directory = await getArchiveOutputDirectory(true);
@@ -229,37 +54,6 @@ async function createOutputTarget(ownerId: string): Promise<OutputTarget> {
     temporaryName,
     getBlob: () => handle.getFile(),
   };
-}
-
-export async function removeArchiveTemporaryFiles(names: string[]) {
-  if (!supportsOPFS() || names.length === 0) return;
-  const directory = await getArchiveOutputDirectory(false);
-  if (!directory) return;
-  await Promise.all(
-    [...new Set(names)].map((name) =>
-      directory.removeEntry(name).catch(() => undefined)
-    )
-  );
-}
-
-export async function listArchiveTemporaryStorageUsage() {
-  const directory = await getArchiveOutputDirectory(false);
-  if (!directory) return summarizeArchiveTemporaryUsage([]);
-  const iterableDirectory = directory as FileSystemDirectoryHandle & {
-    entries: () => AsyncIterableIterator<[string, FileSystemHandle]>;
-  };
-  const files: ArchiveTemporaryFileUsage[] = [];
-  for await (const [name, handle] of iterableDirectory.entries()) {
-    if (handle.kind !== 'file') continue;
-    const file = await (handle as FileSystemFileHandle).getFile();
-    files.push({
-      name,
-      size: file.size,
-      lastModified: file.lastModified,
-      ownerId: getArchiveTemporaryOwnerId(name),
-    });
-  }
-  return summarizeArchiveTemporaryUsage(files);
 }
 
 export async function assertArchiveStorageAvailable(plans: ArchivePlan[]) {
@@ -283,6 +77,7 @@ async function buildOneArchive(
   plan: ArchivePlan,
   archiveIndex: number,
   archiveCount: number,
+  zip: typeof import('@zip.js/zip.js'),
   options: {
     compressionLevel: number;
     splitSize: number;
@@ -294,32 +89,32 @@ async function buildOneArchive(
   const id = crypto.randomUUID();
   const createdAt = Date.now();
   const targets: OutputTarget[] = [];
-  let zipWriter: ZipWriter<unknown>;
+  let zipWriter: import('@zip.js/zip.js').ZipWriter<unknown>;
   if (options.splitSize > 0) {
     async function* outputs(): AsyncGenerator<OutputTarget, boolean> {
       for (;;) {
-        const target = await createOutputTarget(id);
+        const target = await createOutputTarget(id, zip);
         targets.push(target);
         yield target;
       }
       return true;
     }
-    zipWriter = new ZipWriter(
-      new SplitDataWriter(outputs(), options.splitSize),
+    zipWriter = new zip.ZipWriter(
+      new zip.SplitDataWriter(outputs(), options.splitSize),
       {
         zip64: true,
-        createTempStream: supportsOPFS()
-          ? createOPFSTempStream({ directoryName: '.zip.js-temp' })
+        createTempStream: supportsArchiveTemporaryStorage()
+          ? zip.createOPFSTempStream({ directoryName: '.zip.js-temp' })
           : undefined,
       }
     );
   } else {
-    const target = await createOutputTarget(id);
+    const target = await createOutputTarget(id, zip);
     targets.push(target);
-    zipWriter = new ZipWriter(target.writable, {
+    zipWriter = new zip.ZipWriter(target.writable, {
       zip64: true,
-      createTempStream: supportsOPFS()
-        ? createOPFSTempStream({ directoryName: '.zip.js-temp' })
+      createTempStream: supportsArchiveTemporaryStorage()
+        ? zip.createOPFSTempStream({ directoryName: '.zip.js-temp' })
         : undefined,
     });
   }
@@ -327,7 +122,7 @@ async function buildOneArchive(
   try {
     for (const [entryIndex, entry] of plan.entries.entries()) {
       options.signal?.throwIfAborted();
-      await zipWriter.add(entry.path, new BlobReader(entry.file), {
+      await zipWriter.add(entry.path, new zip.BlobReader(entry.file), {
         level: options.compressionLevel,
         password: options.password || undefined,
         encryptionStrength: 3,
@@ -397,11 +192,14 @@ export async function buildArchives(
     onProgress?: (progress: ArchiveBuildProgress) => void;
   }
 ) {
+  const zip = await import('@zip.js/zip.js');
   await assertArchiveStorageAvailable(plans);
   const results: BuiltArchive[] = [];
   for (const [index, plan] of plans.entries()) {
     options.signal?.throwIfAborted();
-    results.push(await buildOneArchive(plan, index, plans.length, options));
+    results.push(
+      await buildOneArchive(plan, index, plans.length, zip, options)
+    );
   }
   return results;
 }

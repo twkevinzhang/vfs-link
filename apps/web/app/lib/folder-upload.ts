@@ -1,18 +1,6 @@
-import type { ArchiveTemporaryManifest } from './archive-compression';
+import type { UploadCandidate } from '../features/upload/application/upload-contracts';
 
-export type UploadCandidate = {
-  file: File;
-  /** A durable Chromium file handle, when the selection API exposes one. */
-  fileHandle?: FileSystemFileHandle;
-  /** Whether this source can be reopened after a page reload without reselecting it. */
-  sourceHandlePersistence?: 'durable' | 'non-durable';
-  relativePath: string;
-  selectionRoot: string;
-  selectionRootKind: 'file' | 'directory';
-  archiveGroupId?: string;
-  /** JSON-safe ownership metadata for generated OPFS archive output. */
-  archiveTemporaryManifest?: ArchiveTemporaryManifest;
-};
+export type { UploadCandidate } from '../features/upload/application/upload-contracts';
 
 function cleanRelativePath(value: string) {
   return value

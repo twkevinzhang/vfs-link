@@ -1,8 +1,8 @@
 import { BlobReader, BlobWriter, ZipReader } from '@zip.js/zip.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { buildArchives } from './archive-compression';
 import {
-  buildArchives,
   createArchiveTemporaryManifest,
   createArchiveTemporaryName,
   findArchiveTemporaryOrphanNames,
@@ -10,7 +10,7 @@ import {
   isArchiveTemporaryManifest,
   listArchiveTemporaryStorageUsage,
   removeArchiveTemporaryFiles,
-} from './archive-compression';
+} from './archive-temporary-storage';
 import type { ArchivePlan } from './archive-plan';
 
 afterEach(() => {

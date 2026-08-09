@@ -1,13 +1,13 @@
-import type { ArchiveTemporaryManifest } from './archive-compression';
+import type { ArchiveTemporaryManifest } from '../features/upload/domain/archive-manifest';
 import type { UploadFingerprint } from './upload-queue-core';
-import type { PersistedUploadState } from './upload-queue-storage';
+import type { UploadQueueState } from '../features/upload/domain/upload-queue';
 import type {
   UploadPreflightExisting,
   UploadPreflightStatus,
   UploadSession,
-} from '../types/upload';
+} from '../features/upload/application/upload-contracts';
 
-export type UploadQueueState = PersistedUploadState;
+export type { UploadQueueState } from '../features/upload/domain/upload-queue';
 
 export type UploadQueueItem = {
   key: string;

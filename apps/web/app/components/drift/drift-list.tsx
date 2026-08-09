@@ -8,11 +8,11 @@ import {
 import {
   driftStatusLabel,
   formatUsdRange,
-  isActionableDriftItem,
-} from '../../lib/drift';
+} from '../../features/drift/presentation/drift-formatters';
+import { isActionableDriftItem } from '../../features/drift/domain/drift-policy';
 import { formatBytes } from '../../lib/format';
 import { cn } from '../../lib/utils';
-import type { DriftItem } from '../../types/drift';
+import type { DriftItem } from '../../features/drift/domain/drift';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { Checkbox } from '../ui/checkbox';

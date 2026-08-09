@@ -2,7 +2,7 @@ import { Check, Copy, Folder, Trash2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 
 import { formatPathDisplayName, normalizePath } from '../../lib/format';
-import { type FileEntry } from '../../types/files';
+import { type FileEntry } from '../../features/files/domain/files';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 

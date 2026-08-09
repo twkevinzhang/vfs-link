@@ -11,7 +11,7 @@ import {
   Trash2,
   Upload,
 } from 'lucide-react';
-import { useEffect, useMemo } from 'react';
+import { lazy, Suspense, useEffect, useMemo } from 'react';
 import {
   useLocation,
   useNavigate,
@@ -44,7 +44,6 @@ import {
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
-import { UploadDialog } from '../components/upload-panel';
 import {
   ConfirmPermanentDelete,
   ConfirmTrashDialog,
@@ -54,7 +53,17 @@ import {
 import {
   FILE_PAGE_SIZE,
   useFilesController,
-} from '../hooks/use-files-controller';
+} from '../features/files/presentation/use-files-controller';
+import {
+  createThumbnail,
+  deleteThumbnails,
+  filesHttpGateway,
+  getDownloadUrl,
+  getPreviewUrl,
+  getThumbnailUrl,
+} from '../features/files/infrastructure/files-http-gateway';
+import { createShareDraft } from '../features/share/infrastructure/share-http-gateway';
+import { removeArchiveTemporaryFiles } from '../lib/archive-temporary-storage';
 import {
   fileBrowserPath,
   DRIFT_ROUTE,
@@ -63,6 +72,28 @@ import {
 } from '../lib/file-route';
 import { formatBytes } from '../lib/format';
 import { cn } from '../lib/utils';
+
+const loadUploadDialog = () =>
+  import('../features/upload/presentation/upload-dialog');
+const UploadDialog = lazy(() =>
+  loadUploadDialog().then((module) => ({ default: module.UploadDialog }))
+);
+
+const filesControllerDependencies = {
+  ...filesHttpGateway,
+  createShareDraft,
+  createThumbnail,
+  deleteThumbnails,
+  getPreviewUrl,
+  removeArchiveTemporaryFiles,
+};
+
+const filesPresentationDependencies = {
+  loadTree: filesHttpGateway.getTree,
+  getDownloadUrl,
+  getPreviewUrl,
+  getThumbnailUrl,
+};
 
 export const meta: MetaFunction = () => [
   { title: 'vfs-link browser' },
@@ -90,7 +121,12 @@ export default function FileBrowserRoute() {
     }
   }, [currentPath, location.pathname, navigate, view]);
 
-  const controller = useFilesController({ currentPath, navigate, view });
+  const controller = useFilesController({
+    currentPath,
+    dependencies: filesControllerDependencies,
+    navigate,
+    view,
+  });
   const {
     listing: {
       changeFileViewMode,
@@ -206,6 +242,8 @@ export default function FileBrowserRoute() {
                 variant="outline"
                 disabled={!uploadQueue.isUploadLeader}
                 onClick={() => setShowUpload((visible) => !visible)}
+                onFocus={() => void loadUploadDialog()}
+                onPointerEnter={() => void loadUploadDialog()}
                 className="h-9 w-full px-3 md:w-auto"
                 aria-expanded={showUpload}
                 title={
@@ -328,6 +366,7 @@ export default function FileBrowserRoute() {
                 )
               ) : (
                 <FileTable
+                  dependencies={filesPresentationDependencies}
                   entries={currentEntries}
                   viewMode={view === 'files' ? fileViewMode : 'list'}
                   pagination={view === 'files' ? currentPagination : undefined}
@@ -373,6 +412,7 @@ export default function FileBrowserRoute() {
             </div>
             {view === 'files' && (
               <FileInspector
+                dependencies={filesPresentationDependencies}
                 file={selectedFile}
                 sharingPath={sharingPath}
                 onClear={() => setSelectedFile(undefined)}
@@ -537,16 +577,22 @@ export default function FileBrowserRoute() {
             )}
           </div>
         </ActivityDock>
-        <UploadDialog
-          currentPath={currentPath}
-          onAddFiles={(candidates) =>
-            uploadQueue.add(candidates, currentPath, existingNames)
-          }
-          onAddArchives={addArchiveBatches}
-          open={showUpload}
-          onOpenChange={setShowUpload}
-        />
+        {showUpload && (
+          <Suspense fallback={null}>
+            <UploadDialog
+              dependencies={{ removeArchiveTemporaryFiles }}
+              currentPath={currentPath}
+              onAddFiles={(candidates) =>
+                uploadQueue.add(candidates, currentPath, existingNames)
+              }
+              onAddArchives={addArchiveBatches}
+              open
+              onOpenChange={setShowUpload}
+            />
+          </Suspense>
+        )}
         <MoveDialog
+          dependencies={filesPresentationDependencies}
           open={showMove}
           count={actionPaths.length}
           initialPath={currentPath}

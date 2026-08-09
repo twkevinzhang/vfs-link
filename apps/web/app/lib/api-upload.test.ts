@@ -1,12 +1,29 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { UploadHttpError, createUpload, preflightUploads } from './api';
+import {
+  UploadHttpError,
+  cancelUpload,
+  createUpload,
+  preflightUploads,
+} from './api';
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
 describe('upload API contracts', () => {
+  it('maps cancellation to an application-owned void result', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(null, { status: 204 }));
+
+    await expect(cancelUpload('session-1')).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/uploads/session-1',
+      expect.objectContaining({ method: 'DELETE' })
+    );
+  });
+
   it('posts a batch preflight using stable client IDs', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(
