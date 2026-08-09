@@ -62,6 +62,21 @@ retry() {
   done
 }
 
+ensure_secret_version() {
+  local secret_name="$1"
+  local secret_value="$2"
+  local current_value
+
+  if current_value="$(gcloud secrets versions access latest --secret="$secret_name" --project="$PROJECT_ID" 2>/dev/null)" && \
+    [[ "$current_value" == "$secret_value" ]]; then
+    printf 'Secret %s is unchanged; reusing its latest version.\n' "$secret_name"
+    return
+  fi
+
+  printf '%s' "$secret_value" | gcloud secrets versions add "$secret_name" \
+    --data-file=- --project="$PROJECT_ID" >/dev/null
+}
+
 PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')"
 RUNTIME_SA="${RUNTIME_SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 PUSH_SA="${PUSH_SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
@@ -119,7 +134,7 @@ gcloud pubsub topics add-iam-policy-binding "$DEAD_LETTER_TOPIC" --project="$PRO
 if ! gcloud secrets describe vfs-link-http-basic-password --project="$PROJECT_ID" >/dev/null 2>&1; then
   gcloud secrets create vfs-link-http-basic-password --replication-policy=automatic --project="$PROJECT_ID"
 fi
-printf '%s' "$HTTP_BASIC_AUTH_PASS" | gcloud secrets versions add vfs-link-http-basic-password --data-file=- --project="$PROJECT_ID" >/dev/null
+ensure_secret_version vfs-link-http-basic-password "$HTTP_BASIC_AUTH_PASS"
 gcloud secrets add-iam-policy-binding vfs-link-http-basic-password --project="$PROJECT_ID" \
   --member="serviceAccount:${RUNTIME_SA}" --role=roles/secretmanager.secretAccessor >/dev/null
 
@@ -128,7 +143,7 @@ if [[ -n "${TELEGRAM_BOT_TOKEN:-}" ]]; then
   if ! gcloud secrets describe vfs-link-telegram-bot-token --project="$PROJECT_ID" >/dev/null 2>&1; then
     gcloud secrets create vfs-link-telegram-bot-token --replication-policy=automatic --project="$PROJECT_ID"
   fi
-  printf '%s' "$TELEGRAM_BOT_TOKEN" | gcloud secrets versions add vfs-link-telegram-bot-token --data-file=- --project="$PROJECT_ID" >/dev/null
+  ensure_secret_version vfs-link-telegram-bot-token "$TELEGRAM_BOT_TOKEN"
   gcloud secrets add-iam-policy-binding vfs-link-telegram-bot-token --project="$PROJECT_ID" \
     --member="serviceAccount:${RUNTIME_SA}" --role=roles/secretmanager.secretAccessor >/dev/null
   SECRET_ARGS="${SECRET_ARGS},TELEGRAM_BOT_TOKEN=vfs-link-telegram-bot-token:latest"
@@ -178,6 +193,12 @@ fi
 
 gcloud run services update "$SERVICE" --region="$REGION" --project="$PROJECT_ID" \
   --update-env-vars="PUB_SUB_DRIVER=pubsub,PUB_SUB_PUSH_AUDIENCE=${SERVICE_URL},PUB_SUB_PUSH_SERVICE_ACCOUNT=${PUSH_SA}"
+
+# Existing services can have traffic pinned to a named revision. A successful
+# deploy/update does not override that pin, so explicitly route to the newest
+# Ready revision after all revision-producing updates have completed.
+gcloud run services update-traffic "$SERVICE" --region="$REGION" --project="$PROJECT_ID" \
+  --to-latest
 
 CORS_FILE="$(mktemp)"
 trap 'rm -f "$CORS_FILE"' EXIT
