@@ -64,3 +64,4 @@ credentials*.json
 gcp-key.json
 apps/web/build
 apps/web/.react-router
+.playwright-cli
