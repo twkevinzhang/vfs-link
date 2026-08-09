@@ -125,6 +125,10 @@ func run(logger *slog.Logger) error {
 		shareOptions = append(shareOptions, share.WithDispatcher(dispatcher))
 	}
 	shareService := share.NewService(cfg, store, objects, logger, shareOptions...)
+	relayCtx, cancelRelay := context.WithCancel(ctx)
+	relayDone := make(chan error, 1)
+	go func() { relayDone <- shareService.RunRelay(relayCtx) }()
+	defer cancelRelay()
 	uploadService := upload.NewWithBlobAndPublisher(store, uploadPublisher{store: store, files: fileService}, objects,
 		upload.WithTTL(cfg.UploadSessionTTL),
 		upload.WithMaxBytes(cfg.UploadMaxBytes),
@@ -188,6 +192,7 @@ func run(logger *slog.Logger) error {
 	select {
 	case <-ctx.Done():
 		logger.Info("shutdown signal received")
+		cancelRelay()
 		if ftpServer != nil {
 			ftpServer.Stop()
 		}
@@ -209,8 +214,12 @@ func run(logger *slog.Logger) error {
 		if err := fileService.WaitOperations(shutdownCtx); err != nil {
 			return fmt.Errorf("wait for file operations: %w", err)
 		}
+		if err := waitShareService(shutdownCtx, shareService, relayDone); err != nil {
+			return err
+		}
 		return nil
 	case err := <-errCh:
+		cancelRelay()
 		if ftpServer != nil {
 			ftpServer.Stop()
 		}
@@ -220,11 +229,29 @@ func run(logger *slog.Logger) error {
 		if waitErr := fileService.WaitOperations(shutdownCtx); waitErr != nil && err == nil {
 			return fmt.Errorf("wait for file operations: %w", waitErr)
 		}
+		if waitErr := waitShareService(shutdownCtx, shareService, relayDone); waitErr != nil && err == nil {
+			return waitErr
+		}
 		if err != nil && !errors.Is(err, context.Canceled) {
 			return err
 		}
 		return nil
 	}
+}
+
+func waitShareService(ctx context.Context, service *share.Service, relayDone <-chan error) error {
+	select {
+	case err := <-relayDone:
+		if err != nil {
+			return fmt.Errorf("share relay: %w", err)
+		}
+	case <-ctx.Done():
+		return errors.New("share relay did not stop before shutdown deadline")
+	}
+	if err := service.Wait(ctx); err != nil {
+		return fmt.Errorf("wait for share workers: %w", err)
+	}
+	return nil
 }
 
 type uploadPublisher struct {

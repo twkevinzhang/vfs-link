@@ -349,6 +349,10 @@
         ],
         "responses": {
           "200": { "$ref": "#/components/responses/ShareResult" },
+          "202": {
+            "description": "Share request is durable and pending dispatch retry",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ShareResponse" } } }
+          },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "404": { "$ref": "#/components/responses/NotFound" }
@@ -1225,7 +1229,7 @@
       "ShareResponse": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "logicPath", "fileName", "size", "destinationObject", "destinationUrl", "shareUrl", "email", "notificationTarget", "status", "createdAt", "updatedAt"],
+        "required": ["id", "logicPath", "fileName", "size", "destinationObject", "destinationUrl", "shareUrl", "email", "notificationTarget", "status", "createdAt", "updatedAt", "dispatchStatus", "dispatchAttempts"],
         "properties": {
           "id": { "type": "string" },
           "logicPath": { "$ref": "#/components/schemas/LogicalPath" },
@@ -1241,7 +1245,16 @@
           "createdAt": { "$ref": "#/components/schemas/Timestamp" },
           "updatedAt": { "$ref": "#/components/schemas/Timestamp" },
           "completedAt": { "$ref": "#/components/schemas/Timestamp" },
-          "notifiedAt": { "$ref": "#/components/schemas/Timestamp" }
+          "notifiedAt": { "$ref": "#/components/schemas/Timestamp" },
+          "dispatchStatus": { "type": "string", "enum": ["none", "pending", "dispatching", "dispatched", "dispatch_failed", "dispatch_paused"] },
+          "dispatchAttempts": { "type": "integer", "minimum": 0 },
+          "nextDispatchAt": { "$ref": "#/components/schemas/Timestamp" },
+          "dispatchLeaseOwner": { "type": "string" },
+          "dispatchLeaseUntil": { "$ref": "#/components/schemas/Timestamp" },
+          "lastDispatchError": { "type": "string" },
+          "startRequestedAt": { "$ref": "#/components/schemas/Timestamp" },
+          "processingBy": { "type": "string" },
+          "processingUntil": { "$ref": "#/components/schemas/Timestamp" }
         }
       },
       "CreateUploadRequest": {

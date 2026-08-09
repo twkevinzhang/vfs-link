@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	"net/http/httptest"
@@ -16,13 +17,57 @@ import (
 	"testing"
 
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/blob"
+	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/config"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/db"
+	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/share"
 )
 
 type rejectListBlobStore struct{ blob.Store }
 
+type failingShareDispatcher struct{}
+
+func (failingShareDispatcher) Dispatch(context.Context, share.Job) error {
+	return errors.New("temporary dispatch outage")
+}
+
 func (rejectListBlobStore) List(context.Context) ([]blob.ObjectInfo, error) {
 	return nil, errors.New("physical object listing must not be used for status")
+}
+
+func TestStartShareReturnsAcceptedWithObservablePendingDispatch(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store, err := db.NewTreeLocal(filepath.Join(root, "metadata"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	if err = store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	objects, err := blob.NewLocal(filepath.Join(root, "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := store.CreateShare(ctx, db.ShareRecord{
+		ID: "pending-share", LogicPath: "docs/a.txt", PhysicalHash: "object-a", FileName: "a.txt",
+		DestinationObject: "shares/a.txt", ShareURL: "https://example.test/a.txt", Status: share.StatusDraft,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := share.NewService(
+		config.Config{ShareGCSBucket: "test", TelegramChatID: "test-chat"},
+		store, objects, slog.New(slog.NewTextHandler(io.Discard, nil)),
+		share.WithDispatcher(failingShareDispatcher{}),
+	)
+	var response shareResponse
+	requestJSON(t, New(store, objects, objects, service, "", "").Handler(), http.MethodPost,
+		"/api/shares/"+record.ID+"/start", nil, http.StatusAccepted, &response)
+	if response.Status != share.StatusDraft || response.DispatchStatus != share.DispatchPending ||
+		response.DispatchAttempts != 1 || response.NextDispatchAt == nil || response.LastDispatchError == "" {
+		t.Fatalf("pending share response = %#v", response)
+	}
 }
 
 func TestStatsJSONUsesDriverNeutralObjectFields(t *testing.T) {

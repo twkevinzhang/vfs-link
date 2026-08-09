@@ -50,22 +50,29 @@ type DirectChildrenPage struct {
 }
 
 type ShareRecord struct {
-	ID                string     `json:"id"`
-	LogicPath         string     `json:"logicPath"`
-	PhysicalHash      string     `json:"physicalHash"`
-	FileName          string     `json:"fileName"`
-	Size              int64      `json:"size"`
-	DestinationObject string     `json:"destinationObject"`
-	ShareURL          string     `json:"shareUrl"`
-	Email             string     `json:"email"`
-	Status            string     `json:"status"`
-	Error             string     `json:"error,omitempty"`
-	CreatedAt         time.Time  `json:"createdAt"`
-	UpdatedAt         time.Time  `json:"updatedAt"`
-	CompletedAt       *time.Time `json:"completedAt,omitempty"`
-	NotifiedAt        *time.Time `json:"notifiedAt,omitempty"`
-	ProcessingBy      *string    `json:"processingBy,omitempty"`
-	ProcessingUntil   *time.Time `json:"processingUntil,omitempty"`
+	ID                 string     `json:"id"`
+	LogicPath          string     `json:"logicPath"`
+	PhysicalHash       string     `json:"physicalHash"`
+	FileName           string     `json:"fileName"`
+	Size               int64      `json:"size"`
+	DestinationObject  string     `json:"destinationObject"`
+	ShareURL           string     `json:"shareUrl"`
+	Email              string     `json:"email"`
+	Status             string     `json:"status"`
+	Error              string     `json:"error,omitempty"`
+	CreatedAt          time.Time  `json:"createdAt"`
+	UpdatedAt          time.Time  `json:"updatedAt"`
+	CompletedAt        *time.Time `json:"completedAt,omitempty"`
+	NotifiedAt         *time.Time `json:"notifiedAt,omitempty"`
+	ProcessingBy       *string    `json:"processingBy,omitempty"`
+	ProcessingUntil    *time.Time `json:"processingUntil,omitempty"`
+	DispatchStatus     string     `json:"dispatchStatus"`
+	DispatchAttempts   int        `json:"dispatchAttempts"`
+	NextDispatchAt     *time.Time `json:"nextDispatchAt,omitempty"`
+	DispatchLeaseOwner *string    `json:"dispatchLeaseOwner,omitempty"`
+	DispatchLeaseUntil *time.Time `json:"dispatchLeaseUntil,omitempty"`
+	LastDispatchError  string     `json:"lastDispatchError,omitempty"`
+	StartRequestedAt   *time.Time `json:"startRequestedAt,omitempty"`
 }
 
 type DAVLockRecord struct {
@@ -143,8 +150,16 @@ CREATE TABLE IF NOT EXISTS "Share" (
 );
 ALTER TABLE "Share" ADD COLUMN IF NOT EXISTS "processingBy" TEXT;
 ALTER TABLE "Share" ADD COLUMN IF NOT EXISTS "processingUntil" TIMESTAMPTZ;
+ALTER TABLE "Share" ADD COLUMN IF NOT EXISTS "dispatchStatus" TEXT NOT NULL DEFAULT 'none';
+ALTER TABLE "Share" ADD COLUMN IF NOT EXISTS "dispatchAttempts" INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE "Share" ADD COLUMN IF NOT EXISTS "nextDispatchAt" TIMESTAMPTZ;
+ALTER TABLE "Share" ADD COLUMN IF NOT EXISTS "dispatchLeaseOwner" TEXT;
+ALTER TABLE "Share" ADD COLUMN IF NOT EXISTS "dispatchLeaseUntil" TIMESTAMPTZ;
+ALTER TABLE "Share" ADD COLUMN IF NOT EXISTS "lastDispatchError" TEXT NOT NULL DEFAULT '';
+ALTER TABLE "Share" ADD COLUMN IF NOT EXISTS "startRequestedAt" TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS "Share_logicPath_idx" ON "Share" ("logicPath");
 CREATE INDEX IF NOT EXISTS "Share_status_idx" ON "Share" (status);
+CREATE INDEX IF NOT EXISTS "Share_dispatch_due_idx" ON "Share" ("nextDispatchAt", "dispatchStatus") WHERE status <> 'notified';
 
 CREATE TABLE IF NOT EXISTS "DAVLock" (
   token TEXT PRIMARY KEY,

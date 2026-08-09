@@ -30,14 +30,29 @@ const (
 	StatusEmailFailedLegacy = "email_failed"
 	shareJobTimeout         = 55 * time.Minute
 	shareLeaseDuration      = 56 * time.Minute
+	DispatchNone            = "none"
+	DispatchPending         = "pending"
+	Dispatching             = "dispatching"
+	DispatchDispatched      = "dispatched"
+	DispatchFailed          = "dispatch_failed"
+	DispatchPaused          = "dispatch_paused"
 )
 
+var ErrDispatchPending = errors.New("share dispatch is durably pending")
+
 type Service struct {
-	cfg        config.Config
-	store      MetadataStore
-	objects    blob.Store
-	logger     *slog.Logger
-	dispatcher Dispatcher
+	cfg         config.Config
+	store       MetadataStore
+	objects     blob.Store
+	logger      *slog.Logger
+	dispatcher  Dispatcher
+	relay       *Relay
+	now         func() time.Time
+	uploader    ShareUploader
+	notifier    ShareNotifier
+	workers     chan struct{}
+	workerCtx   context.Context
+	stopWorkers context.CancelFunc
 }
 
 // MetadataStore is the share package's persistence boundary. Backends do not
@@ -46,12 +61,37 @@ type MetadataStore interface {
 	Find(context.Context, string) (db.FileRecord, bool, error)
 	CreateShare(context.Context, db.ShareRecord) (db.ShareRecord, error)
 	FindShare(context.Context, string) (db.ShareRecord, bool, error)
-	MarkShareUploading(context.Context, string, string) (db.ShareRecord, error)
-	MarkShareUploaded(context.Context, string) (db.ShareRecord, error)
-	MarkShareNotified(context.Context, string) (db.ShareRecord, error)
-	MarkShareFailed(context.Context, string, string, string) (db.ShareRecord, error)
+	RequestShareJob(context.Context, string, string, time.Time) (db.ShareRecord, bool, error)
+	ClaimPendingShareDispatch(context.Context, string, time.Time, time.Time, int) ([]db.ShareRecord, error)
+	MarkShareDispatched(context.Context, string, string, time.Time) error
+	RetryShareDispatch(context.Context, string, string, time.Time, string) error
+	FailShareDispatch(context.Context, string, string, string) error
 	ClaimShareJob(context.Context, string, string, time.Time) (db.ShareRecord, bool, error)
 	ReleaseShareJob(context.Context, string, string) error
+	MarkShareUploadedBy(context.Context, string, string) (db.ShareRecord, error)
+	MarkShareNotifiedBy(context.Context, string, string) (db.ShareRecord, error)
+	MarkShareFailedBy(context.Context, string, string, string, string) (db.ShareRecord, error)
+	StopShareRedelivery(context.Context, string, string) error
+}
+
+type ShareUploader interface {
+	UploadShare(context.Context, db.ShareRecord) error
+}
+
+type ShareNotifier interface {
+	NotifyShare(context.Context, db.ShareRecord) error
+}
+
+type uploadShareFunc func(context.Context, db.ShareRecord) error
+
+func (f uploadShareFunc) UploadShare(ctx context.Context, record db.ShareRecord) error {
+	return f(ctx, record)
+}
+
+type notifyShareFunc func(context.Context, db.ShareRecord) error
+
+func (f notifyShareFunc) NotifyShare(ctx context.Context, record db.ShareRecord) error {
+	return f(ctx, record)
 }
 
 type Option func(*Service)
@@ -60,16 +100,47 @@ func WithDispatcher(dispatcher Dispatcher) Option {
 	return func(service *Service) { service.dispatcher = dispatcher }
 }
 
+func WithClock(now func() time.Time) Option {
+	return func(service *Service) {
+		if now != nil {
+			service.now = now
+		}
+	}
+}
+
+func WithUploader(uploader ShareUploader) Option {
+	return func(service *Service) { service.uploader = uploader }
+}
+
+func WithNotifier(notifier ShareNotifier) Option {
+	return func(service *Service) { service.notifier = notifier }
+}
+
 func NewService(cfg config.Config, store MetadataStore, objects blob.Store, logger *slog.Logger, options ...Option) *Service {
+	workerCtx, stopWorkers := context.WithCancel(context.Background())
 	service := &Service{
-		cfg:     cfg,
-		store:   store,
-		objects: objects,
-		logger:  logger,
+		cfg:         cfg,
+		store:       store,
+		objects:     objects,
+		logger:      logger,
+		now:         func() time.Time { return time.Now().UTC() },
+		workers:     make(chan struct{}, 8),
+		workerCtx:   workerCtx,
+		stopWorkers: stopWorkers,
 	}
 	for _, option := range options {
 		option(service)
 	}
+	if service.uploader == nil {
+		service.uploader = uploadShareFunc(service.upload)
+	}
+	if service.notifier == nil {
+		service.notifier = notifyShareFunc(service.sendNotification)
+	}
+	if service.dispatcher == nil {
+		service.dispatcher = dispatcherFunc(service.dispatchLocal)
+	}
+	service.relay = NewRelay(store, service.dispatcher, logger, WithRelayClock(service.now))
 	return service
 }
 
@@ -110,34 +181,18 @@ func (s *Service) Find(ctx context.Context, id string) (db.ShareRecord, bool, er
 }
 
 func (s *Service) Start(ctx context.Context, id string) (db.ShareRecord, error) {
-	record, found, err := s.store.FindShare(ctx, id)
+	record, dispatchNeeded, err := s.store.RequestShareJob(ctx, id, strings.TrimSpace(s.cfg.TelegramChatID), s.now())
 	if err != nil {
 		return db.ShareRecord{}, err
 	}
-	if !found {
-		return db.ShareRecord{}, db.ErrNotFound
-	}
-	if record.Status == StatusUploading {
+	if record.Status == StatusNotified || !dispatchNeeded {
 		return record, nil
 	}
-	if record.Status != StatusDraft && record.Status != StatusFailed &&
-		record.Status != StatusNotifyFailed && record.Status != StatusEmailFailedLegacy {
-		return record, nil
-	}
-
-	record, err = s.store.MarkShareUploading(ctx, id, strings.TrimSpace(s.cfg.TelegramChatID))
-	if err != nil {
-		return db.ShareRecord{}, err
-	}
-	if s.dispatcher == nil {
-		go func() {
-			if err := s.ProcessShareJob(context.Background(), Job{Version: JobVersion, ShareID: id}); err != nil {
-				s.logger.Error("process share job", "share_id", id, "error", err)
-			}
-		}()
-	} else if err := s.dispatcher.Dispatch(ctx, Job{Version: JobVersion, ShareID: id}); err != nil {
-		_, _ = s.store.MarkShareFailed(context.Background(), id, StatusFailed, err.Error())
-		return db.ShareRecord{}, fmt.Errorf("dispatch share job: %w", err)
+	if err := s.relay.DispatchOne(ctx, id); err != nil {
+		if current, found, loadErr := s.store.FindShare(ctx, id); loadErr == nil && found {
+			record = current
+		}
+		return record, fmt.Errorf("%w: %v", ErrDispatchPending, err)
 	}
 	return record, nil
 }
@@ -150,7 +205,7 @@ func (s *Service) ProcessShareJob(parent context.Context, job Job) error {
 	defer cancel()
 
 	owner := uuid.NewString()
-	record, claimed, err := s.store.ClaimShareJob(ctx, job.ShareID, owner, time.Now().Add(shareLeaseDuration))
+	record, claimed, err := s.store.ClaimShareJob(ctx, job.ShareID, owner, s.now().Add(shareLeaseDuration))
 	if err != nil {
 		if errors.Is(err, db.ErrNotFound) {
 			return Permanent(err)
@@ -168,10 +223,14 @@ func (s *Service) ProcessShareJob(parent context.Context, job Job) error {
 		if current.Status == StatusNotified {
 			return nil
 		}
-		return fmt.Errorf("share job is already leased: %s", job.ShareID)
+		// Pub/Sub and relay delivery are intentionally at-least-once. An active
+		// lease means this is a harmless duplicate and must be ACKed.
+		return nil
 	}
 	defer func() {
-		if err := s.store.ReleaseShareJob(context.Background(), job.ShareID, owner); err != nil {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.store.ReleaseShareJob(releaseCtx, job.ShareID, owner); err != nil {
 			s.logger.Error("release share job lease", "share_id", job.ShareID, "error", err)
 		}
 	}()
@@ -180,13 +239,16 @@ func (s *Service) ProcessShareJob(parent context.Context, job Job) error {
 		return nil
 	}
 	if record.CompletedAt == nil {
-		if err := s.upload(ctx, record); err != nil {
+		if err := s.uploader.UploadShare(ctx, record); err != nil {
 			s.logger.Error("share upload failed", "share_id", job.ShareID, "error", err)
-			_, _ = s.store.MarkShareFailed(context.Background(), job.ShareID, StatusFailed, err.Error())
+			_, _ = s.store.MarkShareFailedBy(context.Background(), job.ShareID, owner, StatusFailed, err.Error())
+			if IsPermanent(err) {
+				_ = s.store.StopShareRedelivery(context.Background(), job.ShareID, owner)
+			}
 			return err
 		}
 
-		record, err = s.store.MarkShareUploaded(context.Background(), job.ShareID)
+		record, err = s.store.MarkShareUploadedBy(context.Background(), job.ShareID, owner)
 		if err != nil {
 			return fmt.Errorf("mark share uploaded: %w", err)
 		}
@@ -194,18 +256,59 @@ func (s *Service) ProcessShareJob(parent context.Context, job Job) error {
 
 	if strings.TrimSpace(s.cfg.TelegramBotToken) == "" || strings.TrimSpace(s.cfg.TelegramChatID) == "" {
 		err := errors.New("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are required")
-		_, _ = s.store.MarkShareFailed(context.Background(), job.ShareID, StatusNotifyFailed, err.Error())
+		_, _ = s.store.MarkShareFailedBy(context.Background(), job.ShareID, owner, StatusNotifyFailed, err.Error())
+		_ = s.store.StopShareRedelivery(context.Background(), job.ShareID, owner)
 		return Permanent(err)
 	}
-	if err := s.sendNotification(ctx, record); err != nil {
+	if err := s.notifier.NotifyShare(ctx, record); err != nil {
 		s.logger.Error("share telegram notification failed", "share_id", job.ShareID, "chat_id", s.cfg.TelegramChatID, "error", err)
-		_, _ = s.store.MarkShareFailed(context.Background(), job.ShareID, StatusNotifyFailed, err.Error())
+		_, _ = s.store.MarkShareFailedBy(context.Background(), job.ShareID, owner, StatusNotifyFailed, err.Error())
+		if IsPermanent(err) {
+			_ = s.store.StopShareRedelivery(context.Background(), job.ShareID, owner)
+		}
 		return err
 	}
-	if _, err := s.store.MarkShareNotified(context.Background(), job.ShareID); err != nil {
+	if _, err := s.store.MarkShareNotifiedBy(context.Background(), job.ShareID, owner); err != nil {
 		return fmt.Errorf("mark share notified: %w", err)
 	}
 	return nil
+}
+
+func (s *Service) dispatchLocal(_ context.Context, job Job) error {
+	select {
+	case s.workers <- struct{}{}:
+		go func() {
+			defer func() { <-s.workers }()
+			if err := s.ProcessShareJob(s.workerCtx, job); err != nil && !errors.Is(err, context.Canceled) {
+				s.logger.Error("process local share job", "share_id", job.ShareID, "error", err)
+			}
+		}()
+		return nil
+	default:
+		return errors.New("local share worker queue is full")
+	}
+}
+
+// RunRelay recovers durable pending, expired dispatch leases, and stale
+// accepted jobs. It is bounded per pass and exits when ctx is cancelled.
+func (s *Service) RunRelay(ctx context.Context) error {
+	defer s.stopWorkers()
+	return s.relay.Run(ctx)
+}
+
+func (s *Service) Wait(ctx context.Context) error {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if len(s.workers) == 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func (s *Service) upload(ctx context.Context, record db.ShareRecord) error {

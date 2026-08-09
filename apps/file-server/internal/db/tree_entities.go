@@ -118,6 +118,9 @@ func (s *TreeStore) CreateShare(ctx context.Context, r ShareRecord) (ShareRecord
 		r.CreatedAt = now
 	}
 	r.UpdatedAt = now
+	if strings.TrimSpace(r.DispatchStatus) == "" {
+		r.DispatchStatus = "none"
+	}
 	if e := s.putEntity(ctx, "shares", r.ID, r, true); e != nil {
 		return ShareRecord{}, e
 	}
@@ -148,6 +151,180 @@ func (s *TreeStore) updateShare(ctx context.Context, id string, fn func(*ShareRe
 	}
 	return ShareRecord{}, ErrMetadataConflict
 }
+
+func (s *TreeStore) updateShareIf(ctx context.Context, id string, fn func(*ShareRecord) bool) (ShareRecord, bool, error) {
+	for n := 0; n < treeCASAttempts; n++ {
+		var r ShareRecord
+		g, ok, err := s.getEntityGeneration(ctx, "shares", id, &r)
+		if err != nil {
+			return r, false, err
+		}
+		if !ok {
+			return r, false, ErrNotFound
+		}
+		if !fn(&r) {
+			return r, false, nil
+		}
+		r.UpdatedAt = time.Now().UTC()
+		if err = s.putEntityCAS(ctx, "shares", id, r, g); err == nil {
+			return r, true, nil
+		} else if !errorsIsConflict(err) {
+			return r, false, err
+		}
+	}
+	return ShareRecord{}, false, ErrMetadataConflict
+}
+
+func (s *TreeStore) RequestShareJob(ctx context.Context, id, target string, now time.Time) (ShareRecord, bool, error) {
+	dispatchNeeded := false
+	r, _, err := s.updateShareIf(ctx, id, func(r *ShareRecord) bool {
+		if r.Status == "notified" {
+			return false
+		}
+		r.Email = target
+		manualRetry := r.DispatchStatus == "dispatch_failed" || r.DispatchStatus == "dispatch_paused"
+		if r.StartRequestedAt == nil || manualRetry {
+			requested := now
+			r.StartRequestedAt = &requested
+		}
+		if manualRetry {
+			r.DispatchAttempts = 0
+		}
+		r.LastDispatchError = ""
+		dispatchNeeded = r.ProcessingUntil == nil || !r.ProcessingUntil.After(now)
+		if dispatchNeeded {
+			next := now
+			r.DispatchStatus = "pending"
+			r.NextDispatchAt = &next
+		}
+		return true
+	})
+	return r, dispatchNeeded, err
+}
+
+func (s *TreeStore) ClaimPendingShareDispatch(ctx context.Context, owner string, now, until time.Time, limit int) ([]ShareRecord, error) {
+	if strings.TrimSpace(owner) == "" || !until.After(now) || limit <= 0 {
+		return nil, fmt.Errorf("valid dispatch owner, lease, and limit are required")
+	}
+	values, err := s.listEntities(ctx, "shares", func() any { return &ShareRecord{} })
+	if err != nil {
+		return nil, err
+	}
+	candidates := make([]ShareRecord, 0, len(values))
+	for _, value := range values {
+		r := *value.(*ShareRecord)
+		if shareDispatchDue(r, now) {
+			candidates = append(candidates, r)
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		left, right := candidates[i].NextDispatchAt, candidates[j].NextDispatchAt
+		if left == nil || right == nil {
+			return left == nil && right != nil
+		}
+		return left.Before(*right)
+	})
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	claimed := make([]ShareRecord, 0, len(candidates))
+	for _, candidate := range candidates {
+		r, ok, claimErr := s.updateShareIf(ctx, candidate.ID, func(r *ShareRecord) bool {
+			if !shareDispatchDue(*r, now) {
+				return false
+			}
+			r.DispatchStatus = "dispatching"
+			r.DispatchAttempts++
+			r.DispatchLeaseOwner = &owner
+			r.DispatchLeaseUntil = &until
+			return true
+		})
+		if claimErr != nil {
+			return nil, claimErr
+		}
+		if ok {
+			claimed = append(claimed, r)
+		}
+	}
+	return claimed, nil
+}
+
+func shareDispatchDue(r ShareRecord, now time.Time) bool {
+	if r.Status == "notified" || (r.ProcessingUntil != nil && r.ProcessingUntil.After(now)) ||
+		(r.NextDispatchAt != nil && r.NextDispatchAt.After(now)) {
+		return false
+	}
+	switch r.DispatchStatus {
+	case "pending", "dispatched":
+		return true
+	case "dispatching":
+		return r.DispatchLeaseUntil == nil || !r.DispatchLeaseUntil.After(now)
+	default:
+		return false
+	}
+}
+
+func (s *TreeStore) MarkShareDispatched(ctx context.Context, id, owner string, redeliverAt time.Time) error {
+	_, ok, err := s.updateShareIf(ctx, id, func(r *ShareRecord) bool {
+		if (r.DispatchStatus != "dispatching" && r.DispatchStatus != "dispatch_paused") || r.DispatchLeaseOwner == nil || *r.DispatchLeaseOwner != owner {
+			return false
+		}
+		paused := r.DispatchStatus == "dispatch_paused"
+		if !paused {
+			r.DispatchStatus = "dispatched"
+		}
+		if r.Status == "notified" || paused {
+			r.NextDispatchAt = nil
+		} else {
+			r.NextDispatchAt = &redeliverAt
+		}
+		r.DispatchLeaseOwner = nil
+		r.DispatchLeaseUntil = nil
+		r.LastDispatchError = ""
+		return true
+	})
+	return expectedMutation(ok, err)
+}
+
+func (s *TreeStore) RetryShareDispatch(ctx context.Context, id, owner string, next time.Time, message string) error {
+	_, ok, err := s.updateShareIf(ctx, id, func(r *ShareRecord) bool {
+		if r.DispatchStatus != "dispatching" || r.DispatchLeaseOwner == nil || *r.DispatchLeaseOwner != owner {
+			return false
+		}
+		r.DispatchStatus = "pending"
+		r.NextDispatchAt = &next
+		r.DispatchLeaseOwner = nil
+		r.DispatchLeaseUntil = nil
+		r.LastDispatchError = message
+		return true
+	})
+	return expectedMutation(ok, err)
+}
+
+func (s *TreeStore) FailShareDispatch(ctx context.Context, id, owner, message string) error {
+	_, ok, err := s.updateShareIf(ctx, id, func(r *ShareRecord) bool {
+		if r.DispatchStatus != "dispatching" || r.DispatchLeaseOwner == nil || *r.DispatchLeaseOwner != owner {
+			return false
+		}
+		r.DispatchStatus = "dispatch_failed"
+		r.NextDispatchAt = nil
+		r.DispatchLeaseOwner = nil
+		r.DispatchLeaseUntil = nil
+		r.LastDispatchError = message
+		return true
+	})
+	return expectedMutation(ok, err)
+}
+
+func expectedMutation(ok bool, err error) error {
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrMetadataConflict
+	}
+	return nil
+}
 func (s *TreeStore) MarkShareUploading(ctx context.Context, id, target string) (ShareRecord, error) {
 	return s.updateShare(ctx, id, func(r *ShareRecord) {
 		r.Email = target
@@ -158,10 +335,26 @@ func (s *TreeStore) MarkShareUploading(ctx context.Context, id, target string) (
 	})
 }
 func (s *TreeStore) MarkShareUploaded(ctx context.Context, id string) (ShareRecord, error) {
-	return s.updateShare(ctx, id, func(r *ShareRecord) { n := time.Now().UTC(); r.Status = "completed"; r.Error = ""; r.CompletedAt = &n })
+	return s.updateShare(ctx, id, func(r *ShareRecord) {
+		n := time.Now().UTC()
+		r.Status = "completed"
+		r.Error = ""
+		if r.CompletedAt == nil {
+			r.CompletedAt = &n
+		}
+	})
 }
 func (s *TreeStore) MarkShareNotified(ctx context.Context, id string) (ShareRecord, error) {
-	return s.updateShare(ctx, id, func(r *ShareRecord) { n := time.Now().UTC(); r.Status = "notified"; r.Error = ""; r.NotifiedAt = &n })
+	return s.updateShare(ctx, id, func(r *ShareRecord) {
+		n := time.Now().UTC()
+		r.Status = "notified"
+		r.Error = ""
+		if r.NotifiedAt == nil {
+			r.NotifiedAt = &n
+		}
+		r.DispatchStatus = "dispatched"
+		r.NextDispatchAt = nil
+	})
 }
 func (s *TreeStore) MarkShareFailed(ctx context.Context, id, status, msg string) (ShareRecord, error) {
 	return s.updateShare(ctx, id, func(r *ShareRecord) { r.Status = status; r.Error = msg })
@@ -178,9 +371,79 @@ func (s *TreeStore) ClaimShareJob(ctx context.Context, id, owner string, until t
 		}
 		r.ProcessingBy = &owner
 		r.ProcessingUntil = &until
+		if r.CompletedAt == nil {
+			r.Status = "uploading"
+			r.Error = ""
+		}
 		claimed = true
 	})
 	return r, claimed, e
+}
+
+func (s *TreeStore) MarkShareUploadedBy(ctx context.Context, id, owner string) (ShareRecord, error) {
+	r, ok, err := s.updateShareIf(ctx, id, func(r *ShareRecord) bool {
+		if r.ProcessingBy == nil || *r.ProcessingBy != owner || r.Status != "uploading" {
+			return false
+		}
+		now := time.Now().UTC()
+		r.Status = "completed"
+		r.Error = ""
+		if r.CompletedAt == nil {
+			r.CompletedAt = &now
+		}
+		return true
+	})
+	if err = expectedMutation(ok, err); err != nil {
+		return ShareRecord{}, err
+	}
+	return r, nil
+}
+
+func (s *TreeStore) MarkShareNotifiedBy(ctx context.Context, id, owner string) (ShareRecord, error) {
+	r, ok, err := s.updateShareIf(ctx, id, func(r *ShareRecord) bool {
+		if r.ProcessingBy == nil || *r.ProcessingBy != owner || r.CompletedAt == nil || r.Status == "notified" {
+			return false
+		}
+		now := time.Now().UTC()
+		r.Status = "notified"
+		r.Error = ""
+		if r.NotifiedAt == nil {
+			r.NotifiedAt = &now
+		}
+		r.NextDispatchAt = nil
+		return true
+	})
+	if err = expectedMutation(ok, err); err != nil {
+		return ShareRecord{}, err
+	}
+	return r, nil
+}
+
+func (s *TreeStore) MarkShareFailedBy(ctx context.Context, id, owner, status, message string) (ShareRecord, error) {
+	r, ok, err := s.updateShareIf(ctx, id, func(r *ShareRecord) bool {
+		if r.ProcessingBy == nil || *r.ProcessingBy != owner || r.Status == "notified" {
+			return false
+		}
+		r.Status = status
+		r.Error = message
+		return true
+	})
+	if err = expectedMutation(ok, err); err != nil {
+		return ShareRecord{}, err
+	}
+	return r, nil
+}
+
+func (s *TreeStore) StopShareRedelivery(ctx context.Context, id, owner string) error {
+	_, ok, err := s.updateShareIf(ctx, id, func(r *ShareRecord) bool {
+		if r.ProcessingBy == nil || *r.ProcessingBy != owner {
+			return false
+		}
+		r.DispatchStatus = "dispatch_paused"
+		r.NextDispatchAt = nil
+		return true
+	})
+	return expectedMutation(ok, err)
 }
 func (s *TreeStore) ReleaseShareJob(ctx context.Context, id, owner string) error {
 	_, e := s.updateShare(ctx, id, func(r *ShareRecord) {

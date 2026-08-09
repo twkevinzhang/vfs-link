@@ -274,6 +274,79 @@ func runStoreContract(t *testing.T, store Store) {
 		}
 	})
 
+	t.Run("share dispatch and worker leases", func(t *testing.T) {
+		share, err := store.CreateShare(ctx, ShareRecord{
+			ID: "contract-share-dispatch", LogicPath: "dispatch/file.txt", PhysicalHash: "dispatch-object",
+			FileName: "file.txt", DestinationObject: "out/dispatch.txt", ShareURL: "https://example.test/dispatch", Status: "draft",
+		})
+		if err != nil {
+			t.Fatalf("CreateShare: %v", err)
+		}
+		now := time.Now().UTC().Truncate(time.Microsecond)
+		share, needed, err := store.RequestShareJob(ctx, share.ID, "target", now)
+		if err != nil || !needed || share.DispatchStatus != "pending" || share.StartRequestedAt == nil || share.NextDispatchAt == nil {
+			t.Fatalf("RequestShareJob = %#v, needed %t, err %v", share, needed, err)
+		}
+
+		const contenders = 12
+		results := make(chan int, contenders)
+		errorsCh := make(chan error, contenders)
+		for i := 0; i < contenders; i++ {
+			go func(index int) {
+				claimed, claimErr := store.ClaimPendingShareDispatch(ctx, "relay-"+string(rune('a'+index)), now, now.Add(time.Minute), 1)
+				if claimErr != nil {
+					errorsCh <- claimErr
+					return
+				}
+				results <- len(claimed)
+			}(i)
+		}
+		claimedCount := 0
+		for i := 0; i < contenders; i++ {
+			select {
+			case count := <-results:
+				claimedCount += count
+			case claimErr := <-errorsCh:
+				t.Fatalf("concurrent dispatch claim: %v", claimErr)
+			}
+		}
+		if claimedCount != 1 {
+			t.Fatalf("dispatch claims = %d, want 1", claimedCount)
+		}
+
+		// The original claim owner is intentionally unknown here; an expired
+		// dispatch lease must be claimable by a new relay regardless.
+		takeoverAt := now.Add(2 * time.Minute)
+		claimed, err := store.ClaimPendingShareDispatch(ctx, "relay-takeover", takeoverAt, takeoverAt.Add(time.Minute), 1)
+		if err != nil || len(claimed) != 1 || claimed[0].DispatchAttempts != 2 {
+			t.Fatalf("expired dispatch takeover = %#v, err %v", claimed, err)
+		}
+		if err = store.RetryShareDispatch(ctx, share.ID, "relay-takeover", takeoverAt.Add(time.Second), "temporary"); err != nil {
+			t.Fatalf("RetryShareDispatch: %v", err)
+		}
+
+		workerAt := time.Now().UTC()
+		worker, workerClaimed, err := store.ClaimShareJob(ctx, share.ID, "worker-a", workerAt.Add(100*time.Millisecond))
+		if err != nil || !workerClaimed || worker.Status != "uploading" {
+			t.Fatalf("ClaimShareJob = %#v, claimed %t, err %v", worker, workerClaimed, err)
+		}
+		if _, duplicate, err := store.ClaimShareJob(ctx, share.ID, "worker-b", workerAt.Add(time.Minute)); err != nil || duplicate {
+			t.Fatalf("active duplicate claimed = %t, err %v", duplicate, err)
+		}
+		time.Sleep(120 * time.Millisecond)
+		expiredAt := time.Now().UTC()
+		worker, workerClaimed, err = store.ClaimShareJob(ctx, share.ID, "worker-b", expiredAt.Add(time.Minute))
+		if err != nil || !workerClaimed || worker.ProcessingBy == nil || *worker.ProcessingBy != "worker-b" {
+			t.Fatalf("expired worker takeover = %#v, claimed %t, err %v", worker, workerClaimed, err)
+		}
+		if _, err = store.MarkShareUploadedBy(ctx, share.ID, "worker-a"); !errors.Is(err, ErrMetadataConflict) {
+			t.Fatalf("stale worker MarkShareUploadedBy error = %v", err)
+		}
+		if worker, err = store.MarkShareUploadedBy(ctx, share.ID, "worker-b"); err != nil || worker.CompletedAt == nil {
+			t.Fatalf("owner MarkShareUploadedBy = %#v, err %v", worker, err)
+		}
+	})
+
 	t.Run("DAV lock lifecycle", func(t *testing.T) {
 		const token = "contract-lock"
 		expiresAt := time.Now().UTC().Add(5 * time.Minute).Truncate(time.Microsecond)

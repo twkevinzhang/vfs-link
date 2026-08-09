@@ -51,6 +51,15 @@ type Store interface {
 	MarkShareFailed(context.Context, string, string, string) (ShareRecord, error)
 	ClaimShareJob(context.Context, string, string, time.Time) (ShareRecord, bool, error)
 	ReleaseShareJob(context.Context, string, string) error
+	RequestShareJob(context.Context, string, string, time.Time) (ShareRecord, bool, error)
+	ClaimPendingShareDispatch(context.Context, string, time.Time, time.Time, int) ([]ShareRecord, error)
+	MarkShareDispatched(context.Context, string, string, time.Time) error
+	RetryShareDispatch(context.Context, string, string, time.Time, string) error
+	FailShareDispatch(context.Context, string, string, string) error
+	MarkShareUploadedBy(context.Context, string, string) (ShareRecord, error)
+	MarkShareNotifiedBy(context.Context, string, string) (ShareRecord, error)
+	MarkShareFailedBy(context.Context, string, string, string, string) (ShareRecord, error)
+	StopShareRedelivery(context.Context, string, string) error
 
 	CreateUpload(context.Context, UploadRecord) (UploadRecord, error)
 	FindUpload(context.Context, string) (UploadRecord, bool, error)

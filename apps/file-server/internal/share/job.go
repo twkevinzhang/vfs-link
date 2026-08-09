@@ -32,6 +32,10 @@ type Dispatcher interface {
 	Dispatch(context.Context, Job) error
 }
 
+type dispatcherFunc func(context.Context, Job) error
+
+func (f dispatcherFunc) Dispatch(ctx context.Context, job Job) error { return f(ctx, job) }
+
 type Processor interface {
 	ProcessShareJob(context.Context, Job) error
 }

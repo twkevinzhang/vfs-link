@@ -156,6 +156,15 @@ type shareResponse struct {
 	UpdatedAt          time.Time  `json:"updatedAt"`
 	CompletedAt        *time.Time `json:"completedAt,omitempty"`
 	NotifiedAt         *time.Time `json:"notifiedAt,omitempty"`
+	DispatchStatus     string     `json:"dispatchStatus"`
+	DispatchAttempts   int        `json:"dispatchAttempts"`
+	NextDispatchAt     *time.Time `json:"nextDispatchAt,omitempty"`
+	DispatchLeaseOwner *string    `json:"dispatchLeaseOwner,omitempty"`
+	DispatchLeaseUntil *time.Time `json:"dispatchLeaseUntil,omitempty"`
+	LastDispatchError  string     `json:"lastDispatchError,omitempty"`
+	StartRequestedAt   *time.Time `json:"startRequestedAt,omitempty"`
+	ProcessingBy       *string    `json:"processingBy,omitempty"`
+	ProcessingUntil    *time.Time `json:"processingUntil,omitempty"`
 }
 
 // New keeps original archive objects and derived thumbnail objects in
@@ -427,6 +436,12 @@ func (s *Server) handleShare(w http.ResponseWriter, r *http.Request) {
 	if len(parts) == 2 && parts[1] == "start" && r.Method == http.MethodPost {
 		record, err := s.shares.Start(r.Context(), id)
 		if err != nil {
+			if errors.Is(err, share.ErrDispatchPending) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusAccepted)
+				_ = json.NewEncoder(w).Encode(toShareResponse(record))
+				return
+			}
 			writeAPIError(w, err)
 			return
 		}
@@ -558,6 +573,15 @@ func toShareResponse(record db.ShareRecord) shareResponse {
 		UpdatedAt:          record.UpdatedAt,
 		CompletedAt:        record.CompletedAt,
 		NotifiedAt:         record.NotifiedAt,
+		DispatchStatus:     record.DispatchStatus,
+		DispatchAttempts:   record.DispatchAttempts,
+		NextDispatchAt:     record.NextDispatchAt,
+		DispatchLeaseOwner: record.DispatchLeaseOwner,
+		DispatchLeaseUntil: record.DispatchLeaseUntil,
+		LastDispatchError:  record.LastDispatchError,
+		StartRequestedAt:   record.StartRequestedAt,
+		ProcessingBy:       record.ProcessingBy,
+		ProcessingUntil:    record.ProcessingUntil,
 	}
 }
 

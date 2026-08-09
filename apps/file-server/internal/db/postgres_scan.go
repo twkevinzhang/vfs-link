@@ -36,6 +36,13 @@ func scanShare(row rowScanner) (ShareRecord, error) {
 		&record.NotifiedAt,
 		&record.ProcessingBy,
 		&record.ProcessingUntil,
+		&record.DispatchStatus,
+		&record.DispatchAttempts,
+		&record.NextDispatchAt,
+		&record.DispatchLeaseOwner,
+		&record.DispatchLeaseUntil,
+		&record.LastDispatchError,
+		&record.StartRequestedAt,
 	)
 	return record, err
 }
