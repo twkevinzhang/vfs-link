@@ -14,7 +14,8 @@ ARG VITE_BASE_PATH=/
 ARG VITE_API_BASE_URL=
 ENV VITE_BASE_PATH=$VITE_BASE_PATH
 ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
-RUN pnpm --dir apps/web build
+RUN pnpm --dir apps/web build \
+    && test -s apps/web/build/client/index.html
 
 FROM golang:1.25-alpine AS builder
 

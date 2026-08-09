@@ -12,7 +12,7 @@ export function normalizeBasePath(value: string | null | undefined) {
 }
 
 export function viteBase(basePath: string) {
-  return basePath === DEFAULT_BASE_PATH ? basePath : `${basePath}/`;
+  return basePath;
 }
 
 function parsePathname(value: string) {
