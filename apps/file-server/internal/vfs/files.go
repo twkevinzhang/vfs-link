@@ -6,10 +6,12 @@ import (
 	"io"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/spf13/afero"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/blob"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/db"
+	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/fileops"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/objectkey"
 )
 
@@ -161,6 +163,8 @@ type uploadFile struct {
 	baseFile
 	store                db.Store
 	objects              blob.Store
+	commands             FileCommands
+	commandTimeout       time.Duration
 	logicPath            string
 	physicalHash         string
 	expectedPhysicalHash *string
@@ -172,7 +176,7 @@ type uploadFile struct {
 	closed               bool
 }
 
-func newUploadFile(store db.Store, objects blob.Store, logicPath string) afero.File {
+func newUploadFile(store db.Store, objects blob.Store, commands FileCommands, commandTimeout time.Duration, logicPath string) afero.File {
 	physicalHash, err := objectkey.FromLogicalPath(logicPath)
 	if err != nil {
 		return &errorFile{err: err}
@@ -197,6 +201,8 @@ func newUploadFile(store db.Store, objects blob.Store, logicPath string) afero.F
 		baseFile:             baseFile{name: logicPath, info: fileInfo{name: pathBase(logicPath), mode: 0o666, modTime: now()}},
 		store:                store,
 		objects:              objects,
+		commands:             commands,
+		commandTimeout:       commandTimeout,
 		logicPath:            logicPath,
 		physicalHash:         physicalHash,
 		expectedPhysicalHash: expected,
@@ -236,6 +242,15 @@ func (f *uploadFile) Close() error {
 	closeErr := f.writer.Close()
 	if closeErr != nil {
 		return closeErr
+	}
+	if f.commands != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), f.commandTimeout)
+		defer cancel()
+		_, err := f.commands.PublishUploaded(ctx, fileops.PublishIntent{
+			LogicPath: f.logicPath, PhysicalHash: f.physicalHash, Size: f.size,
+			ExpectedPhysicalHash: f.expectedPhysicalHash, RequireAbsent: f.requireAbsent,
+		})
+		return err
 	}
 	previousPhysicalHash, matched, err := f.store.ReplaceFileConditional(
 		context.Background(), f.logicPath, f.physicalHash, f.size,

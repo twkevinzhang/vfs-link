@@ -15,6 +15,7 @@ import (
 
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/blob"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/db"
+	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/fileops"
 	xwebdav "golang.org/x/net/webdav"
 )
 
@@ -24,13 +25,14 @@ func TestWebDAVFileLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := newMemoryStore()
-	fs := NewFileSystem(store, objects)
+	commands := newTestCommands(store)
+	fs := NewFileSystemWithCommands(store, objects, commands)
 	dav := &xwebdav.Handler{
 		Prefix:     "/dav/",
 		FileSystem: fs,
 		LockSystem: xwebdav.NewMemLS(),
 	}
-	handler := secureRequests("/dav/", false, basicAuth("dav", "secret", transactionalWrites(conditionalRequests("/dav/", fs, dav))))
+	handler := secureRequests("/dav/", false, basicAuth("dav", "secret", transactionalWrites(conditionalRequests("/dav/", fs, rejectDirectoryCopies("/dav/", fs, dav)))))
 
 	request := func(method, target string, body []byte, headers map[string]string) *httptest.ResponseRecorder {
 		t.Helper()
@@ -98,8 +100,31 @@ func TestWebDAVFileLifecycle(t *testing.T) {
 	if response.Code != http.StatusCreated {
 		t.Fatalf("COPY status = %d, body = %s", response.Code, response.Body.String())
 	}
+	response = request("COPY", "/dav/docs", nil, map[string]string{"Destination": "https://example.com/dav/docs-copy"})
+	if response.Code != http.StatusNotImplemented {
+		t.Fatalf("directory COPY status = %d, want %d", response.Code, http.StatusNotImplemented)
+	}
+	deletedRecord, found, err := store.Find(context.Background(), "docs/b.txt")
+	if err != nil || !found {
+		t.Fatalf("record before DELETE = %#v, found=%v err=%v", deletedRecord, found, err)
+	}
 	if response = request(http.MethodDelete, "/dav/docs/b.txt", nil, nil); response.Code != http.StatusNoContent {
 		t.Fatalf("DELETE status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if _, found, err := store.Find(context.Background(), "docs/b.txt"); err != nil || found {
+		t.Fatalf("DELETE active mapping found=%v err=%v", found, err)
+	}
+	if trashed, found := commands.trashedRecord("docs/b.txt"); !found || trashed.PhysicalHash != deletedRecord.PhysicalHash {
+		t.Fatalf("DELETE trash record = %#v, found=%v", trashed, found)
+	}
+	reader, err := objects.NewRangeReader(context.Background(), deletedRecord.PhysicalHash, 0, -1)
+	if err != nil {
+		t.Fatalf("DELETE removed restorable blob: %v", err)
+	}
+	deletedContent, readErr := io.ReadAll(reader)
+	closeErr := reader.Close()
+	if readErr != nil || closeErr != nil || string(deletedContent) != "updated" {
+		t.Fatalf("restorable blob = %q, readErr=%v closeErr=%v", deletedContent, readErr, closeErr)
 	}
 	response = request(http.MethodGet, "/dav/docs/c.txt", nil, nil)
 	if response.Code != http.StatusOK || response.Body.String() != "updated" {
@@ -134,9 +159,10 @@ func TestFailedPUTAndCOPYDoNotPublishObjects(t *testing.T) {
 	}
 	writeObject("docs/existing.txt", "existing-object", "original")
 
-	fs := NewFileSystem(store, objects)
+	commands := newTestCommands(store)
+	fs := NewFileSystemWithCommands(store, objects, commands)
 	dav := &xwebdav.Handler{Prefix: "/dav/", FileSystem: fs, LockSystem: xwebdav.NewMemLS()}
-	handler := secureRequests("/dav/", false, basicAuth("dav", "secret", transactionalWrites(conditionalRequests("/dav/", fs, dav))))
+	handler := secureRequests("/dav/", false, basicAuth("dav", "secret", transactionalWrites(conditionalRequests("/dav/", fs, rejectDirectoryCopies("/dav/", fs, dav)))))
 	request := func(method, target string, body io.Reader, headers map[string]string) *httptest.ResponseRecorder {
 		t.Helper()
 		req := httptest.NewRequest(method, "https://example.com"+target, body)
@@ -310,3 +336,102 @@ func (s *memoryStore) DeletePrefix(_ context.Context, prefix string) error {
 }
 
 var _ metadataStore = (*memoryStore)(nil)
+
+type testCommands struct {
+	store   *memoryStore
+	mu      sync.Mutex
+	trashed map[string]db.FileRecord
+}
+
+func newTestCommands(store *memoryStore) *testCommands {
+	return &testCommands{store: store, trashed: make(map[string]db.FileRecord)}
+}
+
+func (c *testCommands) CreateDirectory(ctx context.Context, logicPath string) (db.FileRecord, error) {
+	if err := c.store.UpsertDirectory(ctx, logicPath); err != nil {
+		return db.FileRecord{}, err
+	}
+	record, _, err := c.store.Find(ctx, logicPath)
+	return record, err
+}
+
+func (c *testCommands) Relocate(ctx context.Context, source, target string) (fileops.MutationOutcome, error) {
+	if err := c.store.RenamePath(ctx, source, target); err != nil {
+		return fileops.MutationOutcome{}, err
+	}
+	record, found, err := c.store.Find(ctx, target)
+	if err != nil {
+		return fileops.MutationOutcome{}, err
+	}
+	if !found {
+		return fileops.MutationOutcome{}, db.ErrNotFound
+	}
+	return fileops.MutationOutcome{Records: []db.FileRecord{record}}, nil
+}
+
+func (c *testCommands) DeleteToTrash(ctx context.Context, paths []string) (fileops.MutationOutcome, error) {
+	var records []db.FileRecord
+	for _, logicPath := range paths {
+		record, found, err := c.store.Find(ctx, logicPath)
+		if err != nil {
+			return fileops.MutationOutcome{}, err
+		}
+		if !found {
+			return fileops.MutationOutcome{}, db.ErrNotFound
+		}
+		records = append(records, record)
+		if record.IsDirectory {
+			children, err := c.store.ListPrefix(ctx, withTrailingSlash(logicPath))
+			if err != nil {
+				return fileops.MutationOutcome{}, err
+			}
+			records = append(records, children...)
+			if err := c.store.DeletePrefix(ctx, withTrailingSlash(logicPath)); err != nil {
+				return fileops.MutationOutcome{}, err
+			}
+		}
+		if err := c.store.DeletePath(ctx, logicPath); err != nil {
+			return fileops.MutationOutcome{}, err
+		}
+	}
+	c.mu.Lock()
+	for _, record := range records {
+		c.trashed[record.LogicPath] = record
+	}
+	c.mu.Unlock()
+	return fileops.MutationOutcome{Records: records}, nil
+}
+
+func (c *testCommands) PublishUploaded(ctx context.Context, intent fileops.PublishIntent) (fileops.PublishResult, error) {
+	previous, matched, err := c.store.ReplaceFileConditional(
+		ctx, intent.LogicPath, intent.PhysicalHash, intent.Size,
+		intent.ExpectedPhysicalHash, intent.RequireAbsent,
+	)
+	if err != nil {
+		return fileops.PublishResult{}, err
+	}
+	if !matched {
+		return fileops.PublishResult{}, db.ErrPathConflict
+	}
+	record, found, err := c.store.Find(ctx, intent.LogicPath)
+	if err != nil {
+		return fileops.PublishResult{}, err
+	}
+	if !found {
+		return fileops.PublishResult{}, db.ErrNotFound
+	}
+	return fileops.PublishResult{Published: record, PreviousObject: previous}, nil
+}
+
+func (*testCommands) WaitVisible(context.Context, string) (db.OperationRecord, error) {
+	return db.OperationRecord{}, nil
+}
+
+func (c *testCommands) trashedRecord(logicPath string) (db.FileRecord, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	record, found := c.trashed[logicPath]
+	return record, found
+}
+
+var _ commandService = (*testCommands)(nil)

@@ -11,19 +11,43 @@ import (
 	"github.com/spf13/afero"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/blob"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/db"
+	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/fileops"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/logicpath"
 )
 
+const defaultCommandTimeout = 30 * time.Second
+
+// FileCommands is the mutation boundary used by the FTP/afero adapter. Read
+// operations remain on the query store, while every namespace or publication
+// mutation is delegated to the shared application service.
+type FileCommands interface {
+	CreateDirectory(context.Context, string) (db.FileRecord, error)
+	Relocate(context.Context, string, string) (fileops.MutationOutcome, error)
+	DeleteToTrash(context.Context, []string) (fileops.MutationOutcome, error)
+	WaitVisible(context.Context, string) (db.OperationRecord, error)
+	PublishUploaded(context.Context, fileops.PublishIntent) (fileops.PublishResult, error)
+}
+
 type FS struct {
-	store   db.Store
-	objects blob.Store
+	store          db.Store
+	objects        blob.Store
+	commands       FileCommands
+	commandTimeout time.Duration
 }
 
 func New(store db.Store, objects blob.Store) *FS {
-	return &FS{
-		store:   store,
-		objects: objects,
+	var commands FileCommands
+	if store != nil && objects != nil {
+		commands = fileops.New(store, objects, objects)
 	}
+	return NewWithCommands(store, objects, commands, defaultCommandTimeout)
+}
+
+func NewWithCommands(store db.Store, objects blob.Store, commands FileCommands, commandTimeout time.Duration) *FS {
+	if commandTimeout <= 0 {
+		commandTimeout = defaultCommandTimeout
+	}
+	return &FS{store: store, objects: objects, commands: commands, commandTimeout: commandTimeout}
 }
 
 func (fs *FS) Name() string {
@@ -31,11 +55,17 @@ func (fs *FS) Name() string {
 }
 
 func (fs *FS) Create(name string) (afero.File, error) {
-	return newUploadFile(fs.store, fs.objects, cleanPath(name)), nil
+	return newUploadFile(fs.store, fs.objects, fs.commands, fs.commandTimeout, cleanPath(name)), nil
 }
 
 func (fs *FS) Mkdir(name string, _ os.FileMode) error {
 	logicPath := cleanPath(name)
+	if fs.commands != nil {
+		ctx, cancel := fs.commandContext()
+		defer cancel()
+		_, err := fs.commands.CreateDirectory(ctx, logicPath)
+		return err
+	}
 	_, found, err := fs.store.Find(context.Background(), logicPath)
 	if err != nil {
 		return err
@@ -95,7 +125,20 @@ func (fs *FS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, err
 }
 
 func (fs *FS) Remove(name string) error {
-	return fs.removePath(context.Background(), cleanPath(name))
+	logicPath := cleanPath(name)
+	if fs.commands == nil {
+		return fs.removePath(context.Background(), logicPath)
+	}
+	ctx, cancel := fs.commandContext()
+	defer cancel()
+	result, err := fs.commands.DeleteToTrash(ctx, []string{logicPath})
+	if err != nil {
+		return err
+	}
+	if result.Operation != nil {
+		_, err = fs.commands.WaitVisible(ctx, result.Operation.ID)
+	}
+	return err
 }
 
 func (fs *FS) RemoveAll(name string) error {
@@ -103,7 +146,19 @@ func (fs *FS) RemoveAll(name string) error {
 }
 
 func (fs *FS) Rename(oldname, newname string) error {
-	return fs.store.RenamePath(context.Background(), cleanPath(oldname), cleanPath(newname))
+	if fs.commands == nil {
+		return fs.store.RenamePath(context.Background(), cleanPath(oldname), cleanPath(newname))
+	}
+	ctx, cancel := fs.commandContext()
+	defer cancel()
+	result, err := fs.commands.Relocate(ctx, cleanPath(oldname), cleanPath(newname))
+	if err != nil {
+		return err
+	}
+	if result.Operation != nil {
+		_, err = fs.commands.WaitVisible(ctx, result.Operation.ID)
+	}
+	return err
 }
 
 func (fs *FS) Stat(name string) (os.FileInfo, error) {
@@ -128,6 +183,10 @@ func (fs *FS) Chtimes(name string, _, _ time.Time) error {
 		return os.ErrNotExist
 	}
 	return nil
+}
+
+func (fs *FS) commandContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), fs.commandTimeout)
 }
 
 func (fs *FS) statRecord(ctx context.Context, logicPath string) (os.FileInfo, db.FileRecord, error) {

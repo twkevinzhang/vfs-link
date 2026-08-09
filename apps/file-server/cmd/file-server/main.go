@@ -17,6 +17,7 @@ import (
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/blob"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/config"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/db"
+	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/fileops"
 	ftpdriver "github.com/twkevinzhang/vfs-link/apps/file-server/internal/ftp"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/httpauth"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/share"
@@ -106,6 +107,7 @@ func run(logger *slog.Logger) error {
 	defer thumbnailObjects.Close()
 	logger.Info("initialized thumbnail storage", "driver", thumbnailObjects.Driver(), "root", thumbnailObjects.Root())
 	startThumbnailGarbageCollector(ctx, store, thumbnailObjects, logger)
+	fileService := fileops.New(store, objects, thumbnailObjects)
 
 	if len(cfg.CommandArgs) > 0 {
 		switch cfg.CommandArgs[0] {
@@ -123,7 +125,7 @@ func run(logger *slog.Logger) error {
 		shareOptions = append(shareOptions, share.WithDispatcher(dispatcher))
 	}
 	shareService := share.NewService(cfg, store, objects, logger, shareOptions...)
-	uploadService := upload.NewWithBlob(store, objects,
+	uploadService := upload.NewWithBlobAndPublisher(store, uploadPublisher{store: store, files: fileService}, objects,
 		upload.WithTTL(cfg.UploadSessionTTL),
 		upload.WithMaxBytes(cfg.UploadMaxBytes),
 	)
@@ -138,13 +140,14 @@ func run(logger *slog.Logger) error {
 		httpHandler.Handle("/internal/pubsub/shares", pushHandler)
 	}
 	if cfg.WebDAVEnabled {
-		httpHandler.Handle(cfg.WebDAVPath, davserver.New(davserver.Config{
+		httpHandler.Handle(cfg.WebDAVPath, davserver.NewWithCommands(davserver.Config{
 			Prefix: cfg.WebDAVPath, User: cfg.WebDAVUser, Pass: cfg.WebDAVPass,
 			LockTimeout: cfg.WebDAVLockTimeout, TrustForwardedHeaders: cfg.WebDAVTrustProxy,
-		}, store, objects, logger))
+		}, store, objects, fileService, logger))
 		logger.Info("WebDAV enabled", "path", cfg.WebDAVPath)
 	}
 	publicHandler := api.New(store, objects, thumbnailObjects, shareService, cfg.WebStaticRoot, cfg.WebBasePath, uploadService).
+		SetFileService(fileService).
 		SetDriftEnabled(cfg.DriftEnabled).
 		SetCORSOrigins(strings.Split(cfg.HTTPCORSOrigins, ",")).Handler()
 	httpHandler.Handle("/", httpauth.Basic(cfg.HTTPBasicAuth, cfg.HTTPBasicUser, cfg.HTTPBasicPass, publicHandler))
@@ -158,7 +161,7 @@ func run(logger *slog.Logger) error {
 	var ftpServer *ftpserver.FtpServer
 	runningServers := 1
 	if cfg.FTPEnabled {
-		driver := ftpdriver.NewMainDriver(cfg, store, objects, logger)
+		driver := ftpdriver.NewMainDriverWithCommands(cfg, store, objects, logger, fileService, 0)
 		ftpServer = ftpserver.NewFtpServer(driver)
 		runningServers++
 		go func() {
@@ -203,6 +206,9 @@ func run(logger *slog.Logger) error {
 				return errors.New("file server did not stop within 10 seconds")
 			}
 		}
+		if err := fileService.WaitOperations(shutdownCtx); err != nil {
+			return fmt.Errorf("wait for file operations: %w", err)
+		}
 		return nil
 	case err := <-errCh:
 		if ftpServer != nil {
@@ -211,11 +217,47 @@ func run(logger *slog.Logger) error {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = apiServer.Shutdown(shutdownCtx)
+		if waitErr := fileService.WaitOperations(shutdownCtx); waitErr != nil && err == nil {
+			return fmt.Errorf("wait for file operations: %w", waitErr)
+		}
 		if err != nil && !errors.Is(err, context.Canceled) {
 			return err
 		}
 		return nil
 	}
+}
+
+type uploadPublisher struct {
+	store db.Store
+	files *fileops.Service
+}
+
+func (p uploadPublisher) FindFile(ctx context.Context, logicPath string) (upload.File, bool, error) {
+	record, found, err := p.store.Find(ctx, logicPath)
+	return upload.File{
+		PhysicalHash: record.PhysicalHash,
+		IsDirectory:  record.IsDirectory,
+		Size:         record.Size,
+		UpdatedAt:    record.UpdatedAt,
+	}, found, err
+}
+
+func (p uploadPublisher) EnsureDirectory(ctx context.Context, logicPath string) error {
+	_, err := p.files.CreateDirectory(ctx, logicPath)
+	return err
+}
+
+func (p uploadPublisher) ReplaceFile(ctx context.Context, logicPath, physicalHash string, size int64, expected *string, absent bool) (string, bool, error) {
+	_, err := p.files.PublishUploaded(ctx, fileops.PublishIntent{
+		LogicPath: logicPath, PhysicalHash: physicalHash, Size: size,
+		ExpectedPhysicalHash: expected, RequireAbsent: absent,
+	})
+	if errors.Is(err, db.ErrPathConflict) {
+		return "", false, nil
+	}
+	// PublishUploaded owns post-commit cleanup; returning an empty previous key
+	// prevents upload.Service from issuing the same deletion a second time.
+	return "", err == nil, err
 }
 
 func maintenanceMode(enabled bool, next http.Handler) http.Handler {

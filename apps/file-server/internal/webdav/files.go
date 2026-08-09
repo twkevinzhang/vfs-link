@@ -10,6 +10,7 @@ import (
 
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/blob"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/db"
+	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/fileops"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/objectkey"
 )
 
@@ -116,8 +117,7 @@ func (f *readFile) Stat() (os.FileInfo, error)         { return f.info, nil }
 
 type uploadFile struct {
 	ctx                  context.Context
-	store                filePublisher
-	objects              blob.Store
+	commands             commandService
 	logicPath            string
 	physicalHash         string
 	expectedPhysicalHash *string
@@ -129,13 +129,11 @@ type uploadFile struct {
 	closed               bool
 }
 
-type filePublisher interface {
+type uploadSnapshot interface {
 	Find(context.Context, string) (db.FileRecord, bool, error)
-	ReplaceFile(context.Context, string, string, int64) (string, error)
-	ReplaceFileConditional(context.Context, string, string, int64, *string, bool) (string, bool, error)
 }
 
-func newUploadFile(ctx context.Context, store filePublisher, objects blob.Store, logicPath string) (*uploadFile, error) {
+func newUploadFile(ctx context.Context, store uploadSnapshot, commands commandService, objects blob.Store, logicPath string) (*uploadFile, error) {
 	physicalHash, err := objectkey.FromLogicalPath(logicPath)
 	if err != nil {
 		return nil, err
@@ -157,7 +155,7 @@ func newUploadFile(ctx context.Context, store filePublisher, objects blob.Store,
 		return nil, err
 	}
 	return &uploadFile{
-		ctx: ctx, store: store, objects: objects, logicPath: logicPath,
+		ctx: ctx, commands: commands, logicPath: logicPath,
 		physicalHash: physicalHash, expectedPhysicalHash: expected,
 		requireAbsent: !found, writer: writer,
 	}, nil
@@ -203,32 +201,23 @@ func (f *uploadFile) Close() error {
 }
 
 func (f *uploadFile) commit() error {
-	var previous string
-	var err error
+	intent := fileops.PublishIntent{
+		LogicPath:            f.logicPath,
+		PhysicalHash:         f.physicalHash,
+		Size:                 f.size,
+		ExpectedPhysicalHash: f.expectedPhysicalHash,
+		RequireAbsent:        f.requireAbsent,
+	}
 	if condition := writeConditionFromContext(f.ctx); condition != nil && condition.path == f.logicPath {
-		var matched bool
-		previous, matched, err = f.store.ReplaceFileConditional(
-			f.ctx, f.logicPath, f.physicalHash, f.size,
-			condition.expectedPhysicalHash, condition.requireAbsent,
-		)
-		if err == nil && !matched {
-			err = errPreconditionFailed
-		}
-	} else {
-		var matched bool
-		previous, matched, err = f.store.ReplaceFileConditional(
-			f.ctx, f.logicPath, f.physicalHash, f.size,
-			f.expectedPhysicalHash, f.requireAbsent,
-		)
-		if err == nil && !matched {
-			err = errPreconditionFailed
-		}
+		intent.ExpectedPhysicalHash = condition.expectedPhysicalHash
+		intent.RequireAbsent = condition.requireAbsent
 	}
+	_, err := f.commands.PublishUploaded(f.ctx, intent)
 	if err != nil {
+		if errors.Is(err, db.ErrPathConflict) {
+			return errPreconditionFailed
+		}
 		return err
-	}
-	if previous != "" && previous != f.physicalHash {
-		_ = f.objects.Delete(context.Background(), previous)
 	}
 	return nil
 }

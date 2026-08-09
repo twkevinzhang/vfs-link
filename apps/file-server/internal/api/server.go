@@ -58,6 +58,17 @@ func (s *Server) SetCORSOrigins(origins []string) *Server {
 	return s
 }
 
+// SetFileService injects the process-owned mutation service. Production wiring
+// uses one shared instance for HTTP, WebDAV, FTP, and graceful shutdown;
+// New's internal instance remains as a compatibility default for tests and
+// embedders that have not migrated yet.
+func (s *Server) SetFileService(files *fileops.Service) *Server {
+	if files != nil {
+		s.files = files
+	}
+	return s
+}
+
 type Entry struct {
 	Name          string             `json:"name"`
 	Path          string             `json:"path"`

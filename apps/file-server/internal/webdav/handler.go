@@ -38,8 +38,23 @@ func writeConditionFromContext(ctx context.Context) *writeCondition {
 }
 
 func New(cfg Config, store db.Store, objects blob.Store, logger *slog.Logger) http.Handler {
+	return newHandler(cfg, store, objects, nil, logger)
+}
+
+// NewWithCommands wires WebDAV mutations to the shared file command service.
+// The metadata store remains available only for queries, locks, and streaming.
+func NewWithCommands(cfg Config, store db.Store, objects blob.Store, commands commandService, logger *slog.Logger) http.Handler {
+	return newHandler(cfg, store, objects, commands, logger)
+}
+
+func newHandler(cfg Config, store db.Store, objects blob.Store, commands commandService, logger *slog.Logger) http.Handler {
 	prefix := normalizePrefix(cfg.Prefix)
-	fs := NewFileSystem(store, objects)
+	var fs *FileSystem
+	if commands == nil {
+		fs = NewFileSystem(store, objects)
+	} else {
+		fs = NewFileSystemWithCommands(store, objects, commands)
+	}
 	ls := NewLockSystem(store, cfg.LockTimeout)
 	dav := &xwebdav.Handler{
 		Prefix:     prefix,
@@ -49,7 +64,30 @@ func New(cfg Config, store db.Store, objects blob.Store, logger *slog.Logger) ht
 			logger.Error("WebDAV request failed", "method", r.Method, "path", r.URL.Path, "error", err)
 		},
 	}
-	return secureRequests(prefix, cfg.TrustForwardedHeaders, basicAuth(cfg.User, cfg.Pass, transactionalWrites(conditionalRequests(prefix, fs, dav))))
+	return secureRequests(prefix, cfg.TrustForwardedHeaders, basicAuth(cfg.User, cfg.Pass, transactionalWrites(conditionalRequests(prefix, fs, rejectDirectoryCopies(prefix, fs, dav)))))
+}
+
+func rejectDirectoryCopies(prefix string, fs *FileSystem, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "COPY" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		name := strings.TrimPrefix(cleanRequestPath(r.URL.Path), strings.TrimSuffix(prefix, "/"))
+		if name == "" {
+			name = "/"
+		}
+		info, err := fs.Stat(r.Context(), name)
+		if err != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if info.IsDir() {
+			http.Error(w, "WebDAV directory COPY is not supported", http.StatusNotImplemented)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func basicAuth(user, pass string, next http.Handler) http.Handler {

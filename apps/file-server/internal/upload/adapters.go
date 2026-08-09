@@ -14,10 +14,19 @@ import (
 // NewWithBlob wires the common local/server-proxied implementation. A GCS
 // direct-upload implementation can instead call New with its own Storage.
 func NewWithBlob(store MetadataStore, objects blob.Store, options ...Option) *Service {
+	return NewWithBlobAndPublisher(store, storeAdapter{store: store}, objects, options...)
+}
+
+// NewWithBlobAndPublisher keeps upload-session persistence in the metadata
+// adapter while delegating the final logical publication to the process-wide
+// file application service.
+func NewWithBlobAndPublisher(store MetadataStore, publisher Publisher, objects blob.Store, options ...Option) *Service {
 	if direct, ok := objects.(blob.DirectUploadStore); ok {
-		return NewWithStorage(store, gcsDirectStorage{objects: direct}, options...)
+		adapter := storeAdapter{store: store}
+		return New(adapter, publisher, gcsDirectStorage{objects: direct}, options...)
 	}
-	return NewWithStorage(store, blobStorage{objects: objects}, options...)
+	adapter := storeAdapter{store: store}
+	return New(adapter, publisher, blobStorage{objects: objects}, options...)
 }
 
 // NewWithStorage exposes the persistence adapters while allowing the caller to
