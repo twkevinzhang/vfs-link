@@ -277,7 +277,7 @@ func (s *Service) refresh(ctx context.Context, onPhase func(string) error) (Snap
 				e.Status = ObjectMissing
 			} else if source.Size != r.Size {
 				e.Status = SizeMismatch
-			} else if r.PhysicalHash == target {
+			} else if r.PhysicalHash == target || objectkey.IsUploadGenerationForPath(r.LogicPath, r.PhysicalHash) {
 				e.Status = Aligned
 			} else if targetObject, exists := byName[target]; exists {
 				e.Status, e.Target = TargetConflict, &targetObject

@@ -27,6 +27,31 @@ RETURNING `+shareColumns, record.ID, record.LogicPath, record.PhysicalHash, reco
 	return scanShare(row)
 }
 
+// CreateShareFromSnapshot acquires the source object reference only while the
+// active mapping still matches the snapshot read by the application service.
+// This prevents cleanup from observing no Share and then deleting an object
+// that a stale draft would otherwise reference afterward.
+func (s *PostgresStore) CreateShareFromSnapshot(ctx context.Context, record ShareRecord) (ShareRecord, error) {
+	row := s.pool.QueryRow(ctx, `
+WITH source AS (
+  SELECT 1 FROM "File"
+  WHERE "logicPath"=$2 AND "physicalHash"=$3 AND "trashedAt" IS NULL AND NOT "isDirectory"
+  FOR SHARE
+)
+INSERT INTO "Share" (
+  id, "logicPath", "physicalHash", "fileName", size,
+  "destinationObject", "shareUrl", email, status, error, "dispatchStatus"
+)
+SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,'',$10 FROM source
+RETURNING `+shareColumns, record.ID, record.LogicPath, record.PhysicalHash, record.FileName, record.Size,
+		record.DestinationObject, record.ShareURL, record.Email, record.Status, defaultDispatchStatus(record.DispatchStatus))
+	created, err := scanShare(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ShareRecord{}, ErrMetadataConflict
+	}
+	return created, err
+}
+
 func defaultDispatchStatus(value string) string {
 	if strings.TrimSpace(value) == "" {
 		return "none"

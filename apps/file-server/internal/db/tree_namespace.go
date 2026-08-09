@@ -11,6 +11,7 @@ type treeNamespace interface {
 	listDirectChildren(context.Context, string, DirectChildrenOptions) (DirectChildrenPage, error)
 	listPrefix(context.Context, string) ([]FileRecord, error)
 	replaceFileConditional(context.Context, string, string, int64, *string, bool) (string, bool, error)
+	replaceFileConditionalSnapshot(context.Context, string, string, int64, *FileSnapshot, bool) (string, bool, error)
 	upsertDirectory(context.Context, string) error
 	deletePath(context.Context, string) error
 	runOperation(context.Context, string) (OperationRecord, error)
@@ -46,6 +47,10 @@ func (n *treeV3Namespace) listPrefix(ctx context.Context, prefix string) ([]File
 
 func (n *treeV3Namespace) replaceFileConditional(ctx context.Context, path, hash string, size int64, expected *string, absent bool) (string, bool, error) {
 	return n.store.replaceFileConditionalV3(ctx, path, hash, size, expected, absent)
+}
+
+func (n *treeV3Namespace) replaceFileConditionalSnapshot(ctx context.Context, path, hash string, size int64, expected *FileSnapshot, absent bool) (string, bool, error) {
+	return n.store.replaceFileConditionalSnapshotV3(ctx, path, hash, size, expected, absent)
 }
 
 func (n *treeV3Namespace) upsertDirectory(ctx context.Context, path string) error {

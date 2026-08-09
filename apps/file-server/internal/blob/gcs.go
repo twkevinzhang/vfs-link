@@ -16,6 +16,11 @@ import (
 	"google.golang.org/api/iterator"
 )
 
+// ErrResumableUploadGone means Cloud Storage no longer recognizes the opaque
+// resumable capability. Callers may expire a past-due session, but must not
+// treat this as proof that the destination object was committed.
+var ErrResumableUploadGone = errors.New("GCS resumable upload session is no longer available")
+
 const gcsResumableEndpoint = "https://storage.googleapis.com/upload/storage/v1"
 
 type GCSStore struct {
@@ -99,6 +104,8 @@ func queryResumableUpload(ctx context.Context, client *http.Client, sessionURL s
 	case 308:
 		uploadedSize, err := parseCommittedRange(response.Header.Get("Range"), size)
 		return uploadedSize, false, err
+	case http.StatusNotFound, http.StatusGone:
+		return 0, false, fmt.Errorf("%w: %s", ErrResumableUploadGone, response.Status)
 	default:
 		payload, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 		return 0, false, fmt.Errorf("query GCS resumable upload: %s: %s", response.Status, strings.TrimSpace(string(payload)))
@@ -185,8 +192,11 @@ func cancelResumableUpload(ctx context.Context, client *http.Client, sessionURL 
 		return fmt.Errorf("cancel GCS resumable upload: %w", err)
 	}
 	defer response.Body.Close()
-	// Cloud Storage uses 499 to acknowledge resumable-session cancellation.
-	if (response.StatusCode < 200 || response.StatusCode >= 300) && response.StatusCode != 499 {
+	// Cloud Storage uses 499 to acknowledge cancellation. A retry after that
+	// acknowledgement may report 404/410 because the session capability has
+	// already been invalidated; those statuses satisfy the same idempotent goal.
+	if (response.StatusCode < 200 || response.StatusCode >= 300) &&
+		response.StatusCode != 499 && response.StatusCode != http.StatusNotFound && response.StatusCode != http.StatusGone {
 		payload, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 		return fmt.Errorf("cancel GCS resumable upload: %s: %s", response.Status, strings.TrimSpace(string(payload)))
 	}

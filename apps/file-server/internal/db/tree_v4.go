@@ -1210,6 +1210,14 @@ func v4PathResources(_ string, parent treeV4Node, shard int) []string {
 }
 
 func (n *treeV4Namespace) replaceFileConditional(ctx context.Context, path, hash string, size int64, expected *string, absent bool) (string, bool, error) {
+	return n.replaceFileConditionalExpected(ctx, path, hash, size, expected, nil, absent)
+}
+
+func (n *treeV4Namespace) replaceFileConditionalSnapshot(ctx context.Context, path, hash string, size int64, expected *FileSnapshot, absent bool) (string, bool, error) {
+	return n.replaceFileConditionalExpected(ctx, path, hash, size, nil, expected, absent)
+}
+
+func (n *treeV4Namespace) replaceFileConditionalExpected(ctx context.Context, path, hash string, size int64, expectedHash *string, expectedSnapshot *FileSnapshot, absent bool) (string, bool, error) {
 	path, err := parseLogicPath(path)
 	if err != nil || path == "" {
 		if err == nil {
@@ -1243,13 +1251,17 @@ func (n *treeV4Namespace) replaceFileConditional(ctx context.Context, path, hash
 		if exists && entry.Node.IsDirectory {
 			return nil, nil, ErrIsDirectory
 		}
-		if !exists && expected != nil {
+		if !exists && (expectedHash != nil || expectedSnapshot != nil) {
 			return nil, struct {
 				previous string
 				matched  bool
 			}{"", false}, nil
 		}
-		if exists && (absent || (expected != nil && entry.Node.PhysicalHash != *expected)) {
+		if exists && (absent ||
+			(expectedHash != nil && entry.Node.PhysicalHash != *expectedHash) ||
+			(expectedSnapshot != nil && (entry.Node.LegacyID != expectedSnapshot.ID ||
+				entry.Node.PhysicalHash != expectedSnapshot.PhysicalHash ||
+				!entry.Node.UpdatedAt.Equal(expectedSnapshot.UpdatedAt)))) {
 			return nil, struct {
 				previous string
 				matched  bool

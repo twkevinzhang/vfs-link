@@ -51,7 +51,13 @@ func scanUpload(row rowScanner) (UploadRecord, error) {
 	var record UploadRecord
 	err := row.Scan(&record.ID, &record.LogicPath, &record.PhysicalHash, &record.Driver,
 		&record.ContentType, &record.UploadURL, &record.Size, &record.UploadedSize, &record.Overwrite,
-		&record.ExpectedPhysicalHash, &record.RequireAbsent, &record.Status, &record.Error,
+		&record.ExpectedPhysicalHash, &record.ExpectedFileID, &record.ExpectedFileUpdatedAt,
+		&record.RequireAbsent, &record.Status, &record.Error,
+		&record.Revision, &record.CompletionStatus, &record.CompletionOwner, &record.CompletionLeaseUntil,
+		&record.CompletionAttempts, &record.CompletionNextAttemptAt, &record.FinalizedAt,
+		&record.PublishedAt, &record.CompletedAt, &record.ObjectGeneration, &record.ObjectChecksum,
+		&record.LastCompletionError, &record.CancelRequestedAt, &record.CancelledAt,
+		&record.CleanupStatus, &record.PreviousPhysicalHash, &record.CleanupError,
 		&record.CreatedAt, &record.UpdatedAt, &record.ExpiresAt)
 	return record, err
 }

@@ -27,6 +27,8 @@ type Store interface {
 	UpsertFile(context.Context, string, string, int64) error
 	ReplaceFile(context.Context, string, string, int64) (string, error)
 	ReplaceFileConditional(context.Context, string, string, int64, *string, bool) (string, bool, error)
+	ReplaceFileConditionalSnapshot(context.Context, string, string, int64, *FileSnapshot, bool) (string, bool, error)
+	IsObjectReferenced(context.Context, string, string) (bool, error)
 	UpsertDirectory(context.Context, string) error
 	RenamePath(context.Context, string, string) error
 	DeletePath(context.Context, string) error
@@ -44,6 +46,7 @@ type Store interface {
 	DetachThumbnails(context.Context, []int) ([]ThumbnailRecord, error)
 
 	CreateShare(context.Context, ShareRecord) (ShareRecord, error)
+	CreateShareFromSnapshot(context.Context, ShareRecord) (ShareRecord, error)
 	FindShare(context.Context, string) (ShareRecord, bool, error)
 	MarkShareUploading(context.Context, string, string) (ShareRecord, error)
 	MarkShareUploaded(context.Context, string) (ShareRecord, error)
@@ -63,7 +66,22 @@ type Store interface {
 
 	CreateUpload(context.Context, UploadRecord) (UploadRecord, error)
 	FindUpload(context.Context, string) (UploadRecord, bool, error)
+	ListNonterminalUploads(context.Context, int) ([]UploadRecord, error)
+	ListDueUploadRecoveries(context.Context, time.Time, int) ([]UploadRecord, error)
 	UpdateUpload(context.Context, UploadRecord) (UploadRecord, error)
+	UpdateUploadConditional(context.Context, UploadRecord, int64) (UploadRecord, bool, error)
+	RequestUploadCompletion(context.Context, string, time.Time) (UploadRecord, bool, error)
+	ClaimUploadCompletion(context.Context, string, string, time.Time, time.Time) (UploadRecord, bool, error)
+	MarkUploadObjectReady(context.Context, string, string, time.Time) (UploadRecord, error)
+	MarkUploadPublished(context.Context, string, string, string, string, string, time.Time) (UploadRecord, error)
+	MarkUploadComplete(context.Context, string, string, time.Time) (UploadRecord, error)
+	MarkUploadCleanupComplete(context.Context, string, time.Time) (UploadRecord, error)
+	RetryUploadCleanup(context.Context, string, string, time.Time) (UploadRecord, error)
+	RetryUploadCompletion(context.Context, string, string, string, time.Time, time.Time) (UploadRecord, error)
+	MarkUploadCompletionConflict(context.Context, string, string, string, time.Time) (UploadRecord, error)
+	RequestUploadCancel(context.Context, string, time.Time) (UploadRecord, bool, error)
+	MarkUploadCancelled(context.Context, string, time.Time) (UploadRecord, error)
+	ExpireUpload(context.Context, string, int64, time.Time) (UploadRecord, bool, error)
 	DeleteUpload(context.Context, string) (bool, error)
 }
 
@@ -133,22 +151,41 @@ type TrashPath struct {
 // returned by the authenticated upload status endpoint so a same-origin client
 // can resume after reload, but it must never be logged.
 type UploadRecord struct {
-	ID                   string    `json:"id"`
-	LogicPath            string    `json:"logicPath"`
-	PhysicalHash         string    `json:"physicalHash"`
-	Driver               string    `json:"driver"`
-	ContentType          string    `json:"contentType,omitempty"`
-	UploadURL            string    `json:"uploadUrl,omitempty"`
-	Size                 int64     `json:"size"`
-	UploadedSize         int64     `json:"uploadedSize,omitempty"`
-	Overwrite            bool      `json:"overwrite,omitempty"`
-	ExpectedPhysicalHash *string   `json:"expectedPhysicalHash,omitempty"`
-	RequireAbsent        bool      `json:"requireAbsent,omitempty"`
-	Status               string    `json:"status"`
-	Error                string    `json:"error,omitempty"`
-	CreatedAt            time.Time `json:"createdAt"`
-	UpdatedAt            time.Time `json:"updatedAt"`
-	ExpiresAt            time.Time `json:"expiresAt"`
+	ID                      string     `json:"id"`
+	LogicPath               string     `json:"logicPath"`
+	PhysicalHash            string     `json:"physicalHash"`
+	Driver                  string     `json:"driver"`
+	ContentType             string     `json:"contentType,omitempty"`
+	UploadURL               string     `json:"uploadUrl,omitempty"`
+	Size                    int64      `json:"size"`
+	UploadedSize            int64      `json:"uploadedSize,omitempty"`
+	Overwrite               bool       `json:"overwrite,omitempty"`
+	ExpectedPhysicalHash    *string    `json:"expectedPhysicalHash,omitempty"`
+	ExpectedFileID          int        `json:"expectedFileId,omitempty"`
+	ExpectedFileUpdatedAt   *time.Time `json:"expectedFileUpdatedAt,omitempty"`
+	RequireAbsent           bool       `json:"requireAbsent,omitempty"`
+	Status                  string     `json:"status"`
+	Error                   string     `json:"error,omitempty"`
+	Revision                int64      `json:"revision"`
+	CompletionStatus        string     `json:"completionStatus,omitempty"`
+	CompletionOwner         *string    `json:"completionOwner,omitempty"`
+	CompletionLeaseUntil    *time.Time `json:"completionLeaseUntil,omitempty"`
+	CompletionAttempts      int        `json:"completionAttempts,omitempty"`
+	CompletionNextAttemptAt *time.Time `json:"completionNextAttemptAt,omitempty"`
+	FinalizedAt             *time.Time `json:"finalizedAt,omitempty"`
+	PublishedAt             *time.Time `json:"publishedAt,omitempty"`
+	CompletedAt             *time.Time `json:"completedAt,omitempty"`
+	ObjectGeneration        int64      `json:"objectGeneration,omitempty"`
+	ObjectChecksum          string     `json:"objectChecksum,omitempty"`
+	LastCompletionError     string     `json:"lastCompletionError,omitempty"`
+	CancelRequestedAt       *time.Time `json:"cancelRequestedAt,omitempty"`
+	CancelledAt             *time.Time `json:"cancelledAt,omitempty"`
+	CleanupStatus           string     `json:"cleanupStatus,omitempty"`
+	PreviousPhysicalHash    string     `json:"previousPhysicalHash,omitempty"`
+	CleanupError            string     `json:"cleanupError,omitempty"`
+	CreatedAt               time.Time  `json:"createdAt"`
+	UpdatedAt               time.Time  `json:"updatedAt"`
+	ExpiresAt               time.Time  `json:"expiresAt"`
 }
 
 var _ Store = (*PostgresStore)(nil)

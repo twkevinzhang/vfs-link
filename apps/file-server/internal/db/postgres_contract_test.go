@@ -70,3 +70,56 @@ func openPostgresContractStore(t *testing.T) Store {
 	}
 	return store
 }
+
+func TestPostgresShareSnapshotLocksSourceAgainstReplacement(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	store := openPostgresContractStore(t)
+	if err := store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertFile(ctx, "locked-share.txt", "generation-one", 4); err != nil {
+		t.Fatal(err)
+	}
+	postgres := store.(*PostgresStore)
+	if _, err := postgres.pool.Exec(ctx, `
+CREATE FUNCTION delay_contract_share_insert() RETURNS trigger AS $$
+BEGIN
+  PERFORM pg_sleep(0.75);
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+CREATE TRIGGER delay_contract_share_insert BEFORE INSERT ON "Share"
+FOR EACH ROW EXECUTE FUNCTION delay_contract_share_insert();
+`); err != nil {
+		t.Fatal(err)
+	}
+
+	shareDone := make(chan error, 1)
+	go func() {
+		_, err := store.CreateShareFromSnapshot(ctx, ShareRecord{
+			ID: "locked-share", LogicPath: "locked-share.txt", PhysicalHash: "generation-one",
+			FileName: "locked-share.txt", Size: 4, DestinationObject: "shares/locked", ShareURL: "https://example.test/locked", Status: "draft",
+		})
+		shareDone <- err
+	}()
+	time.Sleep(100 * time.Millisecond)
+
+	expected := "generation-one"
+	started := time.Now()
+	previous, replaced, err := store.ReplaceFileConditional(ctx, "locked-share.txt", "generation-two", 4, &expected, false)
+	elapsed := time.Since(started)
+	if err != nil || !replaced || previous != expected {
+		t.Fatalf("ReplaceFileConditional = previous %q, replaced %t, err %v", previous, replaced, err)
+	}
+	if elapsed < 400*time.Millisecond {
+		t.Fatalf("replacement waited only %s; Share source lock was not held through commit", elapsed)
+	}
+	if err := <-shareDone; err != nil {
+		t.Fatal(err)
+	}
+	referenced, err := store.IsObjectReferenced(ctx, expected, "")
+	if err != nil || !referenced {
+		t.Fatalf("committed Share reference = %t, err %v", referenced, err)
+	}
+}

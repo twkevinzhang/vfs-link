@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/blob"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/db"
@@ -116,6 +118,53 @@ func TestLocalChunkUploadResumesFromCommittedOffset(t *testing.T) {
 		if response.Code != http.StatusOK {
 			t.Fatalf("complete attempt %d = %d %s", attempt+1, response.Code, response.Body.String())
 		}
+	}
+}
+
+func TestUploadCompleteReturnsAcceptedForActiveCompletionLease(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	metadata, err := db.NewTreeLocal(filepath.Join(root, "metadata"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(metadata.Close)
+	if err := metadata.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	objects, err := blob.NewLocal(filepath.Join(root, "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := upload.NewWithBlob(metadata, objects)
+	session, err := service.Create(ctx, upload.CreateInput{LogicPath: "docs/busy.txt", Size: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.WriteChunk(ctx, session.ID, 0, 2, 3, io.NopCloser(bytes.NewBufferString("abc"))); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if _, requested, err := metadata.RequestUploadCompletion(ctx, session.ID, now); err != nil || !requested {
+		t.Fatalf("RequestUploadCompletion requested=%t error=%v", requested, err)
+	}
+	if _, claimed, err := metadata.ClaimUploadCompletion(ctx, session.ID, "other-owner", now, now.Add(time.Minute)); err != nil || !claimed {
+		t.Fatalf("ClaimUploadCompletion claimed=%t error=%v", claimed, err)
+	}
+
+	handler := New(metadata, objects, objects, nil, "", "", service).Handler()
+	request := httptest.NewRequest(http.MethodPost, "/api/uploads/"+session.ID+"/complete", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted || response.Header().Get("Retry-After") != "1" || response.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("complete = %d retry-after=%q body=%s", response.Code, response.Header().Get("Retry-After"), response.Body.String())
+	}
+	var pending uploadResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &pending); err != nil {
+		t.Fatal(err)
+	}
+	if pending.Status != upload.StatusFinalizing || pending.UploadURL != "" || pending.CompletionAttempts != 1 {
+		t.Fatalf("pending response = %#v", pending)
 	}
 }
 

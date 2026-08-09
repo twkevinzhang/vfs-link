@@ -16,6 +16,7 @@ import (
 
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/blob"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/db"
+	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/upload"
 )
 
 func TestWriteFileOperationErrorMapsMetadataRateLimitTo429(t *testing.T) {
@@ -55,6 +56,7 @@ func TestWriteUploadErrorMapsRetryableMetadataErrors(t *testing.T) {
 	}{
 		{err: db.ErrMetadataRateLimit, want: http.StatusTooManyRequests},
 		{err: db.ErrMetadataConflict, want: http.StatusConflict},
+		{err: errors.Join(upload.ErrCompletionRetryable, errors.New("storage timeout")), want: http.StatusServiceUnavailable},
 	}
 	for _, test := range tests {
 		recorder := httptest.NewRecorder()

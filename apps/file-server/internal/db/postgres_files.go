@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -306,6 +307,33 @@ func (s *PostgresStore) ReplaceFileConditional(
 	expectedPhysicalHash *string,
 	requireAbsent bool,
 ) (string, bool, error) {
+	return s.replaceFileConditional(ctx, logicPath, physicalHash, size, expectedPhysicalHash, nil, requireAbsent)
+}
+
+// ReplaceFileConditionalSnapshot replaces a mapping only while its durable
+// identity and updated timestamp still match the caller's preflight snapshot.
+// The row lock makes the comparison and namespace update one atomic action.
+func (s *PostgresStore) ReplaceFileConditionalSnapshot(
+	ctx context.Context,
+	logicPath, physicalHash string,
+	size int64,
+	expected *FileSnapshot,
+	requireAbsent bool,
+) (string, bool, error) {
+	if expected != nil && (expected.ID <= 0 || expected.UpdatedAt.IsZero()) {
+		return "", false, fmt.Errorf("valid expected file snapshot is required")
+	}
+	return s.replaceFileConditional(ctx, logicPath, physicalHash, size, nil, expected, requireAbsent)
+}
+
+func (s *PostgresStore) replaceFileConditional(
+	ctx context.Context,
+	logicPath, physicalHash string,
+	size int64,
+	expectedPhysicalHash *string,
+	expectedSnapshot *FileSnapshot,
+	requireAbsent bool,
+) (string, bool, error) {
 	var parseErr error
 	logicPath, parseErr = parseLogicPath(logicPath)
 	if parseErr != nil {
@@ -320,17 +348,19 @@ func (s *PostgresStore) ReplaceFileConditional(
 	}
 	defer tx.Rollback(ctx)
 
+	var previousID int
 	var previousPhysicalHash string
 	var previousIsDirectory bool
+	var previousUpdatedAt time.Time
 	err = tx.QueryRow(ctx, `
-SELECT "physicalHash", "isDirectory"
+SELECT id, "physicalHash", "isDirectory", "updatedAt"
 FROM "File"
 WHERE "logicPath" = $1
   AND "trashedAt" IS NULL
 FOR UPDATE
-`, logicPath).Scan(&previousPhysicalHash, &previousIsDirectory)
+`, logicPath).Scan(&previousID, &previousPhysicalHash, &previousIsDirectory, &previousUpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		if expectedPhysicalHash != nil {
+		if expectedPhysicalHash != nil || expectedSnapshot != nil {
 			return "", false, nil
 		}
 		if _, err := tx.Exec(ctx, `
@@ -350,7 +380,11 @@ VALUES ($1, $2, $3, false, now())
 	if previousIsDirectory {
 		return "", false, ErrIsDirectory
 	}
-	if requireAbsent || (expectedPhysicalHash != nil && previousPhysicalHash != *expectedPhysicalHash) {
+	if requireAbsent ||
+		(expectedPhysicalHash != nil && previousPhysicalHash != *expectedPhysicalHash) ||
+		(expectedSnapshot != nil && (previousID != expectedSnapshot.ID ||
+			previousPhysicalHash != expectedSnapshot.PhysicalHash ||
+			!previousUpdatedAt.Equal(expectedSnapshot.UpdatedAt))) {
 		return "", false, nil
 	}
 
@@ -372,6 +406,28 @@ WHERE "logicPath" = $3
 		return "", true, nil
 	}
 	return previousPhysicalHash, true, nil
+}
+
+// IsObjectReferenced checks all metadata readers in one PostgreSQL statement.
+// The excluded path is the newly-published active mapping; trash rows with the
+// same logical path are intentionally never excluded.
+func (s *PostgresStore) IsObjectReferenced(ctx context.Context, physicalHash, excludingActivePath string) (bool, error) {
+	physicalHash = strings.TrimSpace(physicalHash)
+	if physicalHash == "" {
+		return false, nil
+	}
+	var referenced bool
+	err := s.pool.QueryRow(ctx, `
+SELECT EXISTS (
+  SELECT 1 FROM "File"
+  WHERE "physicalHash" = $1
+    AND NOT ("trashedAt" IS NULL AND "logicPath" = $2)
+) OR EXISTS (
+  SELECT 1 FROM "Share"
+  WHERE "physicalHash" = $1 AND "completedAt" IS NULL
+)
+`, physicalHash, excludingActivePath).Scan(&referenced)
+	return referenced, err
 }
 
 func (s *PostgresStore) UpsertDirectory(ctx context.Context, logicPath string) error {

@@ -2,6 +2,7 @@ package blob
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -134,6 +135,20 @@ func TestCancelResumableUploadDeletesSessionURLOnly(t *testing.T) {
 	}
 }
 
+func TestCancelResumableUploadTreatsInvalidatedSessionAsSuccess(t *testing.T) {
+	for _, status := range []int{http.StatusNotFound, http.StatusGone} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(status)
+			}))
+			defer server.Close()
+			if err := cancelResumableUpload(context.Background(), server.Client(), server.URL+"/session/invalidated"); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestResumableUploadHeadersLeaveContentRangeToEachChunk(t *testing.T) {
 	headers := resumableUploadHeaders("video/mp4", 56_600_000)
 	if got := headers["Content-Range"]; got != "" {
@@ -166,6 +181,18 @@ func TestQueryResumableUploadParsesCommittedRangeAndCompletion(t *testing.T) {
 	uploaded, complete, err = queryResumableUpload(context.Background(), server.Client(), server.URL, 1_048_576)
 	if err != nil || !complete || uploaded != 1_048_576 {
 		t.Fatalf("complete query = %d, complete=%t, err=%v", uploaded, complete, err)
+	}
+}
+
+func TestQueryResumableUploadClassifiesExpiredCapability(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusGone)
+	}))
+	defer server.Close()
+
+	_, _, err := queryResumableUpload(context.Background(), server.Client(), server.URL, 4)
+	if !errors.Is(err, ErrResumableUploadGone) {
+		t.Fatalf("queryResumableUpload() error = %v, want ErrResumableUploadGone", err)
 	}
 }
 

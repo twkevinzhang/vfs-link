@@ -3,11 +3,13 @@ package vfs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/spf13/afero"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/blob"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/db"
@@ -177,7 +179,7 @@ type uploadFile struct {
 }
 
 func newUploadFile(store db.Store, objects blob.Store, commands FileCommands, commandTimeout time.Duration, logicPath string) afero.File {
-	physicalHash, err := objectkey.FromLogicalPath(logicPath)
+	physicalHash, err := objectkey.ForUpload(logicPath, uuid.NewString())
 	if err != nil {
 		return &errorFile{err: err}
 	}
@@ -193,7 +195,7 @@ func newUploadFile(store db.Store, objects blob.Store, commands FileCommands, co
 		value := existing.PhysicalHash
 		expected = &value
 	}
-	writer, err := blob.NewUploadWriter(context.Background(), objects, physicalHash, expected)
+	writer, err := blob.NewUploadWriter(context.Background(), objects, physicalHash, nil)
 	if err != nil {
 		return &errorFile{err: err}
 	}
@@ -250,7 +252,21 @@ func (f *uploadFile) Close() error {
 			LogicPath: f.logicPath, PhysicalHash: f.physicalHash, Size: f.size,
 			ExpectedPhysicalHash: f.expectedPhysicalHash, RequireAbsent: f.requireAbsent,
 		})
-		return err
+		if err != nil {
+			current, found, findErr := f.store.Find(ctx, f.logicPath)
+			if findErr == nil && found && !current.IsDirectory && current.PhysicalHash == f.physicalHash && current.Size == f.size {
+				return nil
+			}
+			if findErr != nil {
+				return errors.Join(err, fmt.Errorf("reconcile protocol publication: %w", findErr))
+			}
+			referenced, referenceErr := f.store.IsObjectReferenced(ctx, f.physicalHash, "")
+			if referenceErr != nil || referenced {
+				return errors.Join(err, referenceErr)
+			}
+			return errors.Join(err, f.objects.Delete(ctx, f.physicalHash))
+		}
+		return nil
 	}
 	previousPhysicalHash, matched, err := f.store.ReplaceFileConditional(
 		context.Background(), f.logicPath, f.physicalHash, f.size,

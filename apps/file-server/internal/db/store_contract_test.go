@@ -127,6 +127,33 @@ func runStoreContract(t *testing.T, store Store) {
 			t.Fatalf("file after conditional replacements = %#v", got)
 		}
 
+		snapshotPath := directory + "/snapshot.txt"
+		if err := store.UpsertFile(ctx, snapshotPath, "snapshot-object", 11); err != nil {
+			t.Fatalf("create snapshot fixture: %v", err)
+		}
+		snapshot := requireFileRecord(t, ctx, store, snapshotPath).Snapshot()
+		staleTime := snapshot
+		staleTime.UpdatedAt = staleTime.UpdatedAt.Add(-time.Nanosecond)
+		if old, replaced, err = store.ReplaceFileConditionalSnapshot(ctx, snapshotPath, "stale-time", 12, &staleTime, false); err != nil || replaced || old != "" {
+			t.Fatalf("ReplaceFileConditionalSnapshot stale time = old %q, replaced %t, err %v", old, replaced, err)
+		}
+		staleID := snapshot
+		staleID.ID++
+		if old, replaced, err = store.ReplaceFileConditionalSnapshot(ctx, snapshotPath, "stale-id", 12, &staleID, false); err != nil || replaced || old != "" {
+			t.Fatalf("ReplaceFileConditionalSnapshot stale id = old %q, replaced %t, err %v", old, replaced, err)
+		}
+		staleHash := snapshot
+		staleHash.PhysicalHash = "another-generation"
+		if old, replaced, err = store.ReplaceFileConditionalSnapshot(ctx, snapshotPath, "stale-hash", 12, &staleHash, false); err != nil || replaced || old != "" {
+			t.Fatalf("ReplaceFileConditionalSnapshot stale hash = old %q, replaced %t, err %v", old, replaced, err)
+		}
+		if old, replaced, err = store.ReplaceFileConditionalSnapshot(ctx, snapshotPath, "snapshot-next", 12, &snapshot, false); err != nil || !replaced || old != "snapshot-object" {
+			t.Fatalf("ReplaceFileConditionalSnapshot matching = old %q, replaced %t, err %v", old, replaced, err)
+		}
+		if err := store.DeletePath(ctx, snapshotPath); err != nil {
+			t.Fatalf("delete snapshot fixture: %v", err)
+		}
+
 		if err := store.RenamePath(ctx, fromPath, toPath); err != nil {
 			t.Fatalf("RenamePath: %v", err)
 		}
@@ -236,27 +263,32 @@ func runStoreContract(t *testing.T, store Store) {
 
 		now := time.Now().UTC().Truncate(time.Microsecond)
 		expectedHash := "previous-object"
+		expectedFileUpdatedAt := now.Add(-time.Minute)
 		upload, err := store.CreateUpload(ctx, UploadRecord{
-			ID:                   "contract-upload",
-			LogicPath:            "contract-upload/file.txt",
-			PhysicalHash:         "upload-object",
-			Driver:               "contract",
-			ContentType:          "text/plain",
-			UploadURL:            "https://upload.example.test/session",
-			Size:                 21,
-			UploadedSize:         3,
-			Overwrite:            true,
-			ExpectedPhysicalHash: &expectedHash,
-			Status:               "uploading",
-			CreatedAt:            now,
-			UpdatedAt:            now,
-			ExpiresAt:            now.Add(time.Hour),
+			ID:                    "contract-upload",
+			LogicPath:             "contract-upload/file.txt",
+			PhysicalHash:          "upload-object",
+			Driver:                "contract",
+			ContentType:           "text/plain",
+			UploadURL:             "https://upload.example.test/session",
+			Size:                  21,
+			UploadedSize:          3,
+			Overwrite:             true,
+			ExpectedPhysicalHash:  &expectedHash,
+			ExpectedFileID:        42,
+			ExpectedFileUpdatedAt: &expectedFileUpdatedAt,
+			Status:                "uploading",
+			CreatedAt:             now,
+			UpdatedAt:             now,
+			ExpiresAt:             now.Add(time.Hour),
 		})
-		if err != nil || upload.ID != "contract-upload" || upload.UploadURL == "" {
+		if err != nil || upload.ID != "contract-upload" || upload.UploadURL == "" || upload.ExpectedFileID != 42 ||
+			upload.ExpectedFileUpdatedAt == nil || !upload.ExpectedFileUpdatedAt.Equal(expectedFileUpdatedAt) {
 			t.Fatalf("CreateUpload = %#v, err %v", upload, err)
 		}
 		found, ok, err := store.FindUpload(ctx, upload.ID)
-		if err != nil || !ok || found.UploadedSize != 3 || found.ExpectedPhysicalHash == nil || *found.ExpectedPhysicalHash != expectedHash {
+		if err != nil || !ok || found.UploadedSize != 3 || found.ExpectedPhysicalHash == nil || *found.ExpectedPhysicalHash != expectedHash ||
+			found.ExpectedFileID != 42 || found.ExpectedFileUpdatedAt == nil || !found.ExpectedFileUpdatedAt.Equal(expectedFileUpdatedAt) {
 			t.Fatalf("FindUpload = %#v, found %t, err %v", found, ok, err)
 		}
 		found.UploadedSize = found.Size
@@ -271,6 +303,52 @@ func runStoreContract(t *testing.T, store Store) {
 		}
 		if deleted, err := store.DeleteUpload(ctx, upload.ID); err != nil || deleted {
 			t.Fatalf("DeleteUpload second = deleted %t, err %v", deleted, err)
+		}
+	})
+
+	t.Run("object reference safety", func(t *testing.T) {
+		const publishedPath = "contract-reference/published.txt"
+		if err := store.UpsertDirectory(ctx, "contract-reference"); err != nil {
+			t.Fatalf("create reference directory: %v", err)
+		}
+		if err := store.UpsertFile(ctx, publishedPath, "published-object", 1); err != nil {
+			t.Fatalf("create published mapping: %v", err)
+		}
+		if referenced, err := store.IsObjectReferenced(ctx, "published-object", publishedPath); err != nil || referenced {
+			t.Fatalf("excluded published mapping referenced=%t err=%v", referenced, err)
+		}
+		if err := store.UpsertFile(ctx, "contract-reference/alias.txt", "shared-active-object", 1); err != nil {
+			t.Fatal(err)
+		}
+		if referenced, err := store.IsObjectReferenced(ctx, "shared-active-object", publishedPath); err != nil || !referenced {
+			t.Fatalf("active mapping referenced=%t err=%v", referenced, err)
+		}
+
+		if err := store.UpsertFile(ctx, "contract-reference/trash.txt", "shared-trash-object", 1); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.TrashPaths(ctx, []TrashPath{{Path: "contract-reference/trash.txt", TrashID: "contract-reference-trash"}}); err != nil {
+			t.Fatal(err)
+		}
+		if referenced, err := store.IsObjectReferenced(ctx, "shared-trash-object", publishedPath); err != nil || !referenced {
+			t.Fatalf("trash mapping referenced=%t err=%v", referenced, err)
+		}
+
+		share, err := store.CreateShare(ctx, ShareRecord{
+			ID: "contract-reference-share", LogicPath: "old.txt", PhysicalHash: "shared-share-object",
+			FileName: "old.txt", DestinationObject: "shares/old.txt", ShareURL: "https://example.test/old.txt", Status: "draft",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if referenced, err := store.IsObjectReferenced(ctx, "shared-share-object", publishedPath); err != nil || !referenced {
+			t.Fatalf("pending share referenced=%t err=%v", referenced, err)
+		}
+		if _, err = store.MarkShareUploaded(ctx, share.ID); err != nil {
+			t.Fatal(err)
+		}
+		if referenced, err := store.IsObjectReferenced(ctx, "shared-share-object", publishedPath); err != nil || referenced {
+			t.Fatalf("completed share referenced=%t err=%v", referenced, err)
 		}
 	})
 
@@ -347,6 +425,276 @@ func runStoreContract(t *testing.T, store Store) {
 		}
 	})
 
+	t.Run("upload completion transitions and leases", func(t *testing.T) {
+		now := time.Now().UTC().Truncate(time.Microsecond)
+		upload, err := store.CreateUpload(ctx, UploadRecord{
+			ID: "contract-upload-completion", LogicPath: "completion/file.txt", PhysicalHash: "upload-generation",
+			Driver: "contract", Size: 12, UploadedSize: 12, Status: "uploaded",
+			CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(time.Hour),
+		})
+		if err != nil || upload.Revision != 1 || upload.CompletionStatus != "none" {
+			t.Fatalf("CreateUpload completion = %#v, err %v", upload, err)
+		}
+		stale := upload
+		stale.Status = "failed"
+		if _, updated, err := store.UpdateUploadConditional(ctx, stale, 0); err != nil || updated {
+			t.Fatalf("stale UpdateUploadConditional = updated %t, err %v", updated, err)
+		}
+		reconciled := upload
+		reconciled.Error = "offset reconciled"
+		reconciled, updated, err := store.UpdateUploadConditional(ctx, reconciled, upload.Revision)
+		if err != nil || !updated || reconciled.Revision != upload.Revision+1 {
+			t.Fatalf("matching UpdateUploadConditional = %#v, updated %t, err %v", reconciled, updated, err)
+		}
+		if _, updated, err = store.UpdateUploadConditional(ctx, upload, upload.Revision); err != nil || updated {
+			t.Fatalf("racing stale UpdateUploadConditional = updated %t, err %v", updated, err)
+		}
+		upload = reconciled
+
+		upload, needed, err := store.RequestUploadCompletion(ctx, upload.ID, now)
+		if err != nil || !needed || upload.CompletionStatus != "pending" || upload.Revision != reconciled.Revision+1 {
+			t.Fatalf("RequestUploadCompletion = %#v, needed %t, err %v", upload, needed, err)
+		}
+		pendingRevision := upload.Revision
+		if duplicate, needed, err := store.RequestUploadCompletion(ctx, upload.ID, now); err != nil || !needed || duplicate.Revision != pendingRevision {
+			t.Fatalf("duplicate RequestUploadCompletion = %#v, needed %t, err %v", duplicate, needed, err)
+		}
+
+		leaseUntil := now.Add(time.Minute)
+		upload, claimed, err := store.ClaimUploadCompletion(ctx, upload.ID, "worker-a", now, leaseUntil)
+		if err != nil || !claimed || upload.Status != "finalizing" || upload.CompletionAttempts != 1 {
+			t.Fatalf("ClaimUploadCompletion = %#v, claimed %t, err %v", upload, claimed, err)
+		}
+		if _, claimed, err := store.ClaimUploadCompletion(ctx, upload.ID, "worker-b", now.Add(time.Second), now.Add(2*time.Minute)); err != nil || claimed {
+			t.Fatalf("active lease duplicate claim = claimed %t, err %v", claimed, err)
+		}
+		if _, err := store.MarkUploadObjectReady(ctx, upload.ID, "worker-b", now); !errors.Is(err, ErrMetadataConflict) {
+			t.Fatalf("stale owner MarkUploadObjectReady error = %v", err)
+		}
+		upload, err = store.MarkUploadObjectReady(ctx, upload.ID, "worker-a", now)
+		if err != nil || upload.CompletionStatus != "object_ready" || upload.FinalizedAt == nil {
+			t.Fatalf("MarkUploadObjectReady = %#v, err %v", upload, err)
+		}
+		upload, err = store.MarkUploadPublished(ctx, upload.ID, "worker-a", "previous-generation", "pending", "delete failed", now)
+		if err != nil || upload.CompletionStatus != "published" || upload.PublishedAt == nil ||
+			upload.PreviousPhysicalHash != "previous-generation" || upload.CleanupStatus != "pending" {
+			t.Fatalf("MarkUploadPublished = %#v, err %v", upload, err)
+		}
+		upload, err = store.MarkUploadComplete(ctx, upload.ID, "worker-a", now)
+		if err != nil || upload.Status != "complete" || upload.CompletionStatus != "complete" || upload.CompletedAt == nil || upload.CompletionOwner != nil {
+			t.Fatalf("MarkUploadComplete = %#v, err %v", upload, err)
+		}
+		upload, err = store.RetryUploadCleanup(ctx, upload.ID, "temporary delete failure", now)
+		if err != nil || upload.CleanupStatus != "pending" || upload.CleanupError != "temporary delete failure" || upload.PreviousPhysicalHash != "previous-generation" {
+			t.Fatalf("RetryUploadCleanup = %#v, err %v", upload, err)
+		}
+		upload, err = store.MarkUploadCleanupComplete(ctx, upload.ID, now)
+		if err != nil || upload.CleanupStatus != "complete" || upload.CleanupError != "" || upload.PreviousPhysicalHash != "previous-generation" {
+			t.Fatalf("MarkUploadCleanupComplete = %#v, err %v", upload, err)
+		}
+		if _, err = store.MarkUploadCleanupComplete(ctx, upload.ID, now); !errors.Is(err, ErrMetadataConflict) {
+			t.Fatalf("duplicate MarkUploadCleanupComplete error = %v", err)
+		}
+		if replay, needed, err := store.RequestUploadCompletion(ctx, upload.ID, now); err != nil || needed || replay.Status != "complete" {
+			t.Fatalf("complete RequestUploadCompletion replay = %#v, needed %t, err %v", replay, needed, err)
+		}
+		if replay, cancelNeeded, err := store.RequestUploadCancel(ctx, upload.ID, now); err != nil || cancelNeeded || replay.Status != "complete" {
+			t.Fatalf("complete RequestUploadCancel = %#v, needed %t, err %v", replay, cancelNeeded, err)
+		}
+	})
+
+	t.Run("upload retry cancel and expiry transitions", func(t *testing.T) {
+		now := time.Now().UTC().Truncate(time.Microsecond)
+		retryUpload, err := store.CreateUpload(ctx, UploadRecord{
+			ID: "contract-upload-retry", LogicPath: "retry/file.txt", PhysicalHash: "retry-generation",
+			Size: 9, UploadedSize: 9, Status: "uploaded", ExpiresAt: now.Add(time.Hour),
+		})
+		if err != nil {
+			t.Fatalf("CreateUpload retry: %v", err)
+		}
+		if retryUpload, _, err = store.RequestUploadCompletion(ctx, retryUpload.ID, now); err != nil {
+			t.Fatalf("RequestUploadCompletion retry: %v", err)
+		}
+		if retryUpload, _, err = store.ClaimUploadCompletion(ctx, retryUpload.ID, "worker-a", now, now.Add(time.Minute)); err != nil {
+			t.Fatalf("ClaimUploadCompletion retry: %v", err)
+		}
+		nextAttempt := now.Add(10 * time.Second)
+		var claimed bool
+		retryUpload, err = store.RetryUploadCompletion(ctx, retryUpload.ID, "worker-a", "temporary failure", nextAttempt, now)
+		if err != nil || retryUpload.Status != "uploaded" || retryUpload.CompletionOwner != nil || retryUpload.CompletionNextAttemptAt == nil {
+			t.Fatalf("RetryUploadCompletion = %#v, err %v", retryUpload, err)
+		}
+		if _, claimed, err = store.ClaimUploadCompletion(ctx, retryUpload.ID, "worker-b", now.Add(time.Second), now.Add(time.Minute)); err != nil || claimed {
+			t.Fatalf("claim before retry due = claimed %t, err %v", claimed, err)
+		}
+		if retryUpload, claimed, err = store.ClaimUploadCompletion(ctx, retryUpload.ID, "worker-b", nextAttempt, nextAttempt.Add(time.Minute)); err != nil || !claimed {
+			t.Fatalf("claim after retry due = %#v, claimed %t, err %v", retryUpload, claimed, err)
+		}
+		if _, err = store.MarkUploadCompletionConflict(ctx, retryUpload.ID, "worker-a", "stale target", nextAttempt); !errors.Is(err, ErrMetadataConflict) {
+			t.Fatalf("stale conflict owner error = %v", err)
+		}
+		if retryUpload, err = store.MarkUploadCompletionConflict(ctx, retryUpload.ID, "worker-b", "stale target", nextAttempt); err != nil || retryUpload.Status != "conflict" {
+			t.Fatalf("MarkUploadCompletionConflict = %#v, err %v", retryUpload, err)
+		}
+
+		cancelUpload, err := store.CreateUpload(ctx, UploadRecord{
+			ID: "contract-upload-cancel", LogicPath: "cancel/file.txt", PhysicalHash: "cancel-generation",
+			Size: 4, UploadedSize: 2, Status: "uploading", ExpiresAt: now.Add(time.Hour),
+		})
+		if err != nil {
+			t.Fatalf("CreateUpload cancel: %v", err)
+		}
+		cancelUpload, cancelNeeded, err := store.RequestUploadCancel(ctx, cancelUpload.ID, now)
+		if err != nil || !cancelNeeded || cancelUpload.Status != "cancelling" || cancelUpload.CancelRequestedAt == nil {
+			t.Fatalf("RequestUploadCancel = %#v, needed %t, err %v", cancelUpload, cancelNeeded, err)
+		}
+		cancelUpload, err = store.MarkUploadCancelled(ctx, cancelUpload.ID, now)
+		if err != nil || cancelUpload.Status != "cancelled" || cancelUpload.CancelledAt == nil {
+			t.Fatalf("MarkUploadCancelled = %#v, err %v", cancelUpload, err)
+		}
+
+		expireUpload, err := store.CreateUpload(ctx, UploadRecord{
+			ID: "contract-upload-expire", LogicPath: "expire/file.txt", PhysicalHash: "expire-generation",
+			Status: "uploading", ExpiresAt: now.Add(-time.Second),
+		})
+		if err != nil {
+			t.Fatalf("CreateUpload expire: %v", err)
+		}
+		if _, expired, err := store.ExpireUpload(ctx, expireUpload.ID, expireUpload.Revision+1, now); err != nil || expired {
+			t.Fatalf("stale ExpireUpload = expired %t, err %v", expired, err)
+		}
+		expireUpload, expired, err := store.ExpireUpload(ctx, expireUpload.ID, expireUpload.Revision, now)
+		if err != nil || !expired || expireUpload.Status != "expired" || expireUpload.Error != "upload session expired" {
+			t.Fatalf("ExpireUpload = %#v, expired %t, err %v", expireUpload, expired, err)
+		}
+		expireUpload, cancelNeeded, err = store.RequestUploadCancel(ctx, expireUpload.ID, now)
+		if err != nil || !cancelNeeded || expireUpload.Status != "cancelling" {
+			t.Fatalf("expired RequestUploadCancel = %#v, needed %t, err %v", expireUpload, cancelNeeded, err)
+		}
+		expireUpload, err = store.MarkUploadCancelled(ctx, expireUpload.ID, now)
+		if err != nil || expireUpload.Status != "cancelled" || expireUpload.CancelledAt == nil {
+			t.Fatalf("expired MarkUploadCancelled = %#v, err %v", expireUpload, err)
+		}
+	})
+
+	t.Run("upload durable recovery scan", func(t *testing.T) {
+		now := time.Now().UTC().Truncate(time.Microsecond)
+		owner := "crashed-worker"
+		expiredLease := now.Add(-time.Second)
+		activeLease := now.Add(time.Minute)
+		futureAttempt := now.Add(time.Minute)
+		records := []UploadRecord{
+			{ID: "recovery-due-pending", LogicPath: "recovery/pending", PhysicalHash: "generation-pending", Status: "uploaded", CompletionStatus: "pending", CompletionNextAttemptAt: timePointer(now.Add(-time.Second)), UpdatedAt: now.Add(-5 * time.Minute), ExpiresAt: now.Add(time.Hour)},
+			{ID: "recovery-due-object", LogicPath: "recovery/object", PhysicalHash: "generation-object", Status: "finalizing", CompletionStatus: "object_ready", CompletionOwner: &owner, CompletionLeaseUntil: &expiredLease, UpdatedAt: now.Add(-4 * time.Minute), ExpiresAt: now.Add(time.Hour)},
+			{ID: "recovery-active-lease", LogicPath: "recovery/active", PhysicalHash: "generation-active", Status: "finalizing", CompletionStatus: "published", CompletionOwner: &owner, CompletionLeaseUntil: &activeLease, UpdatedAt: now.Add(-3 * time.Minute), ExpiresAt: now.Add(time.Hour)},
+			{ID: "recovery-future-attempt", LogicPath: "recovery/future", PhysicalHash: "generation-future", Status: "uploaded", CompletionStatus: "pending", CompletionNextAttemptAt: &futureAttempt, UpdatedAt: now.Add(-2 * time.Minute), ExpiresAt: now.Add(time.Hour)},
+			{ID: "recovery-due-cleanup", LogicPath: "recovery/cleanup", PhysicalHash: "generation-cleanup", Status: "complete", CompletionStatus: "complete", CleanupStatus: "pending", PreviousPhysicalHash: "old-generation", UpdatedAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour)},
+			{ID: "recovery-terminal", LogicPath: "recovery/terminal", PhysicalHash: "generation-terminal", Status: "conflict", CompletionStatus: "conflict", UpdatedAt: now, ExpiresAt: now.Add(time.Hour)},
+		}
+		for _, record := range records {
+			if _, err := store.CreateUpload(ctx, record); err != nil {
+				t.Fatalf("CreateUpload %s: %v", record.ID, err)
+			}
+		}
+
+		due, err := store.ListDueUploadRecoveries(ctx, now, 20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := make(map[string]bool, len(due))
+		for _, record := range due {
+			got[record.ID] = true
+		}
+		for _, id := range []string{"recovery-due-pending", "recovery-due-object", "recovery-due-cleanup"} {
+			if !got[id] {
+				t.Errorf("due recovery %q was omitted: %#v", id, got)
+			}
+		}
+		for _, id := range []string{"recovery-active-lease", "recovery-future-attempt", "recovery-terminal"} {
+			if got[id] {
+				t.Errorf("non-due recovery %q was returned", id)
+			}
+		}
+		limited, err := store.ListDueUploadRecoveries(ctx, now, 1)
+		if err != nil || len(limited) != 1 {
+			t.Fatalf("bounded recovery scan = %#v, err %v", limited, err)
+		}
+	})
+
+	t.Run("thumbnail cleanup keeps retry evidence", func(t *testing.T) {
+		path := "thumbnail-cleanup/file.txt"
+		if err := store.UpsertDirectory(ctx, "thumbnail-cleanup"); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.UpsertFile(ctx, path, "thumbnail-source", 4); err != nil {
+			t.Fatal(err)
+		}
+		file := requireFileRecord(t, ctx, store, path)
+		thumbnail := ThumbnailRecord{
+			ID: "contract-thumbnail-cleanup", PhysicalHash: "contract-thumbnail.webp",
+			ContentType: "image/webp", Size: 4, Width: 1, Height: 1, CreatedAt: time.Now().UTC(),
+		}
+		if _, err := store.ReplaceThumbnail(ctx, thumbnail, []int{file.ID}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.DetachThumbnails(ctx, []int{file.ID}); err != nil {
+			t.Fatal(err)
+		}
+		retained, found, err := store.FindThumbnail(ctx, thumbnail.ID)
+		if err != nil || !found || retained.DeleteAfter == nil {
+			t.Fatalf("detached thumbnail = %#v, found %t, err %v", retained, found, err)
+		}
+		collector, ok := store.(ThumbnailGarbageCollector)
+		if !ok {
+			t.Fatal("store does not implement ThumbnailGarbageCollector")
+		}
+		deleteErr := errors.New("temporary thumbnail object delete failure")
+		if deleted, err := collector.CleanupExpiredThumbnails(ctx, retained.DeleteAfter.Add(time.Second), func(context.Context, ThumbnailRecord) error {
+			return deleteErr
+		}); !errors.Is(err, deleteErr) || deleted != 0 {
+			t.Fatalf("failed cleanup = deleted %d, err %v", deleted, err)
+		}
+		if _, found, err := store.FindThumbnail(ctx, thumbnail.ID); err != nil || !found {
+			t.Fatalf("retry evidence after failure = found %t, err %v", found, err)
+		}
+		if deleted, err := collector.CleanupExpiredThumbnails(ctx, retained.DeleteAfter.Add(time.Second), func(context.Context, ThumbnailRecord) error {
+			return nil
+		}); err != nil || deleted != 1 {
+			t.Fatalf("retried cleanup = deleted %d, err %v", deleted, err)
+		}
+		if _, found, err := store.FindThumbnail(ctx, thumbnail.ID); err != nil || found {
+			t.Fatalf("thumbnail metadata after success = found %t, err %v", found, err)
+		}
+	})
+
+	t.Run("share snapshot acquisition rejects replaced object", func(t *testing.T) {
+		path := "share-snapshot/file.txt"
+		if err := store.UpsertDirectory(ctx, "share-snapshot"); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.UpsertFile(ctx, path, "share-generation-one", 4); err != nil {
+			t.Fatal(err)
+		}
+		base := ShareRecord{
+			ID: "contract-share-snapshot-one", LogicPath: path, PhysicalHash: "share-generation-one",
+			FileName: "file.txt", Size: 4, DestinationObject: "shares/one", ShareURL: "https://example.test/one", Status: "draft",
+		}
+		if _, err := store.CreateShareFromSnapshot(ctx, base); err != nil {
+			t.Fatalf("matching CreateShareFromSnapshot: %v", err)
+		}
+		if err := store.UpsertFile(ctx, path, "share-generation-two", 4); err != nil {
+			t.Fatal(err)
+		}
+		base.ID = "contract-share-snapshot-stale"
+		base.DestinationObject = "shares/stale"
+		if _, err := store.CreateShareFromSnapshot(ctx, base); !errors.Is(err, ErrMetadataConflict) {
+			t.Fatalf("stale CreateShareFromSnapshot error = %v", err)
+		}
+		if _, found, err := store.FindShare(ctx, base.ID); err != nil || found {
+			t.Fatalf("stale share persisted = found %t, err %v", found, err)
+		}
+	})
+
 	t.Run("DAV lock lifecycle", func(t *testing.T) {
 		const token = "contract-lock"
 		expiresAt := time.Now().UTC().Add(5 * time.Minute).Truncate(time.Microsecond)
@@ -386,6 +734,8 @@ func runStoreContract(t *testing.T, store Store) {
 		}
 	})
 }
+
+func timePointer(value time.Time) *time.Time { return &value }
 
 func requireFileRecord(t *testing.T, ctx context.Context, store Store, path string) FileRecord {
 	t.Helper()

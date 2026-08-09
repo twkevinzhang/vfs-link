@@ -16,8 +16,59 @@ import (
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/blob"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/db"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/fileops"
+	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/objectkey"
 	xwebdav "golang.org/x/net/webdav"
 )
+
+type webDAVErrorAfterPublish struct {
+	commandService
+	err error
+}
+
+func (c webDAVErrorAfterPublish) PublishUploaded(ctx context.Context, intent fileops.PublishIntent) (fileops.PublishResult, error) {
+	result, err := c.commandService.PublishUploaded(ctx, intent)
+	if err != nil {
+		return result, err
+	}
+	return result, c.err
+}
+
+func TestWebDAVPublicationResponseLossKeepsVisibleObject(t *testing.T) {
+	ctx := context.Background()
+	objects, err := blob.NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := db.NewTreeLocal(t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	if err = store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	base := fileops.New(store, objects, objects)
+	commands := webDAVErrorAfterPublish{commandService: base, err: errors.New("publish response lost")}
+	file, err := newUploadFile(ctx, store, commands, objects, "visible.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = file.Write([]byte("safe")); err != nil {
+		t.Fatal(err)
+	}
+	if err = file.Close(); err != nil {
+		t.Fatalf("Close() after committed response loss = %v", err)
+	}
+	record, found, err := store.Find(ctx, "visible.txt")
+	if err != nil || !found {
+		t.Fatalf("visible mapping = %#v, found %t, err %v", record, found, err)
+	}
+	reader, err := objects.NewReader(ctx, record.PhysicalHash)
+	if err != nil {
+		t.Fatalf("visible object was deleted: %v", err)
+	}
+	_ = reader.Close()
+}
 
 func TestWebDAVFileLifecycle(t *testing.T) {
 	objects, err := blob.NewLocal(t.TempDir())
@@ -56,7 +107,7 @@ func TestWebDAVFileLifecycle(t *testing.T) {
 	if putResponse.Code != http.StatusCreated {
 		t.Fatalf("PUT status = %d, body = %s", putResponse.Code, putResponse.Body.String())
 	}
-	if record, found, err := store.Find(context.Background(), "docs/a.txt"); err != nil || !found || record.PhysicalHash != "docs/a.txt" {
+	if record, found, err := store.Find(context.Background(), "docs/a.txt"); err != nil || !found || !objectkey.IsUploadGenerationForPath("docs/a.txt", record.PhysicalHash) {
 		t.Fatalf("PUT physical mapping = %#v, found=%v err=%v", record, found, err)
 	}
 	response := request(http.MethodGet, "/dav/docs/a.txt", nil, map[string]string{"Range": "bytes=1-3"})

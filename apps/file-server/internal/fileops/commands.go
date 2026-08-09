@@ -29,7 +29,12 @@ type PublishIntent struct {
 	PhysicalHash         string
 	Size                 int64
 	ExpectedPhysicalHash *string
+	ExpectedSnapshot     *db.FileSnapshot
 	RequireAbsent        bool
+	// DeferCleanup returns the previous-object evidence without deleting it.
+	// Durable upload completion uses this mode so it can persist that evidence
+	// before any irreversible cleanup side effect.
+	DeferCleanup bool
 }
 
 // PublishResult separates the visible namespace commit from best-effort
@@ -41,6 +46,17 @@ type PublishResult struct {
 	PreviousObject string
 	CleanupPending bool
 	CleanupErrors  []error
+}
+
+type UploadedCleanupIntent struct {
+	LogicPath             string
+	PublishedPhysicalHash string
+	PreviousPhysicalHash  string
+}
+
+type UploadedCleanupResult struct {
+	Pending bool
+	Errors  []error
 }
 
 // CreateDirectory creates a directory through the common application
@@ -191,10 +207,19 @@ func (s *Service) PublishUploaded(ctx context.Context, intent PublishIntent) (Pu
 	if err := s.ensureDirectories(ctx, logicpath.Parent(logicPath)); err != nil {
 		return PublishResult{}, err
 	}
-	previous, matched, err := s.store.ReplaceFileConditional(
-		ctx, logicPath, intent.PhysicalHash, intent.Size,
-		intent.ExpectedPhysicalHash, intent.RequireAbsent,
-	)
+	var previous string
+	var matched bool
+	if intent.ExpectedSnapshot != nil {
+		previous, matched, err = s.store.ReplaceFileConditionalSnapshot(
+			ctx, logicPath, intent.PhysicalHash, intent.Size,
+			intent.ExpectedSnapshot, intent.RequireAbsent,
+		)
+	} else {
+		previous, matched, err = s.store.ReplaceFileConditional(
+			ctx, logicPath, intent.PhysicalHash, intent.Size,
+			intent.ExpectedPhysicalHash, intent.RequireAbsent,
+		)
+	}
 	if err != nil {
 		return PublishResult{}, err
 	}
@@ -206,7 +231,12 @@ func (s *Service) PublishUploaded(ctx context.Context, intent PublishIntent) (Pu
 		if !found || current.IsDirectory || current.PhysicalHash != intent.PhysicalHash || current.Size != intent.Size {
 			return PublishResult{}, db.ErrPathConflict
 		}
-		return PublishResult{Published: current}, nil
+		previous = expectedPreviousObject(intent)
+		result := PublishResult{Published: current, PreviousObject: previous}
+		if intent.DeferCleanup {
+			result.CleanupPending = true
+		}
+		return result, nil
 	}
 	published, found, err := s.store.Find(ctx, logicPath)
 	if err != nil {
@@ -216,25 +246,83 @@ func (s *Service) PublishUploaded(ctx context.Context, intent PublishIntent) (Pu
 		return PublishResult{}, fmt.Errorf("%w: %s", db.ErrNotFound, logicPath)
 	}
 	result := PublishResult{Published: published, PreviousObject: previous}
+	if intent.DeferCleanup {
+		result.CleanupPending = true
+		return result, nil
+	}
+	cleanup := s.RetryUploadedCleanup(ctx, UploadedCleanupIntent{
+		LogicPath: logicPath, PublishedPhysicalHash: intent.PhysicalHash,
+		PreviousPhysicalHash: previous,
+	})
+	result.CleanupPending = cleanup.Pending
+	result.CleanupErrors = append(result.CleanupErrors, cleanup.Errors...)
+	return result, nil
+}
+
+func expectedPreviousObject(intent PublishIntent) string {
+	if intent.ExpectedSnapshot != nil && strings.TrimSpace(intent.ExpectedSnapshot.PhysicalHash) != "" {
+		return intent.ExpectedSnapshot.PhysicalHash
+	}
+	if intent.ExpectedPhysicalHash != nil {
+		return *intent.ExpectedPhysicalHash
+	}
+	return ""
+}
+
+// RetryUploadedCleanup verifies that the publication is still visible before
+// deleting derived thumbnails or the previous immutable object. Reference
+// uncertainty is a retryable/pending outcome, never permission to delete.
+func (s *Service) RetryUploadedCleanup(ctx context.Context, intent UploadedCleanupIntent) UploadedCleanupResult {
+	logicPath, err := logicpath.Parse(intent.LogicPath)
+	if err != nil {
+		return UploadedCleanupResult{Pending: true, Errors: []error{err}}
+	}
+	publishedKey := strings.TrimSpace(intent.PublishedPhysicalHash)
+	if logicPath == "" || publishedKey == "" {
+		return UploadedCleanupResult{Pending: true, Errors: []error{errors.New("valid published path and object are required")}}
+	}
+	published, found, err := s.store.Find(ctx, logicPath)
+	if err != nil {
+		return UploadedCleanupResult{Pending: true, Errors: []error{fmt.Errorf("verify published mapping: %w", err)}}
+	}
+	if !found || published.IsDirectory || published.PhysicalHash != publishedKey {
+		return UploadedCleanupResult{Pending: true, Errors: []error{fmt.Errorf("%w: published mapping changed", db.ErrPathConflict)}}
+	}
+
+	result := UploadedCleanupResult{}
 	thumbnails, detachErr := s.store.DetachThumbnails(ctx, []int{published.ID})
 	if detachErr != nil {
-		result.CleanupPending = true
-		result.CleanupErrors = append(result.CleanupErrors, fmt.Errorf("detach stale thumbnail: %w", detachErr))
+		result.Pending = true
+		result.Errors = append(result.Errors, fmt.Errorf("detach stale thumbnail: %w", detachErr))
 	} else {
 		for _, thumbnail := range thumbnails {
-			if err := s.thumbnailObjects.Delete(ctx, thumbnail.PhysicalHash); err != nil {
-				result.CleanupPending = true
-				result.CleanupErrors = append(result.CleanupErrors, fmt.Errorf("delete stale thumbnail %s: %w", thumbnail.ID, err))
+			if deleteErr := s.thumbnailObjects.Delete(ctx, thumbnail.PhysicalHash); deleteErr != nil {
+				result.Pending = true
+				result.Errors = append(result.Errors, fmt.Errorf("delete stale thumbnail %s: %w", thumbnail.ID, deleteErr))
 			}
 		}
 	}
-	if previous != "" && previous != intent.PhysicalHash {
-		if err := s.objects.Delete(ctx, previous); err != nil {
-			result.CleanupPending = true
-			result.CleanupErrors = append(result.CleanupErrors, fmt.Errorf("delete previous object %s: %w", previous, err))
-		}
+
+	previous := strings.TrimSpace(intent.PreviousPhysicalHash)
+	if previous == "" || previous == publishedKey {
+		return result
 	}
-	return result, nil
+	referenced, referenceErr := s.store.IsObjectReferenced(ctx, previous, logicPath)
+	if referenceErr != nil {
+		result.Pending = true
+		result.Errors = append(result.Errors, fmt.Errorf("check previous object references: %w", referenceErr))
+		return result
+	}
+	if referenced {
+		result.Pending = true
+		result.Errors = append(result.Errors, fmt.Errorf("previous object %s is still referenced", previous))
+		return result
+	}
+	if deleteErr := s.objects.Delete(ctx, previous); deleteErr != nil {
+		result.Pending = true
+		result.Errors = append(result.Errors, fmt.Errorf("delete previous object %s: %w", previous, deleteErr))
+	}
+	return result
 }
 
 func (s *Service) requireDirectory(ctx context.Context, logicPath string) error {

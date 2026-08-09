@@ -3,11 +3,13 @@ package webdav
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/blob"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/db"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/fileops"
@@ -118,6 +120,8 @@ func (f *readFile) Stat() (os.FileInfo, error)         { return f.info, nil }
 type uploadFile struct {
 	ctx                  context.Context
 	commands             commandService
+	objects              blob.Store
+	store                uploadSnapshot
 	logicPath            string
 	physicalHash         string
 	expectedPhysicalHash *string
@@ -133,8 +137,12 @@ type uploadSnapshot interface {
 	Find(context.Context, string) (db.FileRecord, bool, error)
 }
 
+type uploadReferenceSnapshot interface {
+	IsObjectReferenced(context.Context, string, string) (bool, error)
+}
+
 func newUploadFile(ctx context.Context, store uploadSnapshot, commands commandService, objects blob.Store, logicPath string) (*uploadFile, error) {
-	physicalHash, err := objectkey.FromLogicalPath(logicPath)
+	physicalHash, err := objectkey.ForUpload(logicPath, uuid.NewString())
 	if err != nil {
 		return nil, err
 	}
@@ -150,12 +158,13 @@ func newUploadFile(ctx context.Context, store uploadSnapshot, commands commandSe
 		value := existing.PhysicalHash
 		expected = &value
 	}
-	writer, err := blob.NewUploadWriter(ctx, objects, physicalHash, expected)
+	writer, err := blob.NewUploadWriter(ctx, objects, physicalHash, nil)
 	if err != nil {
 		return nil, err
 	}
 	return &uploadFile{
 		ctx: ctx, commands: commands, logicPath: logicPath,
+		objects: objects, store: store,
 		physicalHash: physicalHash, expectedPhysicalHash: expected,
 		requireAbsent: !found, writer: writer,
 	}, nil
@@ -214,18 +223,41 @@ func (f *uploadFile) commit() error {
 	}
 	_, err := f.commands.PublishUploaded(f.ctx, intent)
 	if err != nil {
-		if errors.Is(err, db.ErrPathConflict) {
-			return errPreconditionFailed
+		current, found, findErr := f.store.Find(f.ctx, f.logicPath)
+		if findErr == nil && found && !current.IsDirectory && current.PhysicalHash == f.physicalHash && current.Size == f.size {
+			return nil
 		}
-		return err
+		if findErr != nil {
+			return errors.Join(err, fmt.Errorf("reconcile WebDAV publication: %w", findErr))
+		}
+		checker, ok := f.store.(uploadReferenceSnapshot)
+		if !ok {
+			return err
+		}
+		referenced, referenceErr := checker.IsObjectReferenced(f.ctx, f.physicalHash, "")
+		if referenceErr != nil || referenced {
+			return errors.Join(err, referenceErr)
+		}
+		cleanupErr := f.deleteOwnedUpload()
+		if errors.Is(err, db.ErrPathConflict) {
+			return errors.Join(errPreconditionFailed, cleanupErr)
+		}
+		return errors.Join(err, cleanupErr)
 	}
 	return nil
 }
 
 func (f *uploadFile) abort() {
-	// The writer has already published to the final key by the time a WebDAV
-	// transaction commits. Deleting here could remove a concurrent/aligned
-	// object, so metadata failure leaves the object for retry/reconciliation.
+	// Every transfer owns a session-specific immutable key. An upload reaches
+	// abort only before its publication commit, so deleting that exact key
+	// cannot remove a concurrent winner.
+	_ = f.deleteOwnedUpload()
+}
+
+func (f *uploadFile) deleteOwnedUpload() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return f.objects.Delete(ctx, f.physicalHash)
 }
 
 func abortUploadWriter(writer io.WriteCloser, cause error) {

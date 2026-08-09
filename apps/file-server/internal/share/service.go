@@ -59,7 +59,7 @@ type Service struct {
 // need to expose unrelated file, upload, thumbnail, or DAV operations here.
 type MetadataStore interface {
 	Find(context.Context, string) (db.FileRecord, bool, error)
-	CreateShare(context.Context, db.ShareRecord) (db.ShareRecord, error)
+	CreateShareFromSnapshot(context.Context, db.ShareRecord) (db.ShareRecord, error)
 	FindShare(context.Context, string) (db.ShareRecord, bool, error)
 	RequestShareJob(context.Context, string, string, time.Time) (db.ShareRecord, bool, error)
 	ClaimPendingShareDispatch(context.Context, string, time.Time, time.Time, int) ([]db.ShareRecord, error)
@@ -164,7 +164,7 @@ func (s *Service) CreateDraft(ctx context.Context, logicPath string) (db.ShareRe
 	id := uuid.NewString()
 	fileName := path.Base(file.LogicPath)
 	objectName := s.destinationObject(id, fileName)
-	return s.store.CreateShare(ctx, db.ShareRecord{
+	return s.store.CreateShareFromSnapshot(ctx, db.ShareRecord{
 		ID:                id,
 		LogicPath:         file.LogicPath,
 		PhysicalHash:      file.PhysicalHash,

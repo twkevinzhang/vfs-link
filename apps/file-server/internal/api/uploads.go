@@ -33,19 +33,29 @@ type preflightUploadResponse struct {
 }
 
 type uploadResponse struct {
-	ID           string            `json:"id"`
-	LogicPath    string            `json:"logicPath"`
-	Size         int64             `json:"size"`
-	UploadedSize int64             `json:"uploadedSize"`
-	ContentType  string            `json:"contentType"`
-	Status       string            `json:"status"`
-	Error        string            `json:"error,omitempty"`
-	Method       string            `json:"method"`
-	UploadURL    string            `json:"uploadUrl"`
-	Headers      map[string]string `json:"headers"`
-	CompleteURL  string            `json:"completeUrl"`
-	StatusURL    string            `json:"statusUrl"`
-	ExpiresAt    time.Time         `json:"expiresAt"`
+	ID                      string            `json:"id"`
+	LogicPath               string            `json:"logicPath"`
+	Size                    int64             `json:"size"`
+	UploadedSize            int64             `json:"uploadedSize"`
+	ContentType             string            `json:"contentType"`
+	Status                  string            `json:"status"`
+	Error                   string            `json:"error,omitempty"`
+	CompletionStatus        string            `json:"completionStatus,omitempty"`
+	CompletionAttempts      int               `json:"completionAttempts,omitempty"`
+	CompletionNextAttemptAt *time.Time        `json:"completionNextAttemptAt,omitempty"`
+	FinalizedAt             *time.Time        `json:"finalizedAt,omitempty"`
+	PublishedAt             *time.Time        `json:"publishedAt,omitempty"`
+	CompletedAt             *time.Time        `json:"completedAt,omitempty"`
+	CancelledAt             *time.Time        `json:"cancelledAt,omitempty"`
+	LastCompletionError     string            `json:"lastCompletionError,omitempty"`
+	CleanupStatus           string            `json:"cleanupStatus,omitempty"`
+	CleanupError            string            `json:"cleanupError,omitempty"`
+	Method                  string            `json:"method"`
+	UploadURL               string            `json:"uploadUrl"`
+	Headers                 map[string]string `json:"headers"`
+	CompleteURL             string            `json:"completeUrl"`
+	StatusURL               string            `json:"statusUrl"`
+	ExpiresAt               time.Time         `json:"expiresAt"`
 }
 
 func (s *Server) handleCreateUpload(w http.ResponseWriter, r *http.Request) {
@@ -173,6 +183,13 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	if len(parts) == 2 && parts[1] == "complete" && r.Method == http.MethodPost {
 		session, err := s.uploads.Complete(r.Context(), id)
 		if err != nil {
+			if errors.Is(err, upload.ErrCompletionInProgress) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Retry-After", "1")
+				w.WriteHeader(http.StatusAccepted)
+				writeJSON(w, toUploadResponse(session, false))
+				return
+			}
 			writeUploadError(w, err)
 			return
 		}
@@ -183,7 +200,9 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 }
 
 func toUploadResponse(session upload.Session, includeUploadCapability bool) uploadResponse {
-	if session.Status == upload.StatusComplete || session.Status == upload.StatusExpired {
+	switch session.Status {
+	case upload.StatusFinalizing, upload.StatusComplete, upload.StatusConflict,
+		upload.StatusCancelling, upload.StatusCancelled, upload.StatusExpired:
 		includeUploadCapability = false
 	}
 	uploadURL := ""
@@ -208,7 +227,12 @@ func toUploadResponse(session upload.Session, includeUploadCapability bool) uplo
 	}
 	return uploadResponse{
 		ID: session.ID, LogicPath: session.LogicPath, Size: session.Size, UploadedSize: session.UploadedSize, ContentType: session.ContentType,
-		Status: session.Status, Error: session.Error, Method: http.MethodPut, UploadURL: uploadURL, Headers: headers,
+		Status: session.Status, Error: session.Error, CompletionStatus: session.CompletionStatus,
+		CompletionAttempts: session.CompletionAttempts, CompletionNextAttemptAt: session.CompletionNextAttemptAt,
+		FinalizedAt: session.FinalizedAt, PublishedAt: session.PublishedAt, CompletedAt: session.CompletedAt,
+		CancelledAt: session.CancelledAt, LastCompletionError: session.LastCompletionError,
+		CleanupStatus: session.CleanupStatus, CleanupError: session.CleanupError,
+		Method: http.MethodPut, UploadURL: uploadURL, Headers: headers,
 		CompleteURL: "/api/uploads/" + session.ID + "/complete", StatusURL: "/api/uploads/" + session.ID,
 		ExpiresAt: session.ExpiresAt,
 	}
@@ -294,7 +318,7 @@ func writeUploadError(w http.ResponseWriter, err error) {
 		writeCodedError(w, http.StatusConflict, "UPLOAD_TARGET_EXISTS", err.Error())
 	case errors.Is(err, upload.ErrTargetIsDirectory):
 		writeCodedError(w, http.StatusConflict, "UPLOAD_TARGET_IS_DIRECTORY", err.Error())
-	case errors.Is(err, upload.ErrConflict), errors.Is(err, upload.ErrInvalidSession):
+	case errors.Is(err, upload.ErrConflict), errors.Is(err, upload.ErrInvalidSession), errors.Is(err, upload.ErrLegacyObjectKey):
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, upload.ErrTargetChanged):
 		writeCodedError(w, http.StatusConflict, "UPLOAD_TARGET_CHANGED", err.Error())
@@ -302,6 +326,10 @@ func writeUploadError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, upload.ErrExpired):
 		writeError(w, http.StatusGone, err.Error())
+	case errors.Is(err, upload.ErrCompletionRetryable):
+		writeError(w, http.StatusServiceUnavailable, err.Error())
+	case errors.Is(err, upload.ErrCompletionInProgress):
+		writeError(w, http.StatusAccepted, err.Error())
 	default:
 		writeError(w, http.StatusBadRequest, err.Error())
 	}

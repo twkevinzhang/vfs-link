@@ -534,6 +534,20 @@
               }
             }
           },
+          "202": {
+            "description": "Another worker owns the active completion lease; retry the same completion URL",
+            "headers": {
+              "Retry-After": {
+                "description": "Suggested delay before polling or retrying completion",
+                "schema": { "type": "integer", "minimum": 1 }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UploadResponse" }
+              }
+            }
+          },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "404": { "$ref": "#/components/responses/NotFound" },
@@ -1334,8 +1348,18 @@
           "size": { "type": "integer", "format": "int64", "minimum": 0 },
           "uploadedSize": { "type": "integer", "format": "int64", "minimum": 0, "description": "Contiguous byte count confirmed by local staging or the GCS resumable session." },
           "contentType": { "type": "string" },
-          "status": { "type": "string", "enum": ["pending", "uploading", "uploaded", "complete", "failed", "expired"] },
+          "status": { "type": "string", "enum": ["pending", "uploading", "uploaded", "finalizing", "complete", "conflict", "cancelling", "cancelled", "failed", "expired"] },
           "error": { "type": "string" },
+          "completionStatus": { "type": "string", "enum": ["none", "pending", "object_ready", "published", "complete", "conflict", "cancel_requested", "cancelled"] },
+          "completionAttempts": { "type": "integer", "minimum": 0 },
+          "completionNextAttemptAt": { "$ref": "#/components/schemas/Timestamp" },
+          "finalizedAt": { "$ref": "#/components/schemas/Timestamp" },
+          "publishedAt": { "$ref": "#/components/schemas/Timestamp" },
+          "completedAt": { "$ref": "#/components/schemas/Timestamp" },
+          "cancelledAt": { "$ref": "#/components/schemas/Timestamp" },
+          "lastCompletionError": { "type": "string" },
+          "cleanupStatus": { "type": "string", "enum": ["none", "pending", "complete"] },
+          "cleanupError": { "type": "string" },
           "method": { "type": "string", "const": "PUT" },
           "uploadUrl": { "type": "string", "description": "Relative local API URL or absolute opaque GCS session URI. Empty for complete or expired sessions." },
           "headers": { "type": "object", "description": "Fixed headers such as Content-Type. The client adds Content-Range for every chunk.", "additionalProperties": { "type": "string" } },

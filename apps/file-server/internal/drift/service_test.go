@@ -76,6 +76,38 @@ func TestRefreshTreatsLegacyNFDObjectKeyAsDrifted(t *testing.T) {
 	}
 }
 
+func TestRefreshTreatsImmutableUploadGenerationAsAligned(t *testing.T) {
+	ctx := context.Background()
+	metadata, err := db.NewTreeLocal(t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(metadata.Close)
+	if err := metadata.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	const logicPath = "docs/report.txt"
+	physicalHash, err := objectkey.ForUpload(logicPath, "upload-generation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := metadata.UpsertFile(ctx, logicPath, physicalHash, 7); err != nil {
+		t.Fatal(err)
+	}
+	state, _ := db.AsDriftStateStore(metadata)
+	objects := &faultObjects{objects: map[string]blob.DriftObject{
+		physicalHash: {Name: physicalHash, Size: 7, Generation: 1},
+	}}
+	service := NewForTest(metadata, objects, state, objectkey.FromLogicalPath)
+	snapshot, err := service.Refresh(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Entries) != 1 || snapshot.Entries[0].Status != Aligned || snapshot.Entries[0].Actionable {
+		t.Fatalf("upload generation snapshot = %#v", snapshot.Entries)
+	}
+}
+
 func TestEstimateCostUsesListedStorageClassRetrievalRate(t *testing.T) {
 	entry := func(storageClass string) PlanEntry {
 		return PlanEntry{Source: blob.DriftObject{Size: 1 << 30, StorageClass: storageClass}}

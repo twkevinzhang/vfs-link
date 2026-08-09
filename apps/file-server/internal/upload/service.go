@@ -17,14 +17,34 @@ import (
 )
 
 const (
-	StatusPending   = "pending"
-	StatusUploading = "uploading"
-	StatusUploaded  = "uploaded"
-	StatusComplete  = "complete"
-	StatusFailed    = "failed"
-	StatusExpired   = "expired"
-	defaultTTL      = 24 * time.Hour
-	DefaultMaxBytes = int64(50) * 1024 * 1024 * 1024
+	StatusPending          = "pending"
+	StatusUploading        = "uploading"
+	StatusUploaded         = "uploaded"
+	StatusFinalizing       = "finalizing"
+	StatusComplete         = "complete"
+	StatusConflict         = "conflict"
+	StatusCancelling       = "cancelling"
+	StatusCancelled        = "cancelled"
+	StatusFailed           = "failed"
+	StatusExpired          = "expired"
+	defaultTTL             = 24 * time.Hour
+	defaultCompletionLease = 30 * time.Second
+	defaultRecoveryBatch   = 50
+	maxRecoveryBatch       = 500
+	DefaultMaxBytes        = int64(50) * 1024 * 1024 * 1024
+)
+
+const (
+	CleanupPending  = "pending"
+	CleanupComplete = "complete"
+)
+
+const (
+	CompletionPending     = "pending"
+	CompletionObjectReady = "object_ready"
+	CompletionPublished   = "published"
+	CompletionComplete    = "complete"
+	CompletionConflict    = "conflict"
 )
 
 var (
@@ -38,27 +58,50 @@ var (
 	ErrCancellationUnavailable = errors.New("upload session cannot be safely cancelled")
 	ErrOffsetConflict          = errors.New("upload offset does not match committed size")
 	ErrExpired                 = errors.New("upload session expired")
+	ErrCompletionInProgress    = errors.New("upload completion is already in progress")
+	ErrCompletionRetryable     = errors.New("upload completion can be retried")
+	ErrCleanupRetryable        = errors.New("upload cleanup can be retried")
+	ErrCleanupUnavailable      = errors.New("upload cleanup retrier is unavailable")
+	ErrLegacyObjectKey         = errors.New("upload session uses a legacy mutable object key; create a new upload session")
+	ErrResumableSessionGone    = errors.New("resumable upload session is no longer available")
 )
 
 type Session struct {
-	ID                   string            `json:"id"`
-	LogicPath            string            `json:"logicPath"`
-	PhysicalHash         string            `json:"physicalHash"`
-	Driver               string            `json:"driver"`
-	Size                 int64             `json:"size"`
-	UploadedSize         int64             `json:"uploadedSize,omitempty"`
-	ContentType          string            `json:"contentType"`
-	Status               string            `json:"status"`
-	Error                string            `json:"error,omitempty"`
-	Overwrite            bool              `json:"overwrite"`
-	ExpectedPhysicalHash *string           `json:"expectedPhysicalHash,omitempty"`
-	RequireAbsent        bool              `json:"requireAbsent"`
-	UploadURL            string            `json:"-"`
-	UploadHeaders        map[string]string `json:"-"`
-	UploadOrigin         string            `json:"-"`
-	CreatedAt            time.Time         `json:"createdAt"`
-	UpdatedAt            time.Time         `json:"updatedAt"`
-	ExpiresAt            time.Time         `json:"expiresAt"`
+	ID                      string            `json:"id"`
+	LogicPath               string            `json:"logicPath"`
+	PhysicalHash            string            `json:"physicalHash"`
+	Driver                  string            `json:"driver"`
+	Size                    int64             `json:"size"`
+	UploadedSize            int64             `json:"uploadedSize,omitempty"`
+	ContentType             string            `json:"contentType"`
+	Status                  string            `json:"status"`
+	Error                   string            `json:"error,omitempty"`
+	Overwrite               bool              `json:"overwrite"`
+	ExpectedPhysicalHash    *string           `json:"expectedPhysicalHash,omitempty"`
+	ExpectedFileID          int               `json:"expectedFileId,omitempty"`
+	ExpectedFileUpdatedAt   *time.Time        `json:"expectedFileUpdatedAt,omitempty"`
+	RequireAbsent           bool              `json:"requireAbsent"`
+	UploadURL               string            `json:"-"`
+	UploadHeaders           map[string]string `json:"-"`
+	UploadOrigin            string            `json:"-"`
+	CreatedAt               time.Time         `json:"createdAt"`
+	UpdatedAt               time.Time         `json:"updatedAt"`
+	ExpiresAt               time.Time         `json:"expiresAt"`
+	Revision                int64             `json:"revision"`
+	CompletionStatus        string            `json:"completionStatus,omitempty"`
+	CompletionOwner         string            `json:"-"`
+	CompletionLeaseUntil    *time.Time        `json:"-"`
+	CompletionAttempts      int               `json:"completionAttempts,omitempty"`
+	CompletionNextAttemptAt *time.Time        `json:"completionNextAttemptAt,omitempty"`
+	FinalizedAt             *time.Time        `json:"finalizedAt,omitempty"`
+	PublishedAt             *time.Time        `json:"publishedAt,omitempty"`
+	CompletedAt             *time.Time        `json:"completedAt,omitempty"`
+	LastCompletionError     string            `json:"lastCompletionError,omitempty"`
+	CancelRequestedAt       *time.Time        `json:"cancelRequestedAt,omitempty"`
+	CancelledAt             *time.Time        `json:"cancelledAt,omitempty"`
+	PreviousPhysicalHash    string            `json:"previousPhysicalHash,omitempty"`
+	CleanupStatus           string            `json:"cleanupStatus,omitempty"`
+	CleanupError            string            `json:"cleanupError,omitempty"`
 }
 
 type CreateInput struct {
@@ -73,15 +116,34 @@ type CreateInput struct {
 type Repository interface {
 	CreateUpload(context.Context, Session) error
 	FindUpload(context.Context, string) (Session, bool, error)
-	UpdateUpload(context.Context, Session) error
-	DeleteUpload(context.Context, string) error
+	ListDueRecoveries(context.Context, time.Time, int) ([]Session, error)
+	UpdateUpload(context.Context, Session, int64) (Session, bool, error)
+	RequestCompletion(context.Context, string, time.Time) (Session, bool, error)
+	ClaimCompletion(context.Context, string, string, time.Time, time.Time) (Session, bool, error)
+	MarkObjectReady(context.Context, string, string, time.Time) (Session, error)
+	MarkPublished(context.Context, string, string, string, string, string, time.Time) (Session, error)
+	MarkComplete(context.Context, string, string, time.Time) (Session, error)
+	RetryCompletion(context.Context, string, string, string, time.Time, time.Time) (Session, error)
+	MarkCompletionConflict(context.Context, string, string, string, time.Time) (Session, error)
+	RequestCancel(context.Context, string, time.Time) (Session, bool, error)
+	MarkCancelled(context.Context, string, time.Time) (Session, error)
+	ExpireUpload(context.Context, string, int64, time.Time) (Session, bool, error)
+	MarkCleanupComplete(context.Context, string, time.Time) (Session, error)
+	RetryCleanup(context.Context, string, string, time.Time) (Session, error)
 }
 
 type File struct {
+	ID           int
 	PhysicalHash string
 	IsDirectory  bool
 	Size         int64
 	UpdatedAt    time.Time
+}
+
+type FileSnapshot struct {
+	ID           int
+	UpdatedAt    time.Time
+	PhysicalHash string
 }
 
 const (
@@ -112,7 +174,36 @@ type PreflightResult struct {
 type Publisher interface {
 	FindFile(context.Context, string) (File, bool, error)
 	EnsureDirectory(context.Context, string) error
-	ReplaceFile(context.Context, string, string, int64, *string, bool) (previous string, matched bool, err error)
+	ReplaceFile(context.Context, string, string, int64, *string, *FileSnapshot, bool) (PublishResult, bool, error)
+}
+
+// UploadGenerationReferenceChecker is an optional safety boundary used when a
+// completion loses the namespace CAS. A former winner may still be referenced
+// by Share or Trash even when the active mapping has moved again.
+type UploadGenerationReferenceChecker interface {
+	IsUploadGenerationReferenced(context.Context, string) (bool, error)
+}
+
+type PublishResult struct {
+	PreviousPhysicalHash string
+	CleanupPending       bool
+	CleanupError         string
+}
+
+type CleanupIntent struct {
+	UploadID              string
+	LogicPath             string
+	PublishedPhysicalHash string
+	PreviousPhysicalHash  string
+}
+
+type CleanupResult struct {
+	Pending bool
+	Error   string
+}
+
+type CleanupRetrier interface {
+	RetryUploadCleanup(context.Context, CleanupIntent) (CleanupResult, error)
 }
 
 type PreparedTarget struct {
@@ -141,12 +232,26 @@ type resumableStorage interface {
 }
 
 type Service struct {
-	repository Repository
-	files      Publisher
-	storage    Storage
-	now        func() time.Time
-	ttl        time.Duration
-	maxBytes   int64
+	repository      Repository
+	files           Publisher
+	storage         Storage
+	now             func() time.Time
+	ttl             time.Duration
+	maxBytes        int64
+	completionLease time.Duration
+}
+
+// RecoveryResult reports one bounded durable-recovery scan. Item failures are
+// classified instead of aborting the batch, so one poisoned upload cannot
+// prevent other due sessions from advancing.
+type RecoveryResult struct {
+	Scanned    int
+	Completed  int
+	Cleaned    int
+	InProgress int
+	Retryable  int
+	Terminal   int
+	Failed     int
 }
 
 type Option func(*Service)
@@ -168,7 +273,7 @@ func WithMaxBytes(maxBytes int64) Option {
 }
 
 func New(repository Repository, files Publisher, storage Storage, options ...Option) *Service {
-	service := &Service{repository: repository, files: files, storage: storage, now: time.Now, ttl: defaultTTL, maxBytes: DefaultMaxBytes}
+	service := &Service{repository: repository, files: files, storage: storage, now: time.Now, ttl: defaultTTL, maxBytes: DefaultMaxBytes, completionLease: defaultCompletionLease}
 	for _, option := range options {
 		option(service)
 	}
@@ -207,12 +312,13 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Session, error
 	}
 
 	now := s.now().UTC()
-	physicalHash, err := objectkey.FromLogicalPath(logicPath)
+	uploadID := uuid.NewString()
+	physicalHash, err := objectkey.ForUpload(logicPath, uploadID)
 	if err != nil {
 		return Session{}, fmt.Errorf("create object key: %w", err)
 	}
 	session := Session{
-		ID:            uuid.NewString(),
+		ID:            uploadID,
 		LogicPath:     logicPath,
 		PhysicalHash:  physicalHash,
 		Driver:        s.storage.Driver(),
@@ -229,6 +335,9 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Session, error
 	if found {
 		expected := existing.PhysicalHash
 		session.ExpectedPhysicalHash = &expected
+		session.ExpectedFileID = existing.ID
+		expectedUpdatedAt := existing.UpdatedAt
+		session.ExpectedFileUpdatedAt = &expectedUpdatedAt
 	}
 	prepared, err := s.storage.Prepare(ctx, session)
 	if err != nil {
@@ -286,7 +395,7 @@ func (s *Service) Preflight(ctx context.Context, inputs []PreflightInput) ([]Pre
 func targetVersionFor(logicPath string, file File, found bool) string {
 	state := "absent"
 	if found {
-		state = fmt.Sprintf("present\x00%t\x00%s\x00%d\x00%s", file.IsDirectory, file.PhysicalHash, file.Size, file.UpdatedAt.UTC().Format(time.RFC3339Nano))
+		state = fmt.Sprintf("present\x00%d\x00%t\x00%s\x00%d\x00%s", file.ID, file.IsDirectory, file.PhysicalHash, file.Size, file.UpdatedAt.UTC().Format(time.RFC3339Nano))
 	}
 	digest := sha256.Sum256([]byte(logicPath + "\x00" + state))
 	return base64.RawURLEncoding.EncodeToString(digest[:])
@@ -300,19 +409,25 @@ func (s *Service) Find(ctx context.Context, id string) (Session, error) {
 	if !found {
 		return Session{}, ErrNotFound
 	}
-	if session.Status != StatusComplete && session.Status != StatusExpired && s.now().After(session.ExpiresAt) {
-		session.Status = StatusExpired
+	if session.Status == StatusExpired && session.Error == "" {
 		session.Error = ErrExpired.Error()
-		session.UpdatedAt = s.now().UTC()
-		if err := s.repository.UpdateUpload(ctx, session); err != nil {
-			return Session{}, err
-		}
-		return session, nil
 	}
-	if storage, ok := s.storage.(resumableStorage); ok && session.Status != StatusUploaded && session.Status != StatusComplete && session.Status != StatusExpired {
+	now := s.now().UTC()
+	remoteCompleted := false
+	if storage, ok := s.storage.(resumableStorage); ok && uploadCanReconcileOffset(session.Status) {
 		uploadedSize, complete, err := storage.Offset(ctx, session)
 		if err != nil {
-			return Session{}, fmt.Errorf("query upload offset: %w", err)
+			if !(errors.Is(err, ErrResumableSessionGone) && uploadCanExpire(session.Status) && now.After(session.ExpiresAt)) {
+				return Session{}, fmt.Errorf("query upload offset: %w", err)
+			}
+			expired, updated, expireErr := s.repository.ExpireUpload(ctx, session.ID, session.Revision, now)
+			if expireErr != nil {
+				return Session{}, expireErr
+			}
+			if updated {
+				return expired, nil
+			}
+			return s.findUpload(ctx, id)
 		}
 		if uploadedSize != session.UploadedSize || complete || (uploadedSize == session.Size && session.Status != StatusUploaded) {
 			session.UploadedSize = uploadedSize
@@ -321,11 +436,34 @@ func (s *Service) Find(ctx context.Context, id string) (Session, error) {
 			} else if uploadedSize > 0 {
 				session.Status = StatusUploading
 			}
-			session.UpdatedAt = s.now().UTC()
-			if err := s.repository.UpdateUpload(ctx, session); err != nil {
-				return Session{}, err
+			expectedRevision := session.Revision
+			session.UpdatedAt = now
+			updated, matched, updateErr := s.repository.UpdateUpload(ctx, session, expectedRevision)
+			if updateErr != nil {
+				return Session{}, updateErr
 			}
+			if !matched {
+				return s.findUpload(ctx, id)
+			}
+			session = updated
+			remoteCompleted = complete
 		}
+	}
+	// A remote resumable upload may have committed before ExpiresAt while this
+	// process was down. Reconcile that durable fact before applying expiry so a
+	// completed object does not become permanently unpublishable on recovery.
+	if !remoteCompleted && uploadCanExpire(session.Status) && now.After(session.ExpiresAt) {
+		expired, updated, expireErr := s.repository.ExpireUpload(ctx, session.ID, session.Revision, now)
+		if expireErr != nil {
+			return Session{}, expireErr
+		}
+		if updated {
+			if expired.Error == "" {
+				expired.Error = ErrExpired.Error()
+			}
+			return expired, nil
+		}
+		return s.findUpload(ctx, id)
 	}
 	return session, nil
 }
@@ -356,12 +494,18 @@ func (s *Service) WriteChunk(ctx context.Context, id string, start, end, total i
 	if start != session.UploadedSize {
 		return session, fmt.Errorf("%w: got %d, want %d", ErrOffsetConflict, start, session.UploadedSize)
 	}
+	expectedRevision := session.Revision
 	session.Status = StatusUploading
 	session.Error = ""
 	session.UpdatedAt = s.now().UTC()
-	if err := s.repository.UpdateUpload(ctx, session); err != nil {
+	updated, matched, err := s.repository.UpdateUpload(ctx, session, expectedRevision)
+	if err != nil {
 		return Session{}, err
 	}
+	if !matched {
+		return Session{}, ErrInvalidSession
+	}
+	session = updated
 	storage, ok := s.storage.(resumableStorage)
 	if !ok {
 		return Session{}, errors.New("storage does not support resumable uploads")
@@ -395,8 +539,15 @@ func (s *Service) WriteChunk(ctx context.Context, id string, start, end, total i
 		session.Status = StatusUploading
 	}
 	session.UpdatedAt = s.now().UTC()
-	if err := s.repository.UpdateUpload(ctx, session); err != nil && writeErr == nil {
-		return Session{}, err
+	updated, matched, updateErr := s.repository.UpdateUpload(ctx, session, session.Revision)
+	if updateErr != nil && writeErr == nil {
+		return Session{}, updateErr
+	}
+	if !matched && writeErr == nil {
+		return Session{}, ErrInvalidSession
+	}
+	if matched {
+		session = updated
 	}
 	return session, writeErr
 }
@@ -407,44 +558,204 @@ func (s *Service) Complete(ctx context.Context, id string) (Session, error) {
 		return Session{}, err
 	}
 	if session.Status == StatusComplete {
-		return session, nil
+		return s.completeWithBestEffortCleanup(ctx, session), nil
+	}
+	if session.Status == StatusConflict || session.CompletionStatus == CompletionConflict {
+		return session, ErrConflict
+	}
+	if session.Status == StatusCancelled || session.Status == StatusCancelling {
+		return session, ErrInvalidSession
 	}
 	if session.Status == StatusExpired {
 		return session, ErrExpired
 	}
-	if session.Status != StatusUploaded || session.UploadedSize != session.Size {
+	if session.Status != StatusUploaded && session.Status != StatusFinalizing {
 		return Session{}, ErrInvalidSession
+	}
+	if session.UploadedSize != session.Size {
+		return Session{}, ErrInvalidSession
+	}
+	now := s.now().UTC()
+	session, _, err = s.repository.RequestCompletion(ctx, id, now)
+	if err != nil {
+		return Session{}, err
+	}
+	if terminal, terminalErr := completionTerminal(session); terminal {
+		return session, terminalErr
+	}
+	owner := uuid.NewString()
+	session, claimed, err := s.repository.ClaimCompletion(ctx, id, owner, now, now.Add(s.completionLease))
+	if err != nil {
+		return Session{}, err
+	}
+	if !claimed {
+		if session.ID == "" {
+			session, err = s.findUpload(ctx, id)
+			if err != nil {
+				return Session{}, err
+			}
+		}
+		if terminal, terminalErr := completionTerminal(session); terminal {
+			return session, terminalErr
+		}
+		return session, ErrCompletionInProgress
+	}
+	completed, err := s.runCompletion(ctx, session, owner)
+	if err != nil {
+		return completed, err
+	}
+	return s.completeWithBestEffortCleanup(ctx, completed), nil
+}
+
+func (s *Service) runCompletion(ctx context.Context, session Session, owner string) (Session, error) {
+	if session.CompletionStatus != CompletionPublished &&
+		!objectkey.IsUploadGeneration(session.LogicPath, session.ID, session.PhysicalHash) {
+		conflicted, err := s.repository.MarkCompletionConflict(
+			ctx, session.ID, owner, ErrLegacyObjectKey.Error(), s.now().UTC(),
+		)
+		if err != nil {
+			return Session{}, errors.Join(ErrLegacyObjectKey, err)
+		}
+		return conflicted, ErrLegacyObjectKey
 	}
 	storage, ok := s.storage.(resumableStorage)
 	if !ok {
-		return Session{}, errors.New("storage does not support resumable uploads")
+		return s.retryCompletion(ctx, session, owner, errors.New("storage does not support resumable uploads"))
 	}
-	size, err := storage.Finalize(ctx, session)
+	if session.CompletionStatus == "" || session.CompletionStatus == CompletionPending {
+		size, err := storage.Finalize(ctx, session)
+		if err != nil {
+			return s.retryCompletion(ctx, session, owner, fmt.Errorf("verify upload: %w", err))
+		}
+		if size != session.Size {
+			return s.retryCompletion(ctx, session, owner, fmt.Errorf("uploaded size %d does not match declared size %d", size, session.Size))
+		}
+		session, err = s.repository.MarkObjectReady(ctx, session.ID, owner, s.now().UTC())
+		if err != nil {
+			return Session{}, errors.Join(ErrCompletionRetryable, err)
+		}
+	}
+	if session.CompletionStatus == CompletionObjectReady {
+		if err := ensureParentDirectories(ctx, s.files, session.LogicPath); err != nil {
+			return s.retryCompletion(ctx, session, owner, fmt.Errorf("ensure upload directories: %w", err))
+		}
+		var expectedSnapshot *FileSnapshot
+		if session.ExpectedFileID > 0 && session.ExpectedFileUpdatedAt != nil {
+			expectedSnapshot = &FileSnapshot{
+				ID: session.ExpectedFileID, UpdatedAt: *session.ExpectedFileUpdatedAt,
+				PhysicalHash: valueOrEmpty(session.ExpectedPhysicalHash),
+			}
+		}
+		result, matched, err := s.files.ReplaceFile(
+			ctx, session.LogicPath, session.PhysicalHash, session.Size,
+			session.ExpectedPhysicalHash, expectedSnapshot, session.RequireAbsent,
+		)
+		if err != nil {
+			return s.retryCompletion(ctx, session, owner, err)
+		}
+		if !matched {
+			// This immutable generation never became visible. Remove it before
+			// recording the terminal conflict so a losing upload cannot strand a
+			// large object with no remaining recovery owner. Delete is idempotent;
+			// a transient failure leaves the saga retryable instead of terminal.
+			checker, ok := s.files.(UploadGenerationReferenceChecker)
+			if !ok {
+				return s.retryCompletion(ctx, session, owner, errors.New("upload generation reference checker is unavailable"))
+			}
+			referenced, referenceErr := checker.IsUploadGenerationReferenced(ctx, session.PhysicalHash)
+			if referenceErr != nil {
+				return s.retryCompletion(ctx, session, owner, fmt.Errorf("check conflicting upload generation references: %w", referenceErr))
+			}
+			if !referenced {
+				if deleteErr := s.storage.Delete(ctx, session.PhysicalHash); deleteErr != nil {
+					return s.retryCompletion(ctx, session, owner, fmt.Errorf("delete conflicting upload generation: %w", deleteErr))
+				}
+			}
+			conflicted, markErr := s.repository.MarkCompletionConflict(ctx, session.ID, owner, ErrConflict.Error(), s.now().UTC())
+			if markErr != nil {
+				return Session{}, errors.Join(ErrConflict, markErr)
+			}
+			return conflicted, ErrConflict
+		}
+		cleanupStatus := CleanupComplete
+		if result.CleanupPending {
+			cleanupStatus = CleanupPending
+		}
+		session, err = s.repository.MarkPublished(
+			ctx, session.ID, owner, result.PreviousPhysicalHash,
+			cleanupStatus, result.CleanupError, s.now().UTC(),
+		)
+		if err != nil {
+			return Session{}, errors.Join(ErrCompletionRetryable, err)
+		}
+	}
+	if session.CompletionStatus == CompletionPublished {
+		completed, err := s.repository.MarkComplete(ctx, session.ID, owner, s.now().UTC())
+		if err != nil {
+			return Session{}, errors.Join(ErrCompletionRetryable, err)
+		}
+		return completed, nil
+	}
+	if terminal, terminalErr := completionTerminal(session); terminal {
+		return session, terminalErr
+	}
+	return s.retryCompletion(ctx, session, owner, fmt.Errorf("unknown completion checkpoint %q", session.CompletionStatus))
+}
+
+func valueOrEmpty(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func (s *Service) retryCompletion(ctx context.Context, session Session, owner string, cause error) (Session, error) {
+	now := s.now().UTC()
+	retried, err := s.repository.RetryCompletion(ctx, session.ID, owner, cause.Error(), now, now)
 	if err != nil {
-		return Session{}, fmt.Errorf("verify upload: %w", err)
+		return Session{}, errors.Join(ErrCompletionRetryable, cause, err)
 	}
-	if size != session.Size {
-		return Session{}, fmt.Errorf("uploaded size %d does not match declared size %d", size, session.Size)
+	return retried, errors.Join(ErrCompletionRetryable, cause)
+}
+
+func completionTerminal(session Session) (bool, error) {
+	switch {
+	case session.Status == StatusComplete || session.CompletionStatus == CompletionComplete:
+		return true, nil
+	case session.Status == StatusConflict || session.CompletionStatus == CompletionConflict:
+		return true, ErrConflict
+	case session.Status == StatusCancelled:
+		return true, ErrInvalidSession
+	default:
+		return false, nil
 	}
-	if err := ensureParentDirectories(ctx, s.files, session.LogicPath); err != nil {
-		return Session{}, fmt.Errorf("ensure upload directories: %w", err)
+}
+
+func uploadCanExpire(status string) bool {
+	switch status {
+	case StatusPending, StatusUploading, StatusFailed:
+		return true
+	default:
+		return false
 	}
-	previous, matched, err := s.files.ReplaceFile(ctx, session.LogicPath, session.PhysicalHash, size, session.ExpectedPhysicalHash, session.RequireAbsent)
+}
+
+func uploadCanReconcileOffset(status string) bool {
+	switch status {
+	case StatusPending, StatusUploading, StatusFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Service) findUpload(ctx context.Context, id string) (Session, error) {
+	session, found, err := s.repository.FindUpload(ctx, id)
 	if err != nil {
 		return Session{}, err
 	}
-	if !matched {
-		return Session{}, ErrConflict
-	}
-	session.Status = StatusComplete
-	session.UploadedSize = size
-	session.Error = ""
-	session.UpdatedAt = s.now().UTC()
-	if err := s.repository.UpdateUpload(ctx, session); err != nil {
-		return Session{}, err
-	}
-	if previous != "" && previous != session.PhysicalHash {
-		_ = s.storage.Delete(ctx, previous)
+	if !found {
+		return Session{}, ErrNotFound
 	}
 	return session, nil
 }
@@ -471,10 +782,83 @@ func (s *Service) Cancel(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if session.Status != StatusComplete {
-		if err := s.storage.Cancel(ctx, session); err != nil {
+	if session.Status == StatusComplete || session.Status == StatusCancelled || session.Status == StatusConflict {
+		return nil
+	}
+	if session.Driver == "gcs" && strings.TrimSpace(session.UploadURL) == "" {
+		return ErrCancellationUnavailable
+	}
+	requested, needed, err := s.repository.RequestCancel(ctx, id, s.now().UTC())
+	if err != nil {
+		return err
+	}
+	if !needed {
+		if requested.Status == StatusFinalizing {
+			return ErrCancellationUnavailable
+		}
+		return nil
+	}
+	if err := s.storage.Cancel(ctx, requested); err != nil {
+		return err
+	}
+	if requested.UploadedSize == requested.Size {
+		// The immutable session object may already exist for a remotely
+		// completed direct upload. It is still unpublished because completion
+		// and cancellation are mutually exclusive, so deleting this exact key
+		// is safe and keeps Cancel itself retryable on storage failure.
+		if err := s.storage.Delete(ctx, requested.PhysicalHash); err != nil {
 			return err
 		}
 	}
-	return s.repository.DeleteUpload(ctx, id)
+	_, err = s.repository.MarkCancelled(ctx, id, s.now().UTC())
+	return err
+}
+
+func (s *Service) completeWithBestEffortCleanup(ctx context.Context, session Session) Session {
+	if session.Status != StatusComplete || session.CleanupStatus != CleanupPending {
+		return session
+	}
+	updated, _ := s.RetryCleanup(ctx, session.ID)
+	if updated.ID != "" {
+		return updated
+	}
+	return session
+}
+
+// RetryCleanup retries post-publication cleanup without changing the business
+// completion result. Cleanup is deliberately a separate terminal concern: a
+// previous-object or thumbnail deletion failure must never roll back the
+// visible file mapping.
+func (s *Service) RetryCleanup(ctx context.Context, id string) (Session, error) {
+	session, err := s.findUpload(ctx, id)
+	if err != nil {
+		return Session{}, err
+	}
+	if session.Status != StatusComplete {
+		return session, ErrInvalidSession
+	}
+	if session.CleanupStatus != CleanupPending {
+		return session, nil
+	}
+	retrier, ok := s.files.(CleanupRetrier)
+	if !ok {
+		return session, ErrCleanupUnavailable
+	}
+	result, retryErr := retrier.RetryUploadCleanup(ctx, CleanupIntent{
+		UploadID: session.ID, LogicPath: session.LogicPath,
+		PublishedPhysicalHash: session.PhysicalHash,
+		PreviousPhysicalHash:  session.PreviousPhysicalHash,
+	})
+	if retryErr != nil || result.Pending {
+		message := result.Error
+		if retryErr != nil {
+			message = retryErr.Error()
+		}
+		if strings.TrimSpace(message) == "" {
+			message = ErrCleanupRetryable.Error()
+		}
+		updated, persistErr := s.repository.RetryCleanup(ctx, id, message, s.now().UTC())
+		return updated, errors.Join(ErrCleanupRetryable, retryErr, persistErr)
+	}
+	return s.repository.MarkCleanupComplete(ctx, id, s.now().UTC())
 }

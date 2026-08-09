@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -63,26 +64,16 @@ func (s *PostgresStore) ReplaceThumbnail(ctx context.Context, record ThumbnailRe
 			return nil, err
 		}
 	}
-	orphans := make([]ThumbnailRecord, 0)
 	if len(oldIDs) > 0 {
-		rows, err = tx.Query(ctx, `DELETE FROM "Thumbnail" t WHERE t.id=ANY($1) AND NOT EXISTS (SELECT 1 FROM "FileThumbnail" ft WHERE ft."thumbnailId"=t.id) RETURNING t.id,t."physicalHash",t."contentType",t.size,t.width,t.height,t."createdAt"`, oldIDs)
-		if err != nil {
+		deleteAfter := time.Now().UTC().Add(7 * 24 * time.Hour)
+		if _, err = tx.Exec(ctx, `UPDATE "Thumbnail" t SET "deleteAfter"=$2 WHERE t.id=ANY($1) AND NOT EXISTS (SELECT 1 FROM "FileThumbnail" ft WHERE ft."thumbnailId"=t.id)`, oldIDs, deleteAfter); err != nil {
 			return nil, err
 		}
-		for rows.Next() {
-			var item ThumbnailRecord
-			if err = rows.Scan(&item.ID, &item.PhysicalHash, &item.ContentType, &item.Size, &item.Width, &item.Height, &item.CreatedAt); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			orphans = append(orphans, item)
-		}
-		rows.Close()
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	return orphans, nil
+	return nil, nil
 }
 
 func (s *PostgresStore) FindThumbnailsForFiles(ctx context.Context, fileIDs []int) (map[int]ThumbnailRecord, error) {
@@ -91,7 +82,7 @@ func (s *PostgresStore) FindThumbnailsForFiles(ctx context.Context, fileIDs []in
 	if len(fileIDs) == 0 {
 		return result, nil
 	}
-	rows, err := s.pool.Query(ctx, `SELECT ft."fileId",t.id,t."physicalHash",t."contentType",t.size,t.width,t.height,t."createdAt" FROM "FileThumbnail" ft JOIN "Thumbnail" t ON t.id=ft."thumbnailId" WHERE ft."fileId"=ANY($1)`, fileIDs)
+	rows, err := s.pool.Query(ctx, `SELECT ft."fileId",t.id,t."physicalHash",t."contentType",t.size,t.width,t.height,t."createdAt",t."deleteAfter" FROM "FileThumbnail" ft JOIN "Thumbnail" t ON t.id=ft."thumbnailId" WHERE ft."fileId"=ANY($1)`, fileIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -99,7 +90,7 @@ func (s *PostgresStore) FindThumbnailsForFiles(ctx context.Context, fileIDs []in
 	for rows.Next() {
 		var fileID int
 		var item ThumbnailRecord
-		if err = rows.Scan(&fileID, &item.ID, &item.PhysicalHash, &item.ContentType, &item.Size, &item.Width, &item.Height, &item.CreatedAt); err != nil {
+		if err = rows.Scan(&fileID, &item.ID, &item.PhysicalHash, &item.ContentType, &item.Size, &item.Width, &item.Height, &item.CreatedAt, &item.DeleteAfter); err != nil {
 			return nil, err
 		}
 		result[fileID] = item
@@ -109,7 +100,7 @@ func (s *PostgresStore) FindThumbnailsForFiles(ctx context.Context, fileIDs []in
 
 func (s *PostgresStore) FindThumbnail(ctx context.Context, id string) (ThumbnailRecord, bool, error) {
 	var item ThumbnailRecord
-	err := s.pool.QueryRow(ctx, `SELECT id,"physicalHash","contentType",size,width,height,"createdAt" FROM "Thumbnail" WHERE id=$1`, id).Scan(&item.ID, &item.PhysicalHash, &item.ContentType, &item.Size, &item.Width, &item.Height, &item.CreatedAt)
+	err := s.pool.QueryRow(ctx, `SELECT id,"physicalHash","contentType",size,width,height,"createdAt","deleteAfter" FROM "Thumbnail" WHERE id=$1`, id).Scan(&item.ID, &item.PhysicalHash, &item.ContentType, &item.Size, &item.Width, &item.Height, &item.CreatedAt, &item.DeleteAfter)
 	if err == nil {
 		return item, true, nil
 	}
@@ -143,26 +134,75 @@ func (s *PostgresStore) DetachThumbnails(ctx context.Context, fileIDs []int) ([]
 		ids = append(ids, id)
 	}
 	rows.Close()
-	orphans := make([]ThumbnailRecord, 0)
 	if len(ids) > 0 {
-		rows, err = tx.Query(ctx, `DELETE FROM "Thumbnail" t WHERE t.id=ANY($1) AND NOT EXISTS (SELECT 1 FROM "FileThumbnail" ft WHERE ft."thumbnailId"=t.id) RETURNING t.id,t."physicalHash",t."contentType",t.size,t.width,t.height,t."createdAt"`, ids)
-		if err != nil {
+		deleteAfter := time.Now().UTC().Add(7 * 24 * time.Hour)
+		if _, err = tx.Exec(ctx, `UPDATE "Thumbnail" t SET "deleteAfter"=$2 WHERE t.id=ANY($1) AND NOT EXISTS (SELECT 1 FROM "FileThumbnail" ft WHERE ft."thumbnailId"=t.id)`, ids, deleteAfter); err != nil {
 			return nil, err
 		}
-		for rows.Next() {
-			var item ThumbnailRecord
-			if err = rows.Scan(&item.ID, &item.PhysicalHash, &item.ContentType, &item.Size, &item.Width, &item.Height, &item.CreatedAt); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			orphans = append(orphans, item)
-		}
-		rows.Close()
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	return orphans, nil
+	return nil, nil
+}
+
+// CleanupExpiredThumbnails deletes the physical object before its durable
+// metadata evidence. A failed object delete or transaction commit therefore
+// leaves a retryable row for the next bounded GC pass.
+func (s *PostgresStore) CleanupExpiredThumbnails(ctx context.Context, now time.Time, deleteObject func(context.Context, ThumbnailRecord) error) (int, error) {
+	if deleteObject == nil {
+		return 0, fmt.Errorf("thumbnail object deleter is required")
+	}
+	rows, err := s.pool.Query(ctx, `SELECT t.id FROM "Thumbnail" t WHERE t."deleteAfter" <= $1 AND NOT EXISTS (SELECT 1 FROM "FileThumbnail" ft WHERE ft."thumbnailId"=t.id) ORDER BY t."deleteAfter",t.id LIMIT 100`, now)
+	if err != nil {
+		return 0, err
+	}
+	ids := make([]string, 0, 100)
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		return 0, err
+	}
+
+	deleted := 0
+	for _, id := range ids {
+		tx, beginErr := s.pool.Begin(ctx)
+		if beginErr != nil {
+			return deleted, beginErr
+		}
+		var item ThumbnailRecord
+		scanErr := tx.QueryRow(ctx, `SELECT t.id,t."physicalHash",t."contentType",t.size,t.width,t.height,t."createdAt",t."deleteAfter" FROM "Thumbnail" t WHERE t.id=$1 AND t."deleteAfter" <= $2 AND NOT EXISTS (SELECT 1 FROM "FileThumbnail" ft WHERE ft."thumbnailId"=t.id) FOR UPDATE`, id, now).Scan(
+			&item.ID, &item.PhysicalHash, &item.ContentType, &item.Size, &item.Width, &item.Height, &item.CreatedAt, &item.DeleteAfter,
+		)
+		if errors.Is(scanErr, pgx.ErrNoRows) {
+			_ = tx.Rollback(ctx)
+			continue
+		}
+		if scanErr != nil {
+			_ = tx.Rollback(ctx)
+			return deleted, scanErr
+		}
+		if deleteErr := deleteObject(ctx, item); deleteErr != nil {
+			_ = tx.Rollback(ctx)
+			return deleted, deleteErr
+		}
+		if _, deleteErr := tx.Exec(ctx, `DELETE FROM "Thumbnail" WHERE id=$1`, id); deleteErr != nil {
+			_ = tx.Rollback(ctx)
+			return deleted, deleteErr
+		}
+		if commitErr := tx.Commit(ctx); commitErr != nil {
+			return deleted, commitErr
+		}
+		deleted++
+	}
+	return deleted, nil
 }
 
 func (s *TreeStore) thumbnailRecords(ctx context.Context) ([]ThumbnailRecord, error) {

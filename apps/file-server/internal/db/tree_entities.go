@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -125,6 +126,30 @@ func (s *TreeStore) CreateShare(ctx context.Context, r ShareRecord) (ShareRecord
 		return ShareRecord{}, e
 	}
 	return r, nil
+}
+
+// CreateShareFromSnapshot publishes the reference first, then revalidates the
+// active mapping. If publication won concurrently, cleanup either observes the
+// temporary reference or the stale draft removes itself and returns conflict;
+// no successful durable Share can point at the replaced generation.
+func (s *TreeStore) CreateShareFromSnapshot(ctx context.Context, r ShareRecord) (ShareRecord, error) {
+	created, err := s.CreateShare(ctx, r)
+	if err != nil {
+		return ShareRecord{}, err
+	}
+	current, found, findErr := s.Find(ctx, r.LogicPath)
+	if findErr == nil && found && !current.IsDirectory && current.PhysicalHash == r.PhysicalHash {
+		return created, nil
+	}
+	var stored ShareRecord
+	generation, exists, deleteErr := s.getEntityGeneration(ctx, "shares", r.ID, &stored)
+	if deleteErr == nil && exists {
+		deleteErr = s.objects.Delete(ctx, s.entityKey("shares", r.ID), &generation)
+	}
+	if findErr != nil {
+		return ShareRecord{}, errors.Join(ErrMetadataConflict, findErr, deleteErr)
+	}
+	return ShareRecord{}, errors.Join(ErrMetadataConflict, deleteErr)
 }
 func (s *TreeStore) FindShare(ctx context.Context, id string) (ShareRecord, bool, error) {
 	var r ShareRecord
@@ -456,6 +481,22 @@ func (s *TreeStore) ReleaseShareJob(ctx context.Context, id, owner string) error
 }
 
 func (s *TreeStore) CreateUpload(ctx context.Context, r UploadRecord) (UploadRecord, error) {
+	now := time.Now().UTC()
+	if r.CreatedAt.IsZero() {
+		r.CreatedAt = now
+	}
+	if r.UpdatedAt.IsZero() {
+		r.UpdatedAt = now
+	}
+	if r.Revision <= 0 {
+		r.Revision = 1
+	}
+	if strings.TrimSpace(r.CompletionStatus) == "" {
+		r.CompletionStatus = "none"
+	}
+	if strings.TrimSpace(r.CleanupStatus) == "" {
+		r.CleanupStatus = "none"
+	}
 	if e := s.putEntity(ctx, "uploads", r.ID, r, true); e != nil {
 		return UploadRecord{}, e
 	}
@@ -466,18 +507,372 @@ func (s *TreeStore) FindUpload(ctx context.Context, id string) (UploadRecord, bo
 	ok, e := s.getEntity(ctx, "uploads", id, &r)
 	return r, ok, e
 }
+
+func (s *TreeStore) ListNonterminalUploads(ctx context.Context, limit int) ([]UploadRecord, error) {
+	if limit <= 0 {
+		return []UploadRecord{}, nil
+	}
+	values, err := s.listEntities(ctx, "uploads", func() any { return &UploadRecord{} })
+	if err != nil {
+		return nil, err
+	}
+	records := make([]UploadRecord, 0, min(limit, len(values)))
+	for _, value := range values {
+		record := *(value.(*UploadRecord))
+		switch record.Status {
+		case "pending", "uploading", "uploaded", "finalizing", "failed":
+			records = append(records, record)
+		}
+	}
+	sort.Slice(records, func(i, j int) bool {
+		if records[i].CreatedAt.Equal(records[j].CreatedAt) {
+			return records[i].ID < records[j].ID
+		}
+		return records[i].CreatedAt.Before(records[j].CreatedAt)
+	})
+	if len(records) > limit {
+		records = records[:limit]
+	}
+	return records, nil
+}
+
+func (s *TreeStore) ListDueUploadRecoveries(ctx context.Context, now time.Time, limit int) ([]UploadRecord, error) {
+	if limit <= 0 {
+		return []UploadRecord{}, nil
+	}
+	values, err := s.listEntities(ctx, "uploads", func() any { return &UploadRecord{} })
+	if err != nil {
+		return nil, err
+	}
+	records := make([]UploadRecord, 0, min(limit, len(values)))
+	for _, value := range values {
+		record := *(value.(*UploadRecord))
+		completionDue := (record.Status == "uploaded" || record.Status == "finalizing") &&
+			(record.CompletionStatus == "pending" || record.CompletionStatus == "object_ready" || record.CompletionStatus == "published") &&
+			(record.CompletionNextAttemptAt == nil || !record.CompletionNextAttemptAt.After(now)) &&
+			(record.CompletionLeaseUntil == nil || !record.CompletionLeaseUntil.After(now))
+		cleanupDue := record.Status == "complete" && record.CompletionStatus == "complete" && record.CleanupStatus == "pending"
+		if completionDue || cleanupDue {
+			records = append(records, record)
+		}
+	}
+	sort.Slice(records, func(i, j int) bool {
+		if records[i].UpdatedAt.Equal(records[j].UpdatedAt) {
+			return records[i].ID < records[j].ID
+		}
+		return records[i].UpdatedAt.Before(records[j].UpdatedAt)
+	})
+	if len(records) > limit {
+		records = records[:limit]
+	}
+	return records, nil
+}
 func (s *TreeStore) UpdateUpload(ctx context.Context, r UploadRecord) (UploadRecord, error) {
-	var current UploadRecord
-	g, ok, e := s.getEntityGeneration(ctx, "uploads", r.ID, &current)
-	if e != nil {
-		return r, e
+	updated, ok, err := s.UpdateUploadConditional(ctx, r, r.Revision)
+	if err != nil {
+		return UploadRecord{}, err
 	}
 	if !ok {
-		return r, ErrNotFound
+		return UploadRecord{}, ErrMetadataConflict
 	}
-	r.UpdatedAt = time.Now().UTC()
-	e = s.putEntityCAS(ctx, "uploads", r.ID, r, g)
-	return r, e
+	return updated, nil
+}
+
+func (s *TreeStore) UpdateUploadConditional(ctx context.Context, next UploadRecord, expectedRevision int64) (UploadRecord, bool, error) {
+	return s.updateUploadIf(ctx, next.ID, func(current *UploadRecord) bool {
+		if current.Revision != expectedRevision || normalizeCompletionStatus(current.CompletionStatus) != "none" ||
+			isUploadTerminalOrTransitioning(current.Status) {
+			return false
+		}
+		createdAt := current.CreatedAt
+		*current = next
+		current.CreatedAt = createdAt
+		return true
+	})
+}
+
+func (s *TreeStore) updateUploadIf(ctx context.Context, id string, fn func(*UploadRecord) bool) (UploadRecord, bool, error) {
+	for attempt := 0; attempt < treeCASAttempts; attempt++ {
+		var record UploadRecord
+		generation, ok, err := s.getEntityGeneration(ctx, "uploads", id, &record)
+		if err != nil {
+			return UploadRecord{}, false, err
+		}
+		if !ok {
+			return UploadRecord{}, false, ErrNotFound
+		}
+		if record.Revision <= 0 {
+			record.Revision = 1
+		}
+		record.CompletionStatus = normalizeCompletionStatus(record.CompletionStatus)
+		if !fn(&record) {
+			return record, false, nil
+		}
+		record.Revision++
+		record.UpdatedAt = time.Now().UTC()
+		if err = s.putEntityCAS(ctx, "uploads", id, record, generation); err == nil {
+			return record, true, nil
+		} else if !errorsIsConflict(err) {
+			return UploadRecord{}, false, err
+		}
+	}
+	return UploadRecord{}, false, ErrMetadataConflict
+}
+
+func normalizeCompletionStatus(status string) string {
+	if strings.TrimSpace(status) == "" {
+		return "none"
+	}
+	return status
+}
+
+func isUploadTerminalOrTransitioning(status string) bool {
+	switch status {
+	case "complete", "conflict", "cancelling", "cancelled", "expired", "finalizing":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *TreeStore) RequestUploadCompletion(ctx context.Context, id string, now time.Time) (UploadRecord, bool, error) {
+	record, changed, err := s.updateUploadIf(ctx, id, func(record *UploadRecord) bool {
+		if record.Status != "uploaded" || (record.CompletionStatus != "none" && record.CompletionStatus != "retry") {
+			return false
+		}
+		record.CompletionStatus = "pending"
+		record.CompletionNextAttemptAt = &now
+		record.LastCompletionError = ""
+		return true
+	})
+	if err != nil {
+		return UploadRecord{}, false, err
+	}
+	if changed {
+		return record, true, nil
+	}
+	needed := record.Status != "complete" && record.Status != "cancelled" && record.CompletionStatus != "conflict"
+	return record, needed, nil
+}
+
+func (s *TreeStore) ClaimUploadCompletion(ctx context.Context, id, owner string, now, until time.Time) (UploadRecord, bool, error) {
+	if strings.TrimSpace(owner) == "" || !until.After(now) {
+		return UploadRecord{}, false, fmt.Errorf("valid upload completion owner and lease are required")
+	}
+	return s.updateUploadIf(ctx, id, func(record *UploadRecord) bool {
+		if record.Status != "uploaded" && record.Status != "finalizing" {
+			return false
+		}
+		switch record.CompletionStatus {
+		case "pending", "object_ready", "published":
+		default:
+			return false
+		}
+		if record.CompletionNextAttemptAt != nil && record.CompletionNextAttemptAt.After(now) {
+			return false
+		}
+		if record.CompletionLeaseUntil != nil && record.CompletionLeaseUntil.After(now) &&
+			(record.CompletionOwner == nil || *record.CompletionOwner != owner) {
+			return false
+		}
+		record.Status = "finalizing"
+		record.CompletionOwner = &owner
+		record.CompletionLeaseUntil = &until
+		record.CompletionAttempts++
+		return true
+	})
+}
+
+func (s *TreeStore) MarkUploadObjectReady(ctx context.Context, id, owner string, now time.Time) (UploadRecord, error) {
+	return s.expectedUploadMutation(s.updateUploadIf(ctx, id, func(record *UploadRecord) bool {
+		if !uploadOwnedAtCheckpoint(record, owner, "pending", "object_ready") {
+			return false
+		}
+		record.CompletionStatus = "object_ready"
+		if record.FinalizedAt == nil {
+			record.FinalizedAt = &now
+		}
+		return true
+	}))
+}
+
+func (s *TreeStore) MarkUploadPublished(ctx context.Context, id, owner, previousPhysicalHash, cleanupStatus, cleanupError string, now time.Time) (UploadRecord, error) {
+	return s.expectedUploadMutation(s.updateUploadIf(ctx, id, func(record *UploadRecord) bool {
+		if !uploadOwnedAtCheckpoint(record, owner, "object_ready", "published") {
+			return false
+		}
+		record.CompletionStatus = "published"
+		record.PreviousPhysicalHash = previousPhysicalHash
+		record.CleanupStatus = cleanupStatus
+		record.CleanupError = cleanupError
+		if record.PublishedAt == nil {
+			record.PublishedAt = &now
+		}
+		return true
+	}))
+}
+
+func (s *TreeStore) MarkUploadComplete(ctx context.Context, id, owner string, now time.Time) (UploadRecord, error) {
+	return s.expectedUploadMutation(s.updateUploadIf(ctx, id, func(record *UploadRecord) bool {
+		if !uploadOwnedAtCheckpoint(record, owner, "published") {
+			return false
+		}
+		record.Status = "complete"
+		record.Error = ""
+		record.CompletionStatus = "complete"
+		record.CompletionOwner = nil
+		record.CompletionLeaseUntil = nil
+		record.CompletionNextAttemptAt = nil
+		record.LastCompletionError = ""
+		if record.CompletedAt == nil {
+			record.CompletedAt = &now
+		}
+		if record.CleanupStatus == "none" || record.CleanupStatus == "" {
+			record.CleanupStatus = "pending"
+		}
+		return true
+	}))
+}
+
+func (s *TreeStore) MarkUploadCleanupComplete(ctx context.Context, id string, now time.Time) (UploadRecord, error) {
+	return s.expectedUploadMutation(s.updateUploadIf(ctx, id, func(record *UploadRecord) bool {
+		if record.Status != "complete" || record.CompletionStatus != "complete" || record.CleanupStatus != "pending" {
+			return false
+		}
+		record.CleanupStatus = "complete"
+		record.CleanupError = ""
+		_ = now
+		return true
+	}))
+}
+
+func (s *TreeStore) RetryUploadCleanup(ctx context.Context, id, message string, now time.Time) (UploadRecord, error) {
+	return s.expectedUploadMutation(s.updateUploadIf(ctx, id, func(record *UploadRecord) bool {
+		if record.Status != "complete" || record.CompletionStatus != "complete" || record.CleanupStatus != "pending" {
+			return false
+		}
+		record.CleanupError = message
+		_ = now
+		return true
+	}))
+}
+
+func (s *TreeStore) RetryUploadCompletion(ctx context.Context, id, owner, message string, nextAttemptAt, now time.Time) (UploadRecord, error) {
+	return s.expectedUploadMutation(s.updateUploadIf(ctx, id, func(record *UploadRecord) bool {
+		if record.Status != "finalizing" || record.CompletionOwner == nil || *record.CompletionOwner != owner {
+			return false
+		}
+		record.Status = "uploaded"
+		record.CompletionStatus = "pending"
+		record.CompletionOwner = nil
+		record.CompletionLeaseUntil = nil
+		record.CompletionNextAttemptAt = &nextAttemptAt
+		record.LastCompletionError = message
+		record.Error = message
+		_ = now
+		return true
+	}))
+}
+
+func (s *TreeStore) MarkUploadCompletionConflict(ctx context.Context, id, owner, message string, now time.Time) (UploadRecord, error) {
+	return s.expectedUploadMutation(s.updateUploadIf(ctx, id, func(record *UploadRecord) bool {
+		if record.Status != "finalizing" || record.CompletionOwner == nil || *record.CompletionOwner != owner || record.CompletionStatus == "complete" {
+			return false
+		}
+		record.Status = "conflict"
+		record.CompletionStatus = "conflict"
+		record.CompletionOwner = nil
+		record.CompletionLeaseUntil = nil
+		record.CompletionNextAttemptAt = nil
+		record.LastCompletionError = message
+		record.Error = message
+		_ = now
+		return true
+	}))
+}
+
+func uploadOwnedAtCheckpoint(record *UploadRecord, owner string, checkpoints ...string) bool {
+	if record.Status != "finalizing" || record.CompletionOwner == nil || *record.CompletionOwner != owner {
+		return false
+	}
+	for _, checkpoint := range checkpoints {
+		if record.CompletionStatus == checkpoint {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *TreeStore) expectedUploadMutation(record UploadRecord, changed bool, err error) (UploadRecord, error) {
+	if err != nil {
+		return UploadRecord{}, err
+	}
+	if !changed {
+		return UploadRecord{}, ErrMetadataConflict
+	}
+	return record, nil
+}
+
+func (s *TreeStore) RequestUploadCancel(ctx context.Context, id string, now time.Time) (UploadRecord, bool, error) {
+	record, changed, err := s.updateUploadIf(ctx, id, func(record *UploadRecord) bool {
+		switch record.Status {
+		case "pending", "uploading", "uploaded", "failed", "expired":
+		default:
+			return false
+		}
+		if record.CompletionStatus != "none" && record.CompletionStatus != "pending" {
+			return false
+		}
+		if record.CompletionOwner != nil {
+			return false
+		}
+		record.Status = "cancelling"
+		record.CompletionStatus = "cancel_requested"
+		if record.CancelRequestedAt == nil {
+			record.CancelRequestedAt = &now
+		}
+		return true
+	})
+	if err != nil {
+		return UploadRecord{}, false, err
+	}
+	if changed {
+		return record, true, nil
+	}
+	return record, record.Status == "cancelling", nil
+}
+
+func (s *TreeStore) MarkUploadCancelled(ctx context.Context, id string, now time.Time) (UploadRecord, error) {
+	return s.expectedUploadMutation(s.updateUploadIf(ctx, id, func(record *UploadRecord) bool {
+		if record.Status != "cancelling" || record.CompletionStatus != "cancel_requested" {
+			return false
+		}
+		record.Status = "cancelled"
+		record.CompletionStatus = "cancelled"
+		record.Error = ""
+		record.CompletionOwner = nil
+		record.CompletionLeaseUntil = nil
+		if record.CancelledAt == nil {
+			record.CancelledAt = &now
+		}
+		return true
+	}))
+}
+
+func (s *TreeStore) ExpireUpload(ctx context.Context, id string, expectedRevision int64, now time.Time) (UploadRecord, bool, error) {
+	return s.updateUploadIf(ctx, id, func(record *UploadRecord) bool {
+		if record.Revision != expectedRevision || record.ExpiresAt.After(now) || record.CompletionStatus != "none" {
+			return false
+		}
+		switch record.Status {
+		case "pending", "uploading", "uploaded", "failed":
+			record.Status = "expired"
+			record.Error = "upload session expired"
+			return true
+		default:
+			return false
+		}
+	})
 }
 func (s *TreeStore) DeleteUpload(ctx context.Context, id string) (bool, error) {
 	var r UploadRecord

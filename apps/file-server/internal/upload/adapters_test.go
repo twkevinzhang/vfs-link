@@ -67,7 +67,7 @@ func TestGCSPrepareNewObjectUsesDoesNotExistPrecondition(t *testing.T) {
 	}
 }
 
-func TestGCSPrepareOverwriteSnapshotsCurrentGeneration(t *testing.T) {
+func TestGCSPrepareOverwriteUsesImmutableDoesNotExistPrecondition(t *testing.T) {
 	objects := &directStoreStub{statObject: blob.ObjectInfo{Name: "docs/report.txt", Size: 4, Generation: 712}}
 	storage := gcsDirectStorage{objects: objects}
 	key := "docs/report.txt"
@@ -76,7 +76,7 @@ func TestGCSPrepareOverwriteSnapshotsCurrentGeneration(t *testing.T) {
 	if _, err := storage.Prepare(context.Background(), session); err != nil {
 		t.Fatal(err)
 	}
-	if objects.startedMatch != 712 || objects.statCalls != 1 {
+	if objects.startedMatch != 0 || objects.statCalls != 0 {
 		t.Fatalf("generation match = %d, stat calls = %d", objects.startedMatch, objects.statCalls)
 	}
 }
@@ -128,14 +128,18 @@ func TestGCSServiceCancelUsesPersistedSessionURL(t *testing.T) {
 	if err := service.Cancel(ctx, session.ID); err != nil {
 		t.Fatal(err)
 	}
+	if err := service.Cancel(ctx, session.ID); err != nil {
+		t.Fatalf("replayed Cancel(): %v", err)
+	}
 	if objects.cancelledURL != "https://storage.example/session/opaque" {
 		t.Fatalf("cancelled URL = %q", objects.cancelledURL)
 	}
 	if objects.deletedObject != "" {
 		t.Fatalf("final object was deleted: %q", objects.deletedObject)
 	}
-	if _, err := service.Find(ctx, session.ID); err != ErrNotFound {
-		t.Fatalf("Find() after cancel error = %v, want ErrNotFound", err)
+	status, err := service.Find(ctx, session.ID)
+	if err != nil || status.Status != StatusCancelled || status.CancelledAt == nil {
+		t.Fatalf("Find() after cancel = %#v, %v", status, err)
 	}
 }
 
@@ -163,5 +167,33 @@ func TestGCSServiceStatusRefreshesRemoteCommittedOffset(t *testing.T) {
 	status, err = service.Find(ctx, session.ID)
 	if err != nil || status.UploadedSize != 4 || status.Status != StatusUploaded {
 		t.Fatalf("complete status = %#v, %v", status, err)
+	}
+}
+
+func TestGCSCancelDeletesCommittedUnpublishedUploadGeneration(t *testing.T) {
+	ctx := context.Background()
+	metadata, err := db.NewTreeLocal(filepath.Join(t.TempDir(), "metadata"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(metadata.Close)
+	if err := metadata.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	objects := &directStoreStub{uploadedSize: 4, uploadComplete: true}
+	service := NewWithBlob(metadata, objects)
+	session, err := service.Create(ctx, CreateInput{LogicPath: "docs/cancelled.txt", Size: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Cancel(ctx, session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if objects.deletedObject != session.PhysicalHash {
+		t.Fatalf("deleted object = %q, want %q", objects.deletedObject, session.PhysicalHash)
+	}
+	status, err := service.Find(ctx, session.ID)
+	if err != nil || status.Status != StatusCancelled {
+		t.Fatalf("cancelled status = %#v, %v", status, err)
 	}
 }

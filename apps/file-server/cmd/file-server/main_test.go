@@ -10,7 +10,53 @@ import (
 	"time"
 
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/config"
+	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/db"
+	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/objectkey"
 )
+
+func TestEnsureNoLegacyUploadSessionsBlocksMutableKeys(t *testing.T) {
+	ctx := context.Background()
+	store, err := db.NewTreeLocal(filepath.Join(t.TempDir(), "metadata"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	if err = store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.CreateUpload(ctx, db.UploadRecord{
+		ID: "legacy", LogicPath: "report.txt", PhysicalHash: "report.txt", Status: "uploading", ExpiresAt: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = ensureNoLegacyUploadSessions(ctx, store); err == nil {
+		t.Fatal("legacy rollout preflight error = nil")
+	}
+}
+
+func TestEnsureNoLegacyUploadSessionsAcceptsImmutableKeys(t *testing.T) {
+	ctx := context.Background()
+	store, err := db.NewTreeLocal(filepath.Join(t.TempDir(), "metadata"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
+	if err = store.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	key, err := objectkey.ForUpload("report.txt", "new-upload")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.CreateUpload(ctx, db.UploadRecord{
+		ID: "new-upload", LogicPath: "report.txt", PhysicalHash: key, Status: "uploaded", ExpiresAt: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = ensureNoLegacyUploadSessions(ctx, store); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestNewMetadataStoreJSONLocal(t *testing.T) {
 	root := t.TempDir()

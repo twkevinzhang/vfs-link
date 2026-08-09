@@ -35,6 +35,19 @@ type FileRecord struct {
 	FolderSummary *FolderSummary `json:"folderSummary,omitempty"`
 }
 
+// FileSnapshot identifies one exact logical-file generation. PhysicalHash is
+// deliberately not part of the token: rewriting the same object key is still
+// a namespace mutation and must invalidate an older upload preflight.
+type FileSnapshot struct {
+	ID           int       `json:"id"`
+	UpdatedAt    time.Time `json:"updatedAt"`
+	PhysicalHash string    `json:"physicalHash,omitempty"`
+}
+
+func (r FileRecord) Snapshot() FileSnapshot {
+	return FileSnapshot{ID: r.ID, UpdatedAt: r.UpdatedAt, PhysicalHash: r.PhysicalHash}
+}
+
 type DirectChildrenOptions struct {
 	Query           string
 	DirectoriesOnly bool
@@ -187,15 +200,55 @@ CREATE TABLE IF NOT EXISTS "Upload" (
   "uploadedSize" BIGINT NOT NULL DEFAULT 0,
   overwrite BOOLEAN NOT NULL DEFAULT false,
   "expectedPhysicalHash" TEXT,
+  "expectedFileId" INTEGER NOT NULL DEFAULT 0,
+  "expectedFileUpdatedAt" TIMESTAMPTZ,
   "requireAbsent" BOOLEAN NOT NULL DEFAULT false,
   status TEXT NOT NULL,
   error TEXT NOT NULL DEFAULT '',
+  revision BIGINT NOT NULL DEFAULT 1,
+  "completionStatus" TEXT NOT NULL DEFAULT 'none',
+  "completionOwner" TEXT,
+  "completionLeaseUntil" TIMESTAMPTZ,
+  "completionAttempts" INTEGER NOT NULL DEFAULT 0,
+  "completionNextAttemptAt" TIMESTAMPTZ,
+  "finalizedAt" TIMESTAMPTZ,
+  "publishedAt" TIMESTAMPTZ,
+  "completedAt" TIMESTAMPTZ,
+  "objectGeneration" BIGINT NOT NULL DEFAULT 0,
+  "objectChecksum" TEXT NOT NULL DEFAULT '',
+  "lastCompletionError" TEXT NOT NULL DEFAULT '',
+  "cancelRequestedAt" TIMESTAMPTZ,
+  "cancelledAt" TIMESTAMPTZ,
+  "cleanupStatus" TEXT NOT NULL DEFAULT 'none',
+  "previousPhysicalHash" TEXT NOT NULL DEFAULT '',
+  "cleanupError" TEXT NOT NULL DEFAULT '',
   "createdAt" TIMESTAMPTZ NOT NULL,
   "updatedAt" TIMESTAMPTZ NOT NULL,
   "expiresAt" TIMESTAMPTZ NOT NULL
 );
 ALTER TABLE "Upload" ADD COLUMN IF NOT EXISTS "uploadUrl" TEXT NOT NULL DEFAULT '';
+ALTER TABLE "Upload" ADD COLUMN IF NOT EXISTS "expectedFileId" INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE "Upload" ADD COLUMN IF NOT EXISTS "expectedFileUpdatedAt" TIMESTAMPTZ;
+ALTER TABLE "Upload" ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 1;
+ALTER TABLE "Upload" ADD COLUMN IF NOT EXISTS "completionStatus" TEXT NOT NULL DEFAULT 'none';
+ALTER TABLE "Upload" ADD COLUMN IF NOT EXISTS "completionOwner" TEXT;
+ALTER TABLE "Upload" ADD COLUMN IF NOT EXISTS "completionLeaseUntil" TIMESTAMPTZ;
+ALTER TABLE "Upload" ADD COLUMN IF NOT EXISTS "completionAttempts" INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE "Upload" ADD COLUMN IF NOT EXISTS "completionNextAttemptAt" TIMESTAMPTZ;
+ALTER TABLE "Upload" ADD COLUMN IF NOT EXISTS "finalizedAt" TIMESTAMPTZ;
+ALTER TABLE "Upload" ADD COLUMN IF NOT EXISTS "publishedAt" TIMESTAMPTZ;
+ALTER TABLE "Upload" ADD COLUMN IF NOT EXISTS "completedAt" TIMESTAMPTZ;
+ALTER TABLE "Upload" ADD COLUMN IF NOT EXISTS "objectGeneration" BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE "Upload" ADD COLUMN IF NOT EXISTS "objectChecksum" TEXT NOT NULL DEFAULT '';
+ALTER TABLE "Upload" ADD COLUMN IF NOT EXISTS "lastCompletionError" TEXT NOT NULL DEFAULT '';
+ALTER TABLE "Upload" ADD COLUMN IF NOT EXISTS "cancelRequestedAt" TIMESTAMPTZ;
+ALTER TABLE "Upload" ADD COLUMN IF NOT EXISTS "cancelledAt" TIMESTAMPTZ;
+ALTER TABLE "Upload" ADD COLUMN IF NOT EXISTS "cleanupStatus" TEXT NOT NULL DEFAULT 'none';
+ALTER TABLE "Upload" ADD COLUMN IF NOT EXISTS "previousPhysicalHash" TEXT NOT NULL DEFAULT '';
+ALTER TABLE "Upload" ADD COLUMN IF NOT EXISTS "cleanupError" TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS "Upload_expiresAt_idx" ON "Upload" ("expiresAt");
+CREATE INDEX IF NOT EXISTS "Upload_completion_due_idx" ON "Upload" ("completionNextAttemptAt", "completionStatus")
+  WHERE "completionStatus" IN ('pending', 'retry');
 
 CREATE TABLE IF NOT EXISTS "Thumbnail" (
   id TEXT PRIMARY KEY,
@@ -204,8 +257,11 @@ CREATE TABLE IF NOT EXISTS "Thumbnail" (
   size BIGINT NOT NULL,
   width INTEGER NOT NULL,
   height INTEGER NOT NULL,
-  "createdAt" TIMESTAMPTZ NOT NULL
+  "createdAt" TIMESTAMPTZ NOT NULL,
+  "deleteAfter" TIMESTAMPTZ
 );
+ALTER TABLE "Thumbnail" ADD COLUMN IF NOT EXISTS "deleteAfter" TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS "Thumbnail_deleteAfter_idx" ON "Thumbnail" ("deleteAfter") WHERE "deleteAfter" IS NOT NULL;
 CREATE TABLE IF NOT EXISTS "FileThumbnail" (
   "fileId" INTEGER PRIMARY KEY REFERENCES "File"(id) ON DELETE CASCADE,
   "thumbnailId" TEXT NOT NULL REFERENCES "Thumbnail"(id) ON DELETE CASCADE

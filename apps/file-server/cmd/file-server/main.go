@@ -20,9 +20,15 @@ import (
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/fileops"
 	ftpdriver "github.com/twkevinzhang/vfs-link/apps/file-server/internal/ftp"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/httpauth"
+	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/objectkey"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/share"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/upload"
 	davserver "github.com/twkevinzhang/vfs-link/apps/file-server/internal/webdav"
+)
+
+const (
+	uploadRecoveryInterval = 30 * time.Second
+	uploadRecoveryBatch    = 50
 )
 
 func main() {
@@ -115,6 +121,9 @@ func run(logger *slog.Logger) error {
 			return rebuildMapping(ctx, cfg, store, objects, logger)
 		}
 	}
+	if err := ensureNoLegacyUploadSessions(ctx, store); err != nil {
+		return err
+	}
 
 	var shareOptions []share.Option
 	if cfg.PubSubDriver == "pubsub" {
@@ -125,10 +134,6 @@ func run(logger *slog.Logger) error {
 		shareOptions = append(shareOptions, share.WithDispatcher(dispatcher))
 	}
 	shareService := share.NewService(cfg, store, objects, logger, shareOptions...)
-	relayCtx, cancelRelay := context.WithCancel(ctx)
-	relayDone := make(chan error, 1)
-	go func() { relayDone <- shareService.RunRelay(relayCtx) }()
-	defer cancelRelay()
 	uploadService := upload.NewWithBlobAndPublisher(store, uploadPublisher{store: store, files: fileService}, objects,
 		upload.WithTTL(cfg.UploadSessionTTL),
 		upload.WithMaxBytes(cfg.UploadMaxBytes),
@@ -160,8 +165,22 @@ func run(logger *slog.Logger) error {
 		Handler:           maintenanceMode(cfg.MaintenanceMode, httpHandler),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+	errCh := make(chan error, 3)
+	relayCtx, cancelRelay := context.WithCancel(ctx)
+	relayDone := make(chan error, 1)
+	go func() { relayDone <- shareService.RunRelay(relayCtx) }()
+	defer cancelRelay()
+	uploadRecoveryCtx, cancelUploadRecovery := context.WithCancel(ctx)
+	uploadRecoveryDone := make(chan error, 1)
+	go func() {
+		err := uploadService.RunRecovery(uploadRecoveryCtx, uploadRecoveryInterval, uploadRecoveryBatch)
+		if err != nil && !errors.Is(err, context.Canceled) {
+			logger.Error("upload recovery loop stopped", "error", err)
+			errCh <- fmt.Errorf("upload recovery loop stopped: %w", err)
+		}
+		uploadRecoveryDone <- err
+	}()
 
-	errCh := make(chan error, 2)
 	var ftpServer *ftpserver.FtpServer
 	runningServers := 1
 	if cfg.FTPEnabled {
@@ -193,6 +212,7 @@ func run(logger *slog.Logger) error {
 	case <-ctx.Done():
 		logger.Info("shutdown signal received")
 		cancelRelay()
+		cancelUploadRecovery()
 		if ftpServer != nil {
 			ftpServer.Stop()
 		}
@@ -217,9 +237,13 @@ func run(logger *slog.Logger) error {
 		if err := waitShareService(shutdownCtx, shareService, relayDone); err != nil {
 			return err
 		}
+		if err := waitUploadRecovery(shutdownCtx, uploadRecoveryDone); err != nil {
+			return err
+		}
 		return nil
 	case err := <-errCh:
 		cancelRelay()
+		cancelUploadRecovery()
 		if ftpServer != nil {
 			ftpServer.Stop()
 		}
@@ -232,10 +256,46 @@ func run(logger *slog.Logger) error {
 		if waitErr := waitShareService(shutdownCtx, shareService, relayDone); waitErr != nil && err == nil {
 			return waitErr
 		}
+		if waitErr := waitUploadRecovery(shutdownCtx, uploadRecoveryDone); waitErr != nil && err == nil {
+			return waitErr
+		}
 		if err != nil && !errors.Is(err, context.Canceled) {
 			return err
 		}
 		return nil
+	}
+}
+
+func ensureNoLegacyUploadSessions(ctx context.Context, store db.Store) error {
+	const limit = 501
+	records, err := store.ListNonterminalUploads(ctx, limit)
+	if err != nil {
+		return fmt.Errorf("inspect legacy upload sessions: %w", err)
+	}
+	legacy := 0
+	for _, record := range records {
+		if !objectkey.IsUploadGeneration(record.LogicPath, record.ID, record.PhysicalHash) {
+			legacy++
+		}
+	}
+	if legacy > 0 {
+		return fmt.Errorf("refusing to start with %d nonterminal legacy upload session(s); drain or cancel them with the previous release before rollout", legacy)
+	}
+	if len(records) == limit {
+		return errors.New("refusing to start: more than 500 nonterminal upload sessions require rollout preflight")
+	}
+	return nil
+}
+
+func waitUploadRecovery(ctx context.Context, done <-chan error) error {
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			return fmt.Errorf("upload recovery: %w", err)
+		}
+		return nil
+	case <-ctx.Done():
+		return errors.New("upload recovery did not stop before shutdown deadline")
 	}
 }
 
@@ -262,6 +322,7 @@ type uploadPublisher struct {
 func (p uploadPublisher) FindFile(ctx context.Context, logicPath string) (upload.File, bool, error) {
 	record, found, err := p.store.Find(ctx, logicPath)
 	return upload.File{
+		ID:           record.ID,
 		PhysicalHash: record.PhysicalHash,
 		IsDirectory:  record.IsDirectory,
 		Size:         record.Size,
@@ -274,17 +335,46 @@ func (p uploadPublisher) EnsureDirectory(ctx context.Context, logicPath string) 
 	return err
 }
 
-func (p uploadPublisher) ReplaceFile(ctx context.Context, logicPath, physicalHash string, size int64, expected *string, absent bool) (string, bool, error) {
-	_, err := p.files.PublishUploaded(ctx, fileops.PublishIntent{
+func (p uploadPublisher) IsUploadGenerationReferenced(ctx context.Context, physicalHash string) (bool, error) {
+	return p.store.IsObjectReferenced(ctx, physicalHash, "")
+}
+
+func (p uploadPublisher) ReplaceFile(ctx context.Context, logicPath, physicalHash string, size int64, expected *string, snapshot *upload.FileSnapshot, absent bool) (upload.PublishResult, bool, error) {
+	intent := fileops.PublishIntent{
 		LogicPath: logicPath, PhysicalHash: physicalHash, Size: size,
-		ExpectedPhysicalHash: expected, RequireAbsent: absent,
-	})
-	if errors.Is(err, db.ErrPathConflict) {
-		return "", false, nil
+		ExpectedPhysicalHash: expected, RequireAbsent: absent, DeferCleanup: true,
 	}
-	// PublishUploaded owns post-commit cleanup; returning an empty previous key
-	// prevents upload.Service from issuing the same deletion a second time.
-	return "", err == nil, err
+	if snapshot != nil {
+		intent.ExpectedPhysicalHash = nil
+		intent.ExpectedSnapshot = &db.FileSnapshot{
+			ID: snapshot.ID, UpdatedAt: snapshot.UpdatedAt, PhysicalHash: snapshot.PhysicalHash,
+		}
+	}
+	result, err := p.files.PublishUploaded(ctx, intent)
+	if errors.Is(err, db.ErrPathConflict) {
+		return upload.PublishResult{}, false, nil
+	}
+	cleanupError := ""
+	if len(result.CleanupErrors) > 0 {
+		cleanupError = errors.Join(result.CleanupErrors...).Error()
+	}
+	return upload.PublishResult{
+		PreviousPhysicalHash: result.PreviousObject,
+		CleanupPending:       result.CleanupPending,
+		CleanupError:         cleanupError,
+	}, err == nil, err
+}
+
+func (p uploadPublisher) RetryUploadCleanup(ctx context.Context, intent upload.CleanupIntent) (upload.CleanupResult, error) {
+	result := p.files.RetryUploadedCleanup(ctx, fileops.UploadedCleanupIntent{
+		LogicPath: intent.LogicPath, PublishedPhysicalHash: intent.PublishedPhysicalHash,
+		PreviousPhysicalHash: intent.PreviousPhysicalHash,
+	})
+	if len(result.Errors) == 0 {
+		return upload.CleanupResult{Pending: result.Pending}, nil
+	}
+	err := errors.Join(result.Errors...)
+	return upload.CleanupResult{Pending: result.Pending, Error: err.Error()}, err
 }
 
 func maintenanceMode(enabled bool, next http.Handler) http.Handler {

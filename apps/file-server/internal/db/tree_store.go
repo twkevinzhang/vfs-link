@@ -813,7 +813,23 @@ func (s *TreeStore) ReplaceFile(ctx context.Context, path, hash string, size int
 func (s *TreeStore) ReplaceFileConditional(ctx context.Context, path, hash string, size int64, expected *string, absent bool) (string, bool, error) {
 	return s.namespace.replaceFileConditional(ctx, path, hash, size, expected, absent)
 }
+
+func (s *TreeStore) ReplaceFileConditionalSnapshot(ctx context.Context, path, hash string, size int64, expected *FileSnapshot, absent bool) (string, bool, error) {
+	if expected != nil && (expected.ID <= 0 || expected.UpdatedAt.IsZero()) {
+		return "", false, fmt.Errorf("valid expected file snapshot is required")
+	}
+	return s.namespace.replaceFileConditionalSnapshot(ctx, path, hash, size, expected, absent)
+}
+
 func (s *TreeStore) replaceFileConditionalV3(ctx context.Context, path, hash string, size int64, expected *string, absent bool) (string, bool, error) {
+	return s.replaceFileConditionalV3Expected(ctx, path, hash, size, expected, nil, absent)
+}
+
+func (s *TreeStore) replaceFileConditionalSnapshotV3(ctx context.Context, path, hash string, size int64, expected *FileSnapshot, absent bool) (string, bool, error) {
+	return s.replaceFileConditionalV3Expected(ctx, path, hash, size, nil, expected, absent)
+}
+
+func (s *TreeStore) replaceFileConditionalV3Expected(ctx context.Context, path, hash string, size int64, expectedHash *string, expectedSnapshot *FileSnapshot, absent bool) (string, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	release, _, e := s.acquireTreeMutationLease(ctx)
@@ -835,10 +851,13 @@ func (s *TreeStore) replaceFileConditionalV3(ctx context.Context, path, hash str
 	if ok && old.IsDirectory {
 		return "", false, ErrIsDirectory
 	}
-	if !ok && expected != nil {
+	if !ok && (expectedHash != nil || expectedSnapshot != nil) {
 		return "", false, nil
 	}
-	if ok && (absent || (expected != nil && old.PhysicalHash != *expected)) {
+	if ok && (absent ||
+		(expectedHash != nil && old.PhysicalHash != *expectedHash) ||
+		(expectedSnapshot != nil && (old.ID != expectedSnapshot.ID || old.PhysicalHash != expectedSnapshot.PhysicalHash ||
+			!old.UpdatedAt.Equal(expectedSnapshot.UpdatedAt)))) {
 		return "", false, nil
 	}
 	now := time.Now().UTC()
@@ -872,6 +891,45 @@ func (s *TreeStore) replaceFileConditionalV3(ctx context.Context, path, hash str
 		oldHash = old.PhysicalHash
 	}
 	return oldHash, true, nil
+}
+
+// IsObjectReferenced conservatively scans every Tree metadata reader. This is
+// one Store-level decision for both namespace versions; any read/list failure
+// is returned so callers keep cleanup pending instead of deleting blindly.
+func (s *TreeStore) IsObjectReferenced(ctx context.Context, physicalHash, excludingActivePath string) (bool, error) {
+	physicalHash = strings.TrimSpace(physicalHash)
+	if physicalHash == "" {
+		return false, nil
+	}
+	active, err := s.ListAll(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, record := range active {
+		if record.PhysicalHash == physicalHash && record.LogicPath != excludingActivePath {
+			return true, nil
+		}
+	}
+	trash, err := s.ListTrashRecords(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	for _, record := range trash {
+		if record.PhysicalHash == physicalHash {
+			return true, nil
+		}
+	}
+	shares, err := s.listEntities(ctx, "shares", func() any { return &ShareRecord{} })
+	if err != nil {
+		return false, err
+	}
+	for _, value := range shares {
+		share := value.(*ShareRecord)
+		if share.PhysicalHash == physicalHash && share.CompletedAt == nil {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 func (s *TreeStore) UpsertDirectory(ctx context.Context, path string) error {
 	return s.namespace.upsertDirectory(ctx, path)
