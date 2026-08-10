@@ -112,7 +112,6 @@ func run(logger *slog.Logger) error {
 	}
 	defer thumbnailObjects.Close()
 	logger.Info("initialized thumbnail storage", "driver", thumbnailObjects.Driver(), "root", thumbnailObjects.Root())
-	startThumbnailGarbageCollector(ctx, store, thumbnailObjects, logger)
 	fileService := fileops.New(store, objects, thumbnailObjects)
 
 	if len(cfg.CommandArgs) > 0 {

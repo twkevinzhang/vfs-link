@@ -2,10 +2,14 @@ package main
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +17,43 @@ import (
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/db"
 	"github.com/twkevinzhang/vfs-link/apps/file-server/internal/objectkey"
 )
+
+func TestProductionDoesNotScheduleThumbnailGarbageCollection(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	forbiddenIdentifiers := map[string]struct{}{
+		"startThumbnailGarbageCollector": {},
+		"thumbnailGCInitialDelay":        {},
+		"thumbnailGCInterval":            {},
+	}
+	fset := token.NewFileSet()
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || filepath.Ext(name) != ".go" || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, parseErr := parser.ParseFile(fset, name, nil, 0)
+		if parseErr != nil {
+			t.Fatalf("parse %s: %v", name, parseErr)
+		}
+		ast.Inspect(file, func(node ast.Node) bool {
+			switch typed := node.(type) {
+			case *ast.Ident:
+				if _, forbidden := forbiddenIdentifiers[typed.Name]; forbidden {
+					t.Errorf("%s still contains automatic thumbnail GC symbol %q", name, typed.Name)
+				}
+			case *ast.CallExpr:
+				if function, ok := typed.Fun.(*ast.Ident); ok && function.Name == "cleanupExpiredThumbnailObjects" {
+					t.Errorf("%s still invokes thumbnail garbage collection from production code", name)
+				}
+			}
+			return true
+		})
+	}
+}
 
 func TestEnsureNoLegacyUploadSessionsBlocksMutableKeys(t *testing.T) {
 	ctx := context.Background()
