@@ -19,6 +19,14 @@ import {
   visibleUploadRows,
 } from './upload-list-window';
 import { formatBytes } from '../../../shared/presentation/format';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogTitle,
+} from '../../../shared/presentation/ui/alert-dialog';
 import { Button } from '../../../shared/presentation/ui/button';
 
 type UploadActivityQueue = Pick<
@@ -28,6 +36,7 @@ type UploadActivityQueue = Pick<
   | 'retry'
   | 'retryAll'
   | 'dismiss'
+  | 'clearFinished'
   | 'cancel'
   | 'pause'
   | 'resume'
@@ -79,6 +88,9 @@ export function UploadActivity({
         .length,
     [items]
   );
+  const clearableCount = summary.skipped + summary.complete + summary.failed;
+  const [showClearFinishedConfirm, setShowClearFinishedConfirm] =
+    useState(false);
   const decisionBatches = useMemo(
     () =>
       Array.from(
@@ -214,6 +226,16 @@ export function UploadActivity({
                 <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
                 Retry all
               </Button>
+              {clearableCount > 0 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 px-2"
+                  onClick={() => setShowClearFinishedConfirm(true)}
+                >
+                  Clear all
+                </Button>
+              )}
               <Button
                 variant="ghost"
                 size="icon"
@@ -325,6 +347,31 @@ export function UploadActivity({
           </div>
         )}
       </fieldset>
+      <AlertDialog
+        open={showClearFinishedConfirm}
+        onOpenChange={setShowClearFinishedConfirm}
+      >
+        <AlertDialogContent>
+          <AlertDialogTitle className="text-lg font-semibold">
+            Clear finished tasks?
+          </AlertDialogTitle>
+          <AlertDialogDescription className="text-sm text-muted-foreground">
+            {clearableCount} skipped, completed, or stopped task
+            {clearableCount === 1 ? '' : 's'} will be removed from this process
+            list. Active uploads will not be affected.
+          </AlertDialogDescription>
+          <div className="flex justify-end gap-2">
+            <AlertDialogCancel asChild>
+              <Button variant="outline">Keep tasks</Button>
+            </AlertDialogCancel>
+            <AlertDialogAction asChild>
+              <Button variant="destructive" onClick={queue.clearFinished}>
+                Clear tasks
+              </Button>
+            </AlertDialogAction>
+          </div>
+        </AlertDialogContent>
+      </AlertDialog>
     </section>
   );
 }

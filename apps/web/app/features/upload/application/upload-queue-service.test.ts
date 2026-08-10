@@ -86,6 +86,73 @@ describe('UploadQueueService', () => {
     ]);
   });
 
+  it('clears skipped, complete, and failed items while preserving every active state', () => {
+    const service = new UploadQueueService();
+    const keys = service.add(
+      [
+        'checking',
+        'queued',
+        'needs-decision',
+        'skipped',
+        'uploading',
+        'retrying',
+        'paused',
+        'complete',
+        'failed',
+      ].map((state) => source(`${state}.txt`)),
+      ''
+    );
+    const preflightKeys = new Set(keys.slice(1));
+    service.applyPreflight(
+      preflightKeys,
+      keys.slice(1).map((key, index) => ({
+        clientId: key,
+        path: `${index + 1}.txt`,
+        status:
+          index === 1 || index === 2
+            ? ('conflict' as const)
+            : ('available' as const),
+        targetVersion: 'v1',
+      }))
+    );
+    service.skipOne(keys[3]);
+    service.markUploading(keys[4]);
+    service.markRetrying(keys[5], 1, 500, 'Retry later');
+    service.pause(keys[6]);
+    service.markComplete(keys[7], {
+      id: 'complete-session',
+      status: 'complete',
+      uploadedSize: 10,
+      expiresAt: '2099-01-01T00:00:00Z',
+    });
+    service.markFailed(keys[8], 'Upload failed', false);
+
+    service.clearFinished();
+
+    expect(service.getSnapshot().items.map((item) => item.key)).toEqual([
+      keys[0],
+      keys[1],
+      keys[2],
+      keys[4],
+      keys[5],
+      keys[6],
+    ]);
+    expect(service.getSnapshot().items.map((item) => item.state)).toEqual([
+      'checking',
+      'queued',
+      'needs-decision',
+      'uploading',
+      'retrying',
+      'paused',
+    ]);
+    expect(service.getSnapshot().summary).toMatchObject({
+      total: 6,
+      skipped: 0,
+      complete: 0,
+      failed: 0,
+    });
+  });
+
   it('copies a 1,000-item snapshot once for a progress batch without structural notification', () => {
     const summarize = vi.fn(summarizeUploadQueue);
     const onItemsCopied = vi.fn();

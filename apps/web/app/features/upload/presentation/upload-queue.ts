@@ -88,6 +88,7 @@ function useQueueAdapter(
       replaceAll: controller.replaceAll,
       skipAll: controller.skipAll,
       dismiss: controller.dismiss,
+      clearFinished: controller.clearFinished,
       cancel: controller.cancel,
       cancelAll: controller.cancelAll,
       pause: controller.pause,

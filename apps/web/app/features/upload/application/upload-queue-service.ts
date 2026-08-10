@@ -387,6 +387,14 @@ export class UploadQueueService {
     this.cancel(new Set([key]));
   }
 
+  clearFinished() {
+    this.publish(
+      this.items.filter(
+        (item) => !['skipped', 'complete', 'failed'].includes(item.state)
+      )
+    );
+  }
+
   retry(keys: ReadonlySet<string>) {
     this.publish(
       this.items.map((item) =>

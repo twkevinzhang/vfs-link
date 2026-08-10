@@ -438,6 +438,28 @@ export class UploadQueueController {
     this.service.dismiss(key);
   };
 
+  clearFinished = () => {
+    const finished = this.service
+      .getSnapshot()
+      .items.filter((item) =>
+        ['skipped', 'complete', 'failed'].includes(item.state)
+      );
+    for (const item of finished) {
+      this.dependencies.sources.release(item.sourceId);
+      this.abandonArchiveBatch(item);
+      if (
+        item.state === 'failed' &&
+        item.session &&
+        item.session.status !== 'complete'
+      ) {
+        void this.dependencies.gateway
+          .cancelUpload(item.session.id)
+          .catch(() => undefined);
+      }
+    }
+    this.service.clearFinished();
+  };
+
   retry = (key: string) => {
     this.service.retry(new Set([key]));
     const item = this.service
