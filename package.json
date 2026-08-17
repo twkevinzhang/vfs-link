@@ -9,12 +9,12 @@
   },
   "private": true,
   "devDependencies": {
-    "@nx/eslint-plugin": "22.7.2",
-    "@typescript-eslint/parser": "^8.29.0",
-    "eslint": "^9.8.0",
-    "nx": "22.7.2",
-    "typescript": "~5.8.2",
-    "typescript-eslint": "^8.29.0"
+    "@nx/eslint-plugin": "23.1.1",
+    "@typescript-eslint/parser": "^8.67.0",
+    "eslint": "^10.8.1",
+    "nx": "23.1.1",
+    "typescript": "~7.0.2",
+    "typescript-eslint": "^8.67.0"
   },
   "packageManager": "pnpm@10.8.1+sha512.c50088ba998c67b8ca8c99df8a5e02fd2ae2e2b29aaf238feaa9e124248d3f48f9fb6db2424949ff901cffbb5e0f0cc1ad6aedb602cd29450751d11c35023677"
 }
